@@ -207,3 +207,4 @@ marimo/_lsp/
 __marimo__/
 SensOS
 sensos-client
+test/qemu/artifacts/

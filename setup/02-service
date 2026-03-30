@@ -1,0 +1,34 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="${SENSOS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
+SERVICE_USER="${SENSOS_SERVICE_USER:-${SUDO_USER:-root}}"
+SERVICE_TEMPLATE="${REPO_ROOT}/etc/systemd/system/sensos-server.service"
+SERVICE_TARGET="/etc/systemd/system/${SERVICE_NAME}.service"
+
+log() {
+    printf '[setup/02-service] %s\n' "$*"
+}
+
+die() {
+    printf '[setup/02-service] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+main() {
+    [[ -f "${SERVICE_TEMPLATE}" ]] || die "missing service template: ${SERVICE_TEMPLATE}"
+
+    sed \
+        -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
+        -e "s|{{SERVICE_USER}}|${SERVICE_USER}|g" \
+        "${SERVICE_TEMPLATE}" > "${SERVICE_TARGET}"
+
+    chmod 644 "${SERVICE_TARGET}"
+    systemctl daemon-reload
+    systemctl enable "${SERVICE_NAME}" >/dev/null
+    log "installed ${SERVICE_TARGET}"
+}
+
+main "$@"

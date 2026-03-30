@@ -1,0 +1,31 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_NAME='[migrations/run]'
+
+log() {
+    printf '%s %s\n' "${SCRIPT_NAME}" "$*"
+}
+
+die() {
+    printf '%s ERROR: %s\n' "${SCRIPT_NAME}" "$*" >&2
+    exit 1
+}
+
+validate_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || die "invalid version '$1'"
+}
+
+main() {
+    local from_version="${1:-}"
+    local to_version="${2:-}"
+
+    [[ -n "${from_version}" && -n "${to_version}" ]] || die "usage: $0 <from-version> <to-version>"
+    validate_version "${from_version}"
+    validate_version "${to_version}"
+
+    log "no server migrations required for ${from_version} -> ${to_version}"
+}
+
+main "$@"

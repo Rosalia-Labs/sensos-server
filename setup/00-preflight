@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="${SENSOS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+DOCKER_DIR="${REPO_ROOT}/docker"
+ENV_FILE="${DOCKER_DIR}/.env"
+
+log() {
+    printf '[setup/00-preflight] %s\n' "$*"
+}
+
+die() {
+    printf '[setup/00-preflight] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+main() {
+    require_command docker
+    require_command systemctl
+    docker compose version >/dev/null 2>&1 || die "docker compose plugin is required"
+    [[ -d "${DOCKER_DIR}" ]] || die "missing docker directory: ${DOCKER_DIR}"
+    [[ -f "${ENV_FILE}" ]] || die "missing ${ENV_FILE}; run ./bin/configure-server.sh first"
+    [[ -f "${REPO_ROOT}/VERSION" ]] || die "missing VERSION file at ${REPO_ROOT}/VERSION"
+    log "preflight checks passed"
+}
+
+main "$@"

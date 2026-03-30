@@ -1,0 +1,27 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="${SENSOS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STATE_DIR="${SENSOS_STATE_DIR:-/var/lib/sensos-server}"
+STATE_FILE="${SENSOS_INSTALL_STATE_FILE:-${STATE_DIR}/install-state.env}"
+SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
+SERVICE_USER="${SENSOS_SERVICE_USER:-${SUDO_USER:-root}}"
+VERSION="$(head -n 1 "${REPO_ROOT}/VERSION" | tr -d '[:space:]')"
+
+log() {
+    printf '[setup/99-install-state] %s\n' "$*"
+}
+
+main() {
+    cat > "${STATE_FILE}" <<EOF
+INSTALLED_VERSION=${VERSION}
+REPO_ROOT=${REPO_ROOT}
+SERVICE_NAME=${SERVICE_NAME}
+SERVICE_USER=${SERVICE_USER}
+EOF
+    chmod 644 "${STATE_FILE}"
+    log "wrote ${STATE_FILE}"
+}
+
+main "$@"

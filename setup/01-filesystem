@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="${SENSOS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STATE_DIR="${SENSOS_STATE_DIR:-/var/lib/sensos-server}"
+SERVICE_USER="${SENSOS_SERVICE_USER:-${SUDO_USER:-root}}"
+
+log() {
+    printf '[setup/01-filesystem] %s\n' "$*"
+}
+
+main() {
+    install -d -m 755 "${STATE_DIR}"
+    install -d -m 755 "${REPO_ROOT}/backups"
+    chown "${SERVICE_USER}" "${REPO_ROOT}/backups"
+    log "ensured state and backup directories"
+}
+
+main "$@"
