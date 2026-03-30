@@ -55,10 +55,6 @@ You can install that with:
 crontab -e
 ```
 
-An example file is included at:
-
-- [`examples/cron/sensos-server-backup.cron.example`](../examples/cron/sensos-server-backup.cron.example)
-
 ## Post-Hook Example
 
 The post-hook contract is:
@@ -82,10 +78,6 @@ shift || true
 Place a real local version at:
 
 `local/hooks/post-backup.sh`
-
-An example template is included at:
-
-- [`examples/hooks/post-backup.sh.example`](../examples/hooks/post-backup.sh.example)
 
 ## Other Mechanisms
 
