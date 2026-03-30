@@ -76,10 +76,9 @@ The script forwards host port `2223` to guest SSH:
 ssh -p 2223 <user>@127.0.0.1
 ```
 
-It also forwards the server API and registry back to the host:
+It also forwards the server API back to the host:
 
 - API: `127.0.0.1:18765 -> guest:8765`
-- registry: `127.0.0.1:15000 -> guest:5000`
 
 This makes two-VM testing practical:
 

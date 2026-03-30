@@ -19,7 +19,6 @@ DATA_IMAGE="${SENSOS_QEMU_DATA_IMAGE:-${IMAGE_DIR}/debian-trixie-arm64-data.qcow
 
 SSH_FORWARD_PORT="${SENSOS_QEMU_SSH_PORT:-2223}"
 API_FORWARD_PORT="${SENSOS_QEMU_API_PORT:-18765}"
-REGISTRY_FORWARD_PORT="${SENSOS_QEMU_REGISTRY_PORT:-15000}"
 MEMORY_MB="${SENSOS_QEMU_MEMORY_MB:-4096}"
 CPU_COUNT="${SENSOS_QEMU_CPU_COUNT:-4}"
 DISK_SIZE="${SENSOS_QEMU_DISK_SIZE:-32G}"
@@ -56,7 +55,6 @@ Environment overrides:
   SENSOS_QEMU_DATA_IMAGE
   SENSOS_QEMU_SSH_PORT
   SENSOS_QEMU_API_PORT
-  SENSOS_QEMU_REGISTRY_PORT
   SENSOS_QEMU_MEMORY_MB
   SENSOS_QEMU_CPU_COUNT
   SENSOS_QEMU_DISK_SIZE
@@ -135,7 +133,6 @@ Base image:       ${BASE_IMAGE}
 Data image:       ${DATA_IMAGE}
 SSH forward:      ssh -p ${SSH_FORWARD_PORT} <user>@127.0.0.1
 Server API:       http://127.0.0.1:${API_FORWARD_PORT}
-Registry forward: 127.0.0.1:${REGISTRY_FORWARD_PORT}
 Host access:      guest can reach macOS services at 10.0.2.2
 Repo path:        ${REPO_ROOT}
 
@@ -169,7 +166,7 @@ run_qemu() {
         -device usb-tablet \
         -device virtio-rng-pci \
         -device virtio-net-pci,netdev=net0 \
-        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765,hostfwd=tcp:127.0.0.1:${REGISTRY_FORWARD_PORT}-:5000" \
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765" \
         -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
         -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
         "${extra_drives[@]}" \

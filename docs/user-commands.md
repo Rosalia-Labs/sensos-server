@@ -77,9 +77,6 @@ Important flags from the source:
 - `--wg-port`
 - `--postgres-password`
 - `--api-password`
-- `--registry-port`
-- `--registry-user`
-- `--registry-password`
 - `--expose-containers`
 
 Typical use:
