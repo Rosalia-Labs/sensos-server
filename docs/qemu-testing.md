@@ -1,9 +1,11 @@
 # QEMU Testing
 
-This directory contains the local helper for running a Debian Trixie ARM64 VM
-for the SensOS server on Apple Silicon with MacPorts QEMU:
+This repo includes a local helper for running a Debian Trixie ARM64 VM for the
+SensOS server on Apple Silicon with MacPorts QEMU.
 
-- [run-debian-trixie-arm64](/Users/tkeitt/Projects/sensos-server/test/qemu/run-debian-trixie-arm64)
+Primary launcher:
+
+- [`test/qemu/run-debian-trixie-arm64`](../test/qemu/run-debian-trixie-arm64)
 
 ## Artifacts
 
@@ -79,7 +81,7 @@ It also forwards the server API and registry back to the host:
 - API: `127.0.0.1:18765 -> guest:8765`
 - registry: `127.0.0.1:15000 -> guest:5000`
 
-That makes two-VM testing practical:
+This makes two-VM testing practical:
 
 1. Run the server VM with this helper.
 2. Run the client VM with the client helper.
