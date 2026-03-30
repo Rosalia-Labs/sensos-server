@@ -2,9 +2,9 @@
 
 This repo intentionally uses a single runtime-oriented repository root.
 
-The checked-out repo is the live server tree. The install flow does not build a
-separate overlay like `sensos-client`; instead, it performs thin host
-integration around the repo-owned Docker stack.
+The checked-out repo is the live server tree. This repo does not build a
+separate overlay like `sensos-client`; instead, it runs the Docker stack
+directly from the checkout and treats systemd as optional host integration.
 
 ## Why This Model
 
@@ -18,10 +18,16 @@ mainly needs:
 
 - Docker and Docker Compose
 - a configured repo checkout
+- a user who can actually run Docker
+
+Optional:
+
 - a systemd unit that points at that checkout
 
 Because of that, keeping the repo itself as the runtime tree is a reasonable
 operating model and works well with a normal non-system user such as `sensos`.
+That user does not need `sudo`, but does need permission to talk to Docker,
+typically by being in the `docker` group.
 
 ## Expected Layout
 
@@ -51,6 +57,7 @@ Main ignored runtime paths:
 - `docker/.env`
 - `docker/.env.bak`
 - `backups/`
+- `local/`
 - `test/qemu/artifacts/`
 
 Legacy material remains under `SensOS/` for inspection during the migration,
@@ -65,10 +72,25 @@ Instead, it:
 - validates the checkout
 - installs a systemd unit
 - enables that service
-- records minimal install state
 
-The service then runs the server directly from this checkout as the configured
-service user.
+This is optional. It exists to get automatic startup and recovery across host
+reboots. The service still runs the same repo-owned start script that you can
+invoke manually.
+
+Because installing a unit touches privileged host state, a privileged user must
+run `./install` or install the unit manually.
+
+## Default Operation
+
+The default operating model is manual unprivileged use from the repo checkout:
+
+1. `./bin/configure-server.sh`
+2. `./bin/start-server.sh`
+
+That is the baseline path to document and support.
+
+If a machine owner wants automatic startup after reboot, they can install the
+optional systemd unit separately.
 
 ## Upgrade Behavior
 
@@ -78,7 +100,7 @@ the repo-root runtime model:
 - verify the checkout and current server config
 - optionally `git pull --ff-only`
 - run version-aware migrations
-- rerun setup
+- optionally refresh the systemd unit
 - optionally restart the service
 
 This keeps the operational flow familiar without forcing a separate deployed

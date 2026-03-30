@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="${1:?missing backup dir}"
+shift || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Example: export backups with the built-in rclone helper.
+"${REPO_ROOT}/bin/export-backups.sh" --remote box:sensos-server-backups --copy
+
+# Example: process only the newly created files from this run.
+# for backup_file in "$@"; do
+#     printf 'new backup: %s\n' "${backup_file}"
+# done
+
+# Example: use BACKUP_DIR if your site-specific tooling wants the whole backup tree.
+# printf 'backup dir: %s\n' "${BACKUP_DIR}"

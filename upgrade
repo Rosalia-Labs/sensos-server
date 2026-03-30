@@ -12,6 +12,7 @@ SETUP_SCRIPT="${REPO_ROOT}/setup/install"
 INSTALL_STATE_FILE="${SENSOS_INSTALL_STATE_FILE:-/var/lib/sensos-server/install-state.env}"
 SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
 OFFLINE=0
+REFRESH_SERVICE=0
 RESTART_SERVICE=0
 
 log() {
@@ -31,6 +32,7 @@ Pull the latest repo changes, run migrations, and reconcile the installed server
 
 Options:
   --offline          Skip git pull and use the repo contents already on disk
+  --refresh-service  Reinstall the optional ${SERVICE_NAME} systemd unit after upgrade
   --restart-service  Restart ${SERVICE_NAME} after setup completes
   --help             Show this help and exit
 EOF
@@ -41,6 +43,9 @@ parse_args() {
         case "$1" in
             --offline)
                 OFFLINE=1
+                ;;
+            --refresh-service)
+                REFRESH_SERVICE=1
                 ;;
             --restart-service)
                 RESTART_SERVICE=1
@@ -78,7 +83,7 @@ version_lt() {
 }
 
 ensure_not_root() {
-    [[ "${EUID}" -ne 0 ]] || die "run ${SCRIPT_PATH} as the repo owner; it will use sudo for privileged steps"
+    [[ "${EUID}" -ne 0 ]] || die "run ${SCRIPT_PATH} as the repo owner"
 }
 
 ensure_git_repo() {
@@ -108,7 +113,9 @@ sudo_run() {
 }
 
 read_installed_version() {
-    sudo awk -F= '/^INSTALLED_VERSION=/{print $2}' "${INSTALL_STATE_FILE}" 2>/dev/null || true
+    if [[ -r "${INSTALL_STATE_FILE}" ]]; then
+        awk -F= '/^INSTALLED_VERSION=/{print $2}' "${INSTALL_STATE_FILE}" 2>/dev/null || true
+    fi
 }
 
 main() {
@@ -150,12 +157,15 @@ main() {
     fi
 
     log "running migrations for ${old_version} -> ${new_version}"
-    sudo_run "${MIGRATIONS_SCRIPT}" "${old_version}" "${new_version}"
+    "${MIGRATIONS_SCRIPT}" "${old_version}" "${new_version}"
 
-    log "running setup"
-    sudo_run "${SETUP_SCRIPT}"
+    if [[ "${REFRESH_SERVICE}" == "1" ]]; then
+        log "refreshing optional ${SERVICE_NAME} systemd service"
+        sudo_run "${SETUP_SCRIPT}"
+    fi
 
     if [[ "${RESTART_SERVICE}" == "1" ]]; then
+        [[ "${REFRESH_SERVICE}" == "1" ]] || die "--restart-service requires --refresh-service"
         log "restarting ${SERVICE_NAME}"
         sudo systemctl restart "${SERVICE_NAME}"
     fi

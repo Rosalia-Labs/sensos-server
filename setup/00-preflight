@@ -21,8 +21,8 @@ require_command() {
 
 main() {
     require_command docker
-    require_command systemctl
     docker compose version >/dev/null 2>&1 || die "docker compose plugin is required"
+    docker info >/dev/null 2>&1 || die "docker is installed but not usable by the current user; join the docker group or use a host where this user can run docker"
     [[ -d "${DOCKER_DIR}" ]] || die "missing docker directory: ${DOCKER_DIR}"
     [[ -f "${ENV_FILE}" ]] || die "missing ${ENV_FILE}; run ./bin/configure-server.sh first"
     [[ -f "${REPO_ROOT}/VERSION" ]] || die "missing VERSION file at ${REPO_ROOT}/VERSION"

@@ -209,6 +209,7 @@ __marimo__/
 # Server runtime state
 docker/.env
 docker/.env.bak
+local/
 *.tar
 *.wav
 

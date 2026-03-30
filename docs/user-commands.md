@@ -9,22 +9,23 @@ run during setup, upgrade, or debugging.
 Typical order on a newly prepared server host:
 
 1. `./bin/configure-server.sh`
-2. `./install`
-3. `sudo systemctl start sensos-server`
-4. `./bin/start-server.sh --restart` for interactive restart-driven work when needed
+2. `./bin/start-server.sh`
+3. optional: `./install`
+4. optional: `sudo systemctl start sensos-server`
 
 Notes:
 
-- the normal long-lived path is the systemd service
-- the direct `bin/` scripts are still useful for debugging and local iteration
+- the default path is direct unprivileged use from the repo
+- the systemd service is optional and exists for reboot persistence and uptime
 - this repo is designed to run directly from the checkout owned by the service user
+- the current user must be able to run Docker, usually by being in the `docker` group
 
 ## Top-Level Repo Commands
 
 ### `./install`
 
-Installs the host integration needed to run the server from the current repo
-checkout.
+Installs the optional host integration needed to run the server under systemd
+from the current repo checkout.
 
 Typical use:
 
@@ -35,22 +36,25 @@ Typical use:
 Behavior:
 
 - must be run as the repo owner, not `root`
+- requires a privileged user path via `sudo`
 - confirms the target repo path
 - runs the setup pipeline with `sudo` for the privileged steps
 - installs and enables the `sensos-server` systemd unit
 - leaves the runtime code in the repo instead of deploying a separate overlay
+- is not required for normal manual operation
 
 ### `./upgrade`
 
-Pulls the latest repo changes, runs migrations, and reapplies setup to the
-installed server.
+Pulls the latest repo changes and runs migrations for the repo-owned server
+checkout.
 
 Typical use:
 
 ```sh
 ./upgrade
 ./upgrade --offline
-./upgrade --restart-service
+./upgrade --refresh-service
+./upgrade --refresh-service --restart-service
 ```
 
 Behavior:
@@ -58,9 +62,10 @@ Behavior:
 - in normal mode, it must be run from a clean git worktree
 - in normal mode, the current branch must have an upstream
 - runs migrations between installed and repo versions
-- reruns setup after pull
+- does not require `sudo` unless you ask it to refresh the optional service install
 - `--offline` skips `git pull` and upgrades from the repo contents already on disk
-- `--restart-service` restarts `sensos-server` after setup completes
+- `--refresh-service` reinstalls the optional `sensos-server` unit after pull
+- `--restart-service` restarts `sensos-server` and requires `--refresh-service`
 
 ## Core Server Commands
 
@@ -91,6 +96,7 @@ Behavior:
 - writes `docker/.env`
 - backs up an existing file to `docker/.env.bak`
 - does not start containers by itself
+- does not require `sudo`
 
 ### `bin/start-server.sh`
 
@@ -108,6 +114,7 @@ Typical use:
 Behavior:
 
 - requires `docker/.env`
+- requires that the current user can talk to Docker
 - loads repo version and git metadata into the container build/runtime environment
 - refuses to start if SensOS containers are already running, unless `--restart` is supplied
 - can rebuild containers before start
@@ -149,6 +156,55 @@ Typical use:
 ```sh
 ./bin/backup-wireguard.sh
 ```
+
+### `bin/backup-server.sh`
+
+Runs the standard server backup set and can optionally export those backups
+with `rclone` and/or run a user-supplied post-backup hook.
+
+Typical use:
+
+```sh
+./bin/backup-server.sh
+./bin/backup-server.sh --export --remote box:sensos-server-backups
+./bin/backup-server.sh --export --remote box:sensos-server-backups --move
+./bin/backup-server.sh --post-hook ./local/hooks/post-backup.sh
+```
+
+Behavior:
+
+- runs `bin/backup-database.sh`
+- runs `bin/backup-wireguard.sh`
+- keeps local backups by default
+- can export to a configured `rclone` remote after backup creation
+- can run a user-owned post-backup hook
+- looks for a default local hook at `local/hooks/post-backup.sh`
+- see [`docs/backup-automation.md`](backup-automation.md) for cron and hook examples
+
+Hook contract:
+
+- argv[1] is the backup directory
+- argv[2+] are the newly created backup files from this run
+- local hook scripts belong in ignored repo-local state such as `local/hooks/`
+
+### `bin/export-backups.sh`
+
+Exports existing backup artifacts from `backups/` using `rclone`.
+
+Typical use:
+
+```sh
+./bin/export-backups.sh --remote box:sensos-server-backups
+./bin/export-backups.sh --remote box:sensos-server-backups --move
+```
+
+Behavior:
+
+- requires `rclone`
+- exports `db_backup_*.gz` and `wg_*.tgz`
+- `--copy` keeps local files
+- `--move` removes local files only after successful transfer
+- useful as the built-in implementation behind a custom post-backup hook
 
 ### `bin/ssh-client`
 

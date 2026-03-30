@@ -22,7 +22,7 @@ print_usage() {
     cat <<EOF
 Usage: ${SCRIPT_PATH} [options]
 
-Configure the current machine to run the SensOS server from this checkout.
+Install or refresh the optional sensos-server systemd unit for this checkout.
 
 Options:
   --help             Show this help and exit
@@ -51,7 +51,7 @@ ensure_not_root() {
 confirm_install_target() {
     local reply
 
-    printf 'WARNING: this will install or update the %s systemd service against %s. Continue? [y/N] ' "${SERVICE_NAME}" "${REPO_ROOT}"
+    printf 'WARNING: this will install or update the optional %s systemd service against %s. Continue? [y/N] ' "${SERVICE_NAME}" "${REPO_ROOT}"
     read -r reply
     [[ "${reply}" =~ ^[Yy]$ ]] || die "installation cancelled"
 }
@@ -69,11 +69,12 @@ main() {
     ensure_not_root
     [[ -x "${SETUP_SCRIPT}" ]] || die "missing or non-executable setup script: ${SETUP_SCRIPT}"
     [[ -x "${PREFLIGHT_SCRIPT}" ]] || die "missing or non-executable preflight script: ${PREFLIGHT_SCRIPT}"
+    env "SENSOS_REPO_ROOT=${REPO_ROOT}" "${PREFLIGHT_SCRIPT}" >/dev/null
 
     confirm_install_target
-    log "running setup for ${REPO_ROOT}"
+    log "installing optional systemd service for ${REPO_ROOT}"
     sudo_run "${SETUP_SCRIPT}"
-    log "install complete"
+    log "service install complete"
 }
 
 main "$@"
