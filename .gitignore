@@ -205,6 +205,16 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Server runtime state
+docker/.env
+docker/.env.bak
+*.tar
+*.wav
+
+# Legacy trees kept for inspection only
 SensOS
 sensos-client
+
+# Local VM artifacts
 test/qemu/artifacts/
