@@ -13,7 +13,7 @@ Typical order on a newly prepared server host:
 1. `./bin/configure-server.sh`
 2. `./bin/start-server.sh`
 3. `./bin/create-network <network-name>`
-4. optional: `./install`
+4. optional: `./bin/install-service`
 5. optional: `sudo systemctl start sensos-server`
 
 Notes:
@@ -24,9 +24,9 @@ Notes:
 - the current user must be able to run Docker, usually by being in the `docker` group
 - on Debian-family systems, install `docker.io`, `docker-compose`, and `curl`
 
-## Top-Level Repo Commands
+## Optional Host Integration
 
-### `./install`
+### `bin/install-service`
 
 Installs the optional host integration needed to run the server under systemd
 from the current repo checkout.
@@ -34,7 +34,7 @@ from the current repo checkout.
 Typical use:
 
 ```sh
-./install
+./bin/install-service
 ```
 
 Behavior:
@@ -46,6 +46,7 @@ Behavior:
 - installs and enables the `sensos-server` systemd unit
 - leaves the runtime code in the repo instead of deploying a separate overlay
 - is not required for normal manual operation
+- the legacy repo-root `./install` wrapper still exists, but it is only a compatibility shim
 
 ### `./upgrade`
 

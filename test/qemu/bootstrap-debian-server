@@ -107,7 +107,7 @@ Next steps inside the guest:
 
 If you want the optional systemd unit:
   cd ${repo_path}
-  ./install
+  ./bin/install-service
   sudo systemctl start sensos-server
 
 EOF

@@ -47,7 +47,7 @@ Primary entrypoints:
 - `./bin/configure-server.sh`
 - `./bin/start-server.sh`
 - `./bin/stop-server.sh`
-- `./install`
+- `./bin/install-service`
 - `./upgrade`
 
 ## Runtime State
@@ -68,7 +68,7 @@ but it is not part of the active standalone server layout.
 
 ## Install Behavior
 
-`./install` does not copy the repo into another deploy root.
+`./bin/install-service` does not copy the repo into another deploy root.
 
 Instead, it:
 
@@ -81,7 +81,7 @@ reboots. The service still runs the same repo-owned start script that you can
 invoke manually.
 
 Because installing a unit touches privileged host state, a privileged user must
-run `./install` or install the unit manually.
+run `./bin/install-service` or install the unit manually.
 
 ## Default Operation
 

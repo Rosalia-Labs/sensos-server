@@ -77,7 +77,7 @@ If you also want reboot persistence inside the guest, have a privileged user
 install the optional systemd unit:
 
 ```bash
-./install
+./bin/install-service
 sudo systemctl start sensos-server
 ```
 

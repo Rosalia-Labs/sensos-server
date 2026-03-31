@@ -2,79 +2,8 @@
 
 set -euo pipefail
 
-SCRIPT_PATH="${BASH_SOURCE[0]}"
-SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
-REPO_ROOT="${SCRIPT_DIR}"
-SETUP_SCRIPT="${REPO_ROOT}/setup/install"
-PREFLIGHT_SCRIPT="${REPO_ROOT}/setup/00-preflight"
-SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_SCRIPT="${SCRIPT_DIR}/bin/install-service"
 
-log() {
-    printf '[install] %s\n' "$*"
-}
-
-die() {
-    printf '[install] ERROR: %s\n' "$*" >&2
-    exit 1
-}
-
-print_usage() {
-    cat <<EOF
-Usage: ${SCRIPT_PATH} [options]
-
-Install or refresh the optional sensos-server systemd unit for this checkout.
-
-Options:
-  --help             Show this help and exit
-EOF
-}
-
-parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --help|-h)
-                print_usage
-                exit 0
-                ;;
-            *)
-                die "unknown option: $1"
-                ;;
-        esac
-        shift
-    done
-}
-
-ensure_not_root() {
-    [[ "${EUID}" -ne 0 ]] || die "run ${SCRIPT_PATH} as the repo owner; it will use sudo for privileged steps"
-}
-
-confirm_install_target() {
-    local reply
-
-    printf 'WARNING: this will install or update the optional %s systemd service against %s. Continue? [y/N] ' "${SERVICE_NAME}" "${REPO_ROOT}"
-    read -r reply
-    [[ "${reply}" =~ ^[Yy]$ ]] || die "installation cancelled"
-}
-
-sudo_run() {
-    sudo env \
-        "SENSOS_REPO_ROOT=${REPO_ROOT}" \
-        "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
-        "SENSOS_SERVICE_USER=${SENSOS_SERVICE_USER:-${USER}}" \
-        "$@"
-}
-
-main() {
-    parse_args "$@"
-    ensure_not_root
-    [[ -x "${SETUP_SCRIPT}" ]] || die "missing or non-executable setup script: ${SETUP_SCRIPT}"
-    [[ -x "${PREFLIGHT_SCRIPT}" ]] || die "missing or non-executable preflight script: ${PREFLIGHT_SCRIPT}"
-    env "SENSOS_REPO_ROOT=${REPO_ROOT}" "${PREFLIGHT_SCRIPT}" >/dev/null
-
-    confirm_install_target
-    log "installing optional systemd service for ${REPO_ROOT}"
-    sudo_run "${SETUP_SCRIPT}"
-    log "service install complete"
-}
-
-main "$@"
+printf '[install] DEPRECATED: use %s instead.\n' "${TARGET_SCRIPT}" >&2
+exec "${TARGET_SCRIPT}" "$@"
