@@ -154,23 +154,42 @@ run_qemu() {
         extra_drives+=(-drive "if=virtio,file=${DATA_IMAGE},format=qcow2")
     fi
 
-    qemu-system-aarch64 \
-        -machine virt,accel=hvf \
-        -cpu host \
-        -smp "${CPU_COUNT}" \
-        -m "${MEMORY_MB}" \
-        -display cocoa \
-        -device virtio-gpu-pci \
-        -device qemu-xhci \
-        -device usb-kbd \
-        -device usb-tablet \
-        -device virtio-rng-pci \
-        -device virtio-net-pci,netdev=net0 \
-        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765" \
-        -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
-        -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
-        "${extra_drives[@]}" \
-        "$@"
+    if [[ ${#extra_drives[@]} -gt 0 ]]; then
+        qemu-system-aarch64 \
+            -machine virt,accel=hvf \
+            -cpu host \
+            -smp "${CPU_COUNT}" \
+            -m "${MEMORY_MB}" \
+            -display cocoa \
+            -device virtio-gpu-pci \
+            -device qemu-xhci \
+            -device usb-kbd \
+            -device usb-tablet \
+            -device virtio-rng-pci \
+            -device virtio-net-pci,netdev=net0 \
+            -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765" \
+            -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
+            -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
+            "${extra_drives[@]}" \
+            "$@"
+    else
+        qemu-system-aarch64 \
+            -machine virt,accel=hvf \
+            -cpu host \
+            -smp "${CPU_COUNT}" \
+            -m "${MEMORY_MB}" \
+            -display cocoa \
+            -device virtio-gpu-pci \
+            -device qemu-xhci \
+            -device usb-kbd \
+            -device usb-tablet \
+            -device virtio-rng-pci \
+            -device virtio-net-pci,netdev=net0 \
+            -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765" \
+            -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
+            -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
+            "$@"
+    fi
 }
 
 run_install() {
