@@ -152,6 +152,12 @@ def create_network(
             status_code=status.HTTP_409_CONFLICT,
             content={"error": str(e)},
         )
+    except Exception as e:
+        logger.error("create-network failed", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": str(e)},
+        )
 
 
 @router.get("/list-peers", response_class=HTMLResponse)
