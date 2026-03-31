@@ -1,9 +1,0 @@
-#!/bin/bash
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_SCRIPT="${SCRIPT_DIR}/bin/install-service"
-
-printf '[install] DEPRECATED: use %s instead.\n' "${TARGET_SCRIPT}" >&2
-exec "${TARGET_SCRIPT}" "$@"

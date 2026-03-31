@@ -107,8 +107,7 @@ update flow. It:
 The repo also includes [`bin/install-service`](../bin/install-service) for the
 optional systemd integration step. It prompts with a `[y/N]` warning, then runs
 the repo's setup scripts and installs host integration around the live repo
-checkout. The legacy top-level [`install`](../install) path remains only as a
-compatibility wrapper.
+checkout.
 
 ## Reminder
 

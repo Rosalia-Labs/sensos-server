@@ -46,7 +46,6 @@ Behavior:
 - installs and enables the `sensos-server` systemd unit
 - leaves the runtime code in the repo instead of deploying a separate overlay
 - is not required for normal manual operation
-- the legacy repo-root `./install` wrapper still exists, but it is only a compatibility shim
 
 ### `./upgrade`
 

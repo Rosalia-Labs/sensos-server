@@ -102,13 +102,13 @@ ssh -p 2223 <user>@127.0.0.1
 It also forwards the server API back to the host:
 
 - API: `127.0.0.1:18765 -> guest:8765`
-- WireGuard UDP: `127.0.0.1:51820/udp -> guest:51820/udp`
+- WireGuard UDP: `127.0.0.1:15182/udp -> guest:51820/udp`
 
 This makes two-VM testing practical:
 
 1. Run the server VM with this helper.
 2. Run the client VM with the client helper.
-3. In the server VM, create the test network with `wg_public_ip=10.0.2.2` and `wg_port=51820` so the client sees the macOS host as the WireGuard endpoint.
+3. In the server VM, create the test network with `wg_public_ip=10.0.2.2` and `wg_port=15182` so the client sees the macOS host as the forwarded WireGuard endpoint.
 4. In the client VM, point `config-network` at `10.0.2.2 --port 18765`.
 
 With QEMU user networking, each guest can usually reach macOS-hosted services at:
@@ -121,7 +121,8 @@ From the client VM, `10.0.2.2:18765` reaches the server API forwarded from the
 server VM through the macOS host.
 
 For the WireGuard tunnel, the same host IP works: client traffic to
-`10.0.2.2:51820/udp` is forwarded by macOS into the server VM's WireGuard port.
+`10.0.2.2:15182/udp` is forwarded by macOS into the server VM's WireGuard port
+on `51820/udp`.
 
 ## Installer display
 
