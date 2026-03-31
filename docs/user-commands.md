@@ -239,22 +239,3 @@ Typical use:
 ./bin/ssh-client testing_1_15
 ./bin/ssh-client testing_1_15 -- hostname
 ```
-
-### `bin/update-client`
-
-Sync the standalone `sensos-client` overlay tree to a remote client through the
-controller container.
-
-Typical use:
-
-```sh
-./bin/update-client testing_1_15
-./bin/update-client testing_1_15 --dry-run
-./bin/update-client testing_1_15 --reboot
-```
-
-Behavior:
-
-- reads the client payload from `sensos-client/overlay` by default
-- allows override with `SENSOS_CLIENT_REPO_ROOT`
-- excludes client data, keys, logs, and init-state paths from destructive sync

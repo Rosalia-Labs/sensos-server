@@ -139,6 +139,13 @@ print("Client setup example:")
 print(
     f"  config-network --config-server {config_server} --port {api_port} --network {name}"
 )
+
+if wg_public_ip == "10.0.2.2":
+    print()
+    print("QEMU client VM example:")
+    print(
+        f"  config-network --config-server 10.0.2.2 --port 18765 --network {name}"
+    )
 PY
 }
 
