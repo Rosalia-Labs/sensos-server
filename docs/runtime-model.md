@@ -16,7 +16,8 @@ overlay into `/sensos`.
 For `sensos-server`, most of the runtime already happens inside Docker. The host
 mainly needs:
 
-- Docker and Docker Compose
+- Docker and `docker-compose`
+- `curl` for helper scripts such as `bin/create-network`
 - a configured repo checkout
 - a user who can actually run Docker
 
@@ -28,6 +29,8 @@ Because of that, keeping the repo itself as the runtime tree is a reasonable
 operating model and works well with a normal non-system user such as `sensos`.
 That user does not need `sudo`, but does need permission to talk to Docker,
 typically by being in the `docker` group.
+
+On Debian-family systems, install `docker.io`, `docker-compose`, and `curl`.
 
 ## Expected Layout
 

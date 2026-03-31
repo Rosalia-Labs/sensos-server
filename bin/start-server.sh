@@ -11,6 +11,21 @@ WORK_DIR="$REPO_ROOT/docker"
 cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        printf 'docker compose\n'
+        return
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+        printf 'docker-compose\n'
+        return
+    fi
+    echo "❌ Neither 'docker compose' nor 'docker-compose' is available." >&2
+    exit 1
+}
+
+read -r -a COMPOSE_CMD <<< "$(compose_cmd)"
+
 # Default options
 REBUILD=false
 NO_CACHE=false
@@ -116,7 +131,7 @@ fi
 
 #  Build step (if requested)
 if [ "$REBUILD" = true ]; then
-    BUILD_CMD=(docker compose build)
+    BUILD_CMD=("${COMPOSE_CMD[@]}" build)
     if [ "$NO_CACHE" = true ]; then
         BUILD_CMD+=(--no-cache)
     fi
@@ -126,7 +141,7 @@ if [ "$REBUILD" = true ]; then
 fi
 
 #  Up step
-UP_CMD=(docker compose up)
+UP_CMD=("${COMPOSE_CMD[@]}" up)
 if [ "$DETACH" = true ]; then
     UP_CMD+=(-d)
 fi

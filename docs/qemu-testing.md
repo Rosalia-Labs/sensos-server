@@ -41,25 +41,52 @@ test/qemu/artifacts/iso/debian-trixie-arm64-netinst.iso
 test/qemu/run-debian-trixie-arm64 install
 ```
 
-3. Install guest prerequisites and clone the repo inside the VM:
+3. After Debian finishes installing and reboots inside QEMU, log in as `root`
+   in the VM before quitting QEMU and do the one-time bootstrap work there.
+
+Create the `sensos` user and install the basic tools:
 
 ```bash
 apt-get update
-apt-get install -y git sudo docker.io
-usermod -aG sudo,docker <bootstrap-user>
+apt-get install -y git sudo curl docker.io docker-compose
+adduser sensos
+usermod -aG docker sensos
 ```
 
-4. Log back in as the bootstrap user, clone the repo, configure the server, and install the service:
+That step is important to do before quitting the install boot. It makes the
+user, group membership, and package install part of the persistent base image
+instead of something you would lose on later disposable `run` boots.
+
+If you want the base image to keep a repo checkout too, you can also switch to
+`sensos` before quitting QEMU and clone the repo there:
+
+```bash
+su - sensos
+git clone https://github.com/Rosalia-Labs/sensos-server.git
+```
+
+That is optional, but it makes the base checkout sticky as part of the installed
+image instead of something you recreate later.
+
+4. Log in as `sensos`, clone the repo, configure the server, and start it:
 
 ```bash
 git clone <repo-url>
 cd sensos-server
 ./bin/configure-server.sh
+./bin/start-server.sh
+```
+
+If you also want reboot persistence inside the guest, have a privileged user
+install the optional systemd unit:
+
+```bash
 ./install
 sudo systemctl start sensos-server
 ```
 
-5. Use disposable run boots when you want a non-sticky test session:
+5. Once the base image is set up the way you want, shut down the guest cleanly,
+   exit QEMU, and use disposable run boots when you want a non-sticky test session:
 
 ```bash
 test/qemu/run-debian-trixie-arm64 run

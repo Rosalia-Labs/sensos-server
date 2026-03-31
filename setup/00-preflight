@@ -19,9 +19,16 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+require_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        return
+    fi
+    command -v docker-compose >/dev/null 2>&1 || die "neither docker compose plugin nor docker-compose is available"
+}
+
 main() {
     require_command docker
-    docker compose version >/dev/null 2>&1 || die "docker compose plugin is required"
+    require_compose
     docker info >/dev/null 2>&1 || die "docker is installed but not usable by the current user; join the docker group or use a host where this user can run docker"
     [[ -d "${DOCKER_DIR}" ]] || die "missing docker directory: ${DOCKER_DIR}"
     [[ -f "${ENV_FILE}" ]] || die "missing ${ENV_FILE}; run ./bin/configure-server.sh first"

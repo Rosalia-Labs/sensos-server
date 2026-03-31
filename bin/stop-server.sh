@@ -8,6 +8,21 @@ WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker/" && pwd)"
 cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        printf 'docker compose\n'
+        return
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+        printf 'docker-compose\n'
+        return
+    fi
+    echo "❌ Neither 'docker compose' nor 'docker-compose' is available." >&2
+    exit 1
+}
+
+read -r -a COMPOSE_CMD <<< "$(compose_cmd)"
+
 # Default options
 REMOVE_VOLUMES=false
 BACKUP=false
@@ -75,9 +90,9 @@ fi
 # Stop Docker Compose services
 echo "🛑 Stopping Docker Compose services..."
 if [ "$REMOVE_VOLUMES" = true ]; then
-    docker compose down -v
+    "${COMPOSE_CMD[@]}" down -v
 else
-    docker compose down
+    "${COMPOSE_CMD[@]}" down
 fi
 
 echo "✅ Done."

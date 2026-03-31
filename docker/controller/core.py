@@ -455,7 +455,7 @@ def create_network_entry(
     return {
         "id": network_id,
         "name": name,
-        "ip_range": ip_range,
+        "ip_range": str(ip_range),
         "wg_public_ip": wg_public_ip,
         "wg_port": wg_port,
         "wg_public_key": public_key,

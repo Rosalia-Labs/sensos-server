@@ -43,6 +43,19 @@ config-network --config-server <server-host-or-ip> --port 8765 --network <networ
 `--config-server` is only the address the client can reach during setup. It can
 be a LAN IP, hostname, forwarded port target, or QEMU host address.
 
+Operational note:
+
+- if a client does not already have a private way to reach the API port, you may
+  choose to expose that port only during setup
+- the API is not intended to be a generally public management surface outside of
+  WireGuard
+- if security is a concern, temporary port forwarding can be a better setup
+  path than leaving the API broadly exposed
+
+By contrast, the WireGuard endpoint IP and UDP port are not server-global
+settings in this repo. They are chosen per network when you run
+`bin/create-network`.
+
 ## API Password
 
 The server requires HTTP Basic auth using the configured API password:
@@ -115,7 +128,7 @@ This repo now expects networks to be created explicitly after the server is
 already running, for example:
 
 ```sh
-./bin/create-network testing
+./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
 ./bin/create-network biosense --wg-public-ip server.example.org --wg-port 51821
 ```
 

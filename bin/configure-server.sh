@@ -12,8 +12,6 @@ echo "Working directory: $(pwd)"
 # Define default values
 DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8765
-DEFAULT_WG_PORT=51820
-DEFAULT_WG_SERVER_IP="127.0.0.1"
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 DEFAULT_EXPOSE_CONTAINERS="false"
@@ -26,8 +24,6 @@ Usage: $0 [options]
 Options:
   --db-port PORT           Set database port (default: $DEFAULT_DB_PORT)
   --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
-  --wg-server-ip IP        Set WireGuard IP (default: $DEFAULT_WG_SERVER_IP)
-  --wg-port PORT           Set WireGuard port (default: $DEFAULT_WG_PORT)
   --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
   --api-password PWD       Set API password (default: $DEFAULT_API_PASSWORD)
   --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
@@ -45,14 +41,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     --api-port)
         API_PORT="$2"
-        shift 2
-        ;;
-    --wg-port)
-        WG_PORT="$2"
-        shift 2
-        ;;
-    --wg-server-ip)
-        WG_SERVER_IP="$2"
         shift 2
         ;;
     --postgres-password)
@@ -80,8 +68,6 @@ done
 # Set defaults if variables not provided
 DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
 API_PORT=${API_PORT:-$DEFAULT_API_PORT}
-WG_PORT=${WG_PORT:-$DEFAULT_WG_PORT}
-WG_SERVER_IP=${WG_SERVER_IP:-$DEFAULT_WG_SERVER_IP}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
 API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
 EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
@@ -97,8 +83,6 @@ fi
 cat >.env <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
-WG_PORT=$WG_PORT
-WG_SERVER_IP=$WG_SERVER_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 API_PASSWORD=$API_PASSWORD
 EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS

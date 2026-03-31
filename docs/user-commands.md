@@ -22,6 +22,7 @@ Notes:
 - the systemd service is optional and exists for reboot persistence and uptime
 - this repo is designed to run directly from the checkout owned by the service user
 - the current user must be able to run Docker, usually by being in the `docker` group
+- on Debian-family systems, install `docker.io`, `docker-compose`, and `curl`
 
 ## Top-Level Repo Commands
 
@@ -80,8 +81,6 @@ Important flags from the source:
 
 - `--db-port`
 - `--api-port`
-- `--wg-server-ip`
-- `--wg-port`
 - `--postgres-password`
 - `--api-password`
 - `--expose-containers`
@@ -90,7 +89,7 @@ Typical use:
 
 ```sh
 ./bin/configure-server.sh
-./bin/configure-server.sh --api-port 8765 --wg-server-ip server.example.org --wg-port 51820
+./bin/configure-server.sh --api-port 8765 --api-password '<password>'
 ```
 
 Behavior:
@@ -107,7 +106,7 @@ Creates or reconciles a named client network through the running server API.
 Typical use:
 
 ```sh
-./bin/create-network testing
+./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
 ./bin/create-network biosense --wg-public-ip server.example.org --wg-port 51821
 ./bin/create-network testing --config-server 127.0.0.1 --port 8765
 ```
@@ -115,7 +114,8 @@ Typical use:
 Behavior:
 
 - requires the server API to already be running
-- defaults `--wg-public-ip`, `--wg-port`, and the API password from `docker/.env`
+- requires explicit `--wg-public-ip` and `--wg-port` because those are properties of the network
+- defaults the API password from `docker/.env`
 - creates no network automatically at server startup
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
 
