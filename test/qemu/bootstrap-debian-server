@@ -1,0 +1,128 @@
+#!/bin/bash
+
+set -euo pipefail
+
+TARGET_USER="${SENSOS_QEMU_USER:-sensos}"
+REPO_URL="${SENSOS_QEMU_REPO_URL:-https://github.com/Rosalia-Labs/sensos-server.git}"
+REPO_DIR_NAME="${SENSOS_QEMU_REPO_DIR:-sensos-server}"
+APT_PACKAGES=(
+    ca-certificates
+    curl
+    docker.io
+    docker-compose
+    git
+    sudo
+)
+
+log() {
+    printf '[test/qemu/bootstrap-debian-server] %s\n' "$*"
+}
+
+die() {
+    printf '[test/qemu/bootstrap-debian-server] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+require_root() {
+    [[ "${EUID}" -eq 0 ]] || die "run this script as root inside the Debian guest"
+}
+
+ensure_group() {
+    local name="$1"
+
+    if ! getent group "${name}" >/dev/null; then
+        log "creating group ${name}"
+        groupadd "${name}"
+    fi
+}
+
+ensure_user() {
+    if id -u "${TARGET_USER}" >/dev/null 2>&1; then
+        log "user ${TARGET_USER} already exists"
+        return
+    fi
+
+    log "creating user ${TARGET_USER}"
+    adduser --disabled-password --gecos "" "${TARGET_USER}"
+}
+
+ensure_group_membership() {
+    local group_name="$1"
+
+    if id -nG "${TARGET_USER}" | tr ' ' '\n' | grep -Fxq "${group_name}"; then
+        log "user ${TARGET_USER} is already in ${group_name}"
+        return
+    fi
+
+    log "adding user ${TARGET_USER} to ${group_name}"
+    usermod -aG "${group_name}" "${TARGET_USER}"
+}
+
+install_packages() {
+    export DEBIAN_FRONTEND=noninteractive
+
+    log "updating apt package indexes"
+    apt-get update
+    log "installing packages: ${APT_PACKAGES[*]}"
+    apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
+}
+
+clone_repo() {
+    local target_home repo_path
+
+    target_home="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+    [[ -n "${target_home}" ]] || die "unable to determine home directory for ${TARGET_USER}"
+    repo_path="${target_home}/${REPO_DIR_NAME}"
+
+    if [[ -d "${repo_path}/.git" ]]; then
+        log "repository already exists at ${repo_path}; refreshing remote metadata"
+        sudo -u "${TARGET_USER}" git -C "${repo_path}" remote set-url origin "${REPO_URL}"
+        sudo -u "${TARGET_USER}" git -C "${repo_path}" fetch --all --tags
+        return
+    fi
+
+    if [[ -e "${repo_path}" ]]; then
+        die "path exists but is not a git checkout: ${repo_path}"
+    fi
+
+    log "cloning ${REPO_URL} into ${repo_path}"
+    sudo -u "${TARGET_USER}" git clone "${REPO_URL}" "${repo_path}"
+}
+
+print_next_steps() {
+    local target_home repo_path
+
+    target_home="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+    repo_path="${target_home}/${REPO_DIR_NAME}"
+
+    cat <<EOF
+
+Bootstrap complete.
+
+Next steps inside the guest:
+  su - ${TARGET_USER}
+  cd ${repo_path}
+  ./bin/configure-server.sh
+  ./bin/start-server.sh
+
+If you want the optional systemd unit:
+  cd ${repo_path}
+  ./install
+  sudo systemctl start sensos-server
+
+EOF
+}
+
+main() {
+    require_root
+    install_packages
+    ensure_group sudo
+    ensure_group docker
+    ensure_user
+    ensure_group_membership sudo
+    ensure_group_membership docker
+    clone_repo
+    print_next_steps
+}
+
+main "$@"

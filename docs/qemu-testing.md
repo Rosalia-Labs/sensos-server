@@ -42,36 +42,32 @@ test/qemu/run-debian-trixie-arm64 install
 ```
 
 3. After Debian finishes installing and reboots inside QEMU, log in as `root`
-   in the VM before quitting QEMU and do the one-time bootstrap work there.
-
-Create the `sensos` user and install the basic tools:
+   in the VM before quitting QEMU and run the guest bootstrap script there.
 
 ```bash
 apt-get update
-apt-get install -y git sudo curl docker.io docker-compose
-adduser sensos
-usermod -aG docker sensos
+apt-get install -y curl
+curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/test/qemu/bootstrap-debian-server | bash
 ```
 
-That step is important to do before quitting the install boot. It makes the
-user, group membership, and package install part of the persistent base image
-instead of something you would lose on later disposable `run` boots.
+That script installs the Debian packages needed to host the server, ensures the
+`sensos` user exists with `sudo` and `docker` group membership, and clones the
+repo into that user's home directory. It is intended to be run as `root`.
 
-If you want the base image to keep a repo checkout too, you can also switch to
-`sensos` before quitting QEMU and clone the repo there:
+If you already have the repo in the guest by some other path, you can run the
+same script locally instead:
 
 ```bash
-su - sensos
-git clone https://github.com/Rosalia-Labs/sensos-server.git
+./test/qemu/bootstrap-debian-server
 ```
 
-That is optional, but it makes the base checkout sticky as part of the installed
-image instead of something you recreate later.
+Do that before quitting the install boot so the user setup, package install, and
+repo checkout become part of the persistent base image instead of something you
+recreate on later disposable `run` boots.
 
-4. Log in as `sensos`, clone the repo, configure the server, and start it:
+4. Log in as `sensos`, configure the server, and start it:
 
 ```bash
-git clone <repo-url>
 cd sensos-server
 ./bin/configure-server.sh
 ./bin/start-server.sh
@@ -106,12 +102,14 @@ ssh -p 2223 <user>@127.0.0.1
 It also forwards the server API back to the host:
 
 - API: `127.0.0.1:18765 -> guest:8765`
+- WireGuard UDP: `127.0.0.1:51820/udp -> guest:51820/udp`
 
 This makes two-VM testing practical:
 
 1. Run the server VM with this helper.
 2. Run the client VM with the client helper.
-3. In the client VM, point `config-network` at `10.0.2.2 --port 18765`.
+3. In the server VM, create the test network with `wg_public_ip=10.0.2.2` and `wg_port=51820` so the client sees the macOS host as the WireGuard endpoint.
+4. In the client VM, point `config-network` at `10.0.2.2 --port 18765`.
 
 With QEMU user networking, each guest can usually reach macOS-hosted services at:
 
@@ -121,6 +119,9 @@ With QEMU user networking, each guest can usually reach macOS-hosted services at
 
 From the client VM, `10.0.2.2:18765` reaches the server API forwarded from the
 server VM through the macOS host.
+
+For the WireGuard tunnel, the same host IP works: client traffic to
+`10.0.2.2:51820/udp` is forwarded by macOS into the server VM's WireGuard port.
 
 ## Installer display
 
