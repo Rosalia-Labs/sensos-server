@@ -86,6 +86,7 @@ The default operating model is manual unprivileged use from the repo checkout:
 
 1. `./bin/configure-server.sh`
 2. `./bin/start-server.sh`
+3. `./bin/create-network <network-name>`
 
 That is the baseline path to document and support.
 

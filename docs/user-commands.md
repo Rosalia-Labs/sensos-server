@@ -4,14 +4,17 @@ This page documents the main user-facing commands in this repo: the normal
 bring-up sequence, what each command does, and the commands you are likely to
 run during setup, upgrade, or debugging.
 
+For the client/server network contract, see [`docs/networking.md`](networking.md).
+
 ## Typical Setup Sequence
 
 Typical order on a newly prepared server host:
 
 1. `./bin/configure-server.sh`
 2. `./bin/start-server.sh`
-3. optional: `./install`
-4. optional: `sudo systemctl start sensos-server`
+3. `./bin/create-network <network-name>`
+4. optional: `./install`
+5. optional: `sudo systemctl start sensos-server`
 
 Notes:
 
@@ -77,7 +80,6 @@ Important flags from the source:
 
 - `--db-port`
 - `--api-port`
-- `--wg-network`
 - `--wg-server-ip`
 - `--wg-port`
 - `--postgres-password`
@@ -88,7 +90,7 @@ Typical use:
 
 ```sh
 ./bin/configure-server.sh
-./bin/configure-server.sh --api-port 8765 --wg-network testing
+./bin/configure-server.sh --api-port 8765 --wg-server-ip server.example.org --wg-port 51820
 ```
 
 Behavior:
@@ -97,6 +99,25 @@ Behavior:
 - backs up an existing file to `docker/.env.bak`
 - does not start containers by itself
 - does not require `sudo`
+
+### `bin/create-network`
+
+Creates or reconciles a named client network through the running server API.
+
+Typical use:
+
+```sh
+./bin/create-network testing
+./bin/create-network biosense --wg-public-ip server.example.org --wg-port 51821
+./bin/create-network testing --config-server 127.0.0.1 --port 8765
+```
+
+Behavior:
+
+- requires the server API to already be running
+- defaults `--wg-public-ip`, `--wg-port`, and the API password from `docker/.env`
+- creates no network automatically at server startup
+- prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
 
 ### `bin/start-server.sh`
 

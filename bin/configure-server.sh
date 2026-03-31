@@ -16,7 +16,6 @@ DEFAULT_WG_PORT=51820
 DEFAULT_WG_SERVER_IP="127.0.0.1"
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
-DEFAULT_INITIAL_NETWORK="sensos"
 DEFAULT_EXPOSE_CONTAINERS="false"
 
 # Print help message
@@ -27,7 +26,6 @@ Usage: $0 [options]
 Options:
   --db-port PORT           Set database port (default: $DEFAULT_DB_PORT)
   --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
-  --wg-network NAME        Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)
   --wg-server-ip IP        Set WireGuard IP (default: $DEFAULT_WG_SERVER_IP)
   --wg-port PORT           Set WireGuard port (default: $DEFAULT_WG_PORT)
   --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
@@ -47,10 +45,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     --api-port)
         API_PORT="$2"
-        shift 2
-        ;;
-    --wg-network)
-        INITIAL_NETWORK="$2"
         shift 2
         ;;
     --wg-port)
@@ -86,7 +80,6 @@ done
 # Set defaults if variables not provided
 DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
 API_PORT=${API_PORT:-$DEFAULT_API_PORT}
-INITIAL_NETWORK=${INITIAL_NETWORK:-$DEFAULT_INITIAL_NETWORK}
 WG_PORT=${WG_PORT:-$DEFAULT_WG_PORT}
 WG_SERVER_IP=${WG_SERVER_IP:-$DEFAULT_WG_SERVER_IP}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
@@ -104,7 +97,6 @@ fi
 cat >.env <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
-INITIAL_NETWORK=$INITIAL_NETWORK
 WG_PORT=$WG_PORT
 WG_SERVER_IP=$WG_SERVER_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD

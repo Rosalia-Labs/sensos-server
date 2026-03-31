@@ -4,6 +4,7 @@ Server side configuration scripts
 Docs:
 
 - [Backup automation](docs/backup-automation.md)
+- [Networking](docs/networking.md)
 - [QEMU testing](docs/qemu-testing.md)
 - [Runtime model](docs/runtime-model.md)
 - [User commands](docs/user-commands.md)

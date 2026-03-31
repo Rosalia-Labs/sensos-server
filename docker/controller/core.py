@@ -107,7 +107,6 @@ async def lifespan(app: FastAPI):
                 create_client_status_table(cur)
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
-                create_initial_network(cur)
                 verify_wireguard_keys_against_database(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
@@ -933,56 +932,6 @@ def create_peer_location_table(cur):
         );
         """
     )
-
-
-def create_initial_network(cur):
-    """
-    If INITIAL_NETWORK is set, ensures the network exists.
-    Does nothing if INITIAL_NETWORK is unset.
-
-    Parameters:
-        cur: The database cursor.
-
-    Returns:
-        int or None: The network ID if created or found, else None.
-    """
-    network_name = os.getenv("INITIAL_NETWORK")
-    if not network_name:
-        logger.info("🔵 INITIAL_NETWORK is not set. Skipping initial network creation.")
-        return None
-
-    cur.execute(
-        "SELECT id FROM sensos.networks WHERE name = %s;",
-        (network_name,),
-    )
-    existing_network = cur.fetchone()
-
-    if existing_network:
-        network_id = existing_network[0]
-        logger.info(f"✅ Network '{network_name}' already exists (ID: {network_id}).")
-        generate_api_proxy_wireguard_configs(cur)
-        generate_controller_wireguard_configs(cur)
-        generate_wireguard_container_configs(cur)
-        return network_id
-
-    logger.info(f"📡 Network '{network_name}' not found. Creating...")
-
-    wg_public_ip = os.getenv("WG_SERVER_IP")
-    wg_port = os.getenv("WG_PORT")
-
-    if not wg_public_ip or not wg_port:
-        raise RuntimeError(
-            f"❌ Cannot create network '{network_name}'. "
-            "WG_SERVER_IP and WG_PORT must be set."
-        )
-
-    wg_port = int(wg_port)
-    if not (1 <= wg_port <= 65535):
-        raise RuntimeError(f"❌ Invalid WG_PORT: {wg_port}. Must be between 1–65535.")
-
-    result = create_network_entry(cur, network_name, wg_public_ip, wg_port)
-    logger.info(f"✅ Created network '{network_name}' (ID: {result['id']}).")
-    return result["id"]
 
 
 def verify_wireguard_keys_against_database(cur):
