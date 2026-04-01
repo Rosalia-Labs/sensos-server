@@ -1,0 +1,81 @@
+# Server User Setup
+
+This repo is intended to run from a normal user-owned checkout instead of from
+`root`.
+
+Example below uses a dedicated service account named `sensos` on a Debian-family
+server. Adjust the username and repo URL if needed.
+
+## Create the User
+
+Create the account with no password set:
+
+```sh
+sudo adduser --disabled-password --gecos "" sensos
+sudo passwd -l sensos
+```
+
+That leaves the account unavailable for password login. Use SSH keys instead.
+
+## Install SSH Keys
+
+Create the SSH directory and install an authorized key for the new user:
+
+```sh
+sudo install -d -m 700 -o sensos -g sensos /home/sensos/.ssh
+sudo install -m 600 -o sensos -g sensos /tmp/sensos.authorized_keys /home/sensos/.ssh/authorized_keys
+```
+
+Replace `/tmp/sensos.authorized_keys` with a file containing the public key or
+keys that should be allowed to log in as `sensos`.
+
+## Add Docker Access
+
+Ensure the `docker` group exists and add the user to it:
+
+```sh
+sudo groupadd -f docker
+sudo usermod -aG docker sensos
+```
+
+The user must log out and back in before the new group membership applies.
+
+Note: membership in the `docker` group is effectively privileged on the host.
+Use a dedicated service user and only trusted SSH keys.
+
+## Clone the Repo as That User
+
+After the account can log in with SSH keys, clone the repo as that user:
+
+```sh
+sudo -u sensos -H git clone https://github.com/Rosalia-Labs/sensos-server.git /home/sensos/sensos-server
+```
+
+Or, after switching to the account:
+
+```sh
+su - sensos
+git clone https://github.com/Rosalia-Labs/sensos-server.git
+```
+
+## Next Steps
+
+Run the normal setup flow from the checkout owned by that user:
+
+```sh
+cd /home/sensos/sensos-server
+./bin/configure-server.sh
+./bin/start-server.sh
+```
+
+If you also want the optional systemd service, a separate admin-capable user can
+run:
+
+```sh
+cd /home/sensos/sensos-server
+./bin/install-service
+sudo systemctl start sensos-server
+```
+
+That optional service install requires a privileged path via `sudo`. The normal
+repo checkout and runtime should still stay owned by the service user.

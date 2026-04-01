@@ -7,5 +7,6 @@ Docs:
 - [Networking](docs/networking.md)
 - [QEMU testing](docs/qemu-testing.md)
 - [Runtime model](docs/runtime-model.md)
+- [Server user setup](docs/server-user-setup.md)
 - [User commands](docs/user-commands.md)
 - [Versioning](docs/versioning.md)
