@@ -3,19 +3,26 @@
 This repo is intended to run from a normal user-owned checkout instead of from
 `root`.
 
+Typical pattern:
+
+- SSH to the host as your normal admin account
+- use `sudo` from that admin account to create and manage the service user
+- use the service user only for the repo checkout and normal runtime commands
+
 Example below uses a dedicated service account named `sensos` on a Debian-family
 server. Adjust the username and repo URL if needed.
 
 ## Create the User
 
-Create the account with no password set:
+From your normal admin login, create the account with no password set:
 
 ```sh
 sudo adduser --disabled-password --gecos "" sensos
 sudo passwd -l sensos
 ```
 
-That leaves the account unavailable for password login. Use SSH keys instead.
+That leaves the account unavailable for password login. Use SSH keys instead if
+you want direct SSH access to the service account at all.
 
 ## Install SSH Keys
 
@@ -45,13 +52,14 @@ Use a dedicated service user and only trusted SSH keys.
 
 ## Clone the Repo as That User
 
-After the account can log in with SSH keys, clone the repo as that user:
+From your admin login, clone the repo as that user without switching your main
+SSH session:
 
 ```sh
 sudo -u sensos -H git clone https://github.com/Rosalia-Labs/sensos-server.git /home/sensos/sensos-server
 ```
 
-Or, after switching to the account:
+Or switch into the account first:
 
 ```sh
 su - sensos
