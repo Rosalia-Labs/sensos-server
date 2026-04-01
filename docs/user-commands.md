@@ -36,14 +36,16 @@ Typical use:
 
 ```sh
 ./bin/install-service
+sudo /home/sensos/sensos-server/bin/install-service
 ```
 
 Behavior:
 
-- must be run as the repo owner, not `root`
-- requires a privileged user path via `sudo`
+- can be run by the repo owner if that user has `sudo`
+- can also be run directly by an admin account with `sudo /path/to/repo/bin/install-service`
 - confirms the target repo path
-- runs the setup pipeline with `sudo` for the privileged steps
+- infers the service user from the repo checkout owner unless `SENSOS_SERVICE_USER` is set
+- runs the setup pipeline with a privileged path
 - installs and enables the `sensos-server` systemd unit
 - leaves the runtime code in the repo instead of deploying a separate overlay
 - is not required for normal manual operation

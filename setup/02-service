@@ -18,12 +18,21 @@ die() {
 }
 
 main() {
+    local rendered
+
     [[ -f "${SERVICE_TEMPLATE}" ]] || die "missing service template: ${SERVICE_TEMPLATE}"
 
-    sed \
+    rendered="$(
+        sed \
         -e "s|{{REPO_ROOT}}|${REPO_ROOT}|g" \
         -e "s|{{SERVICE_USER}}|${SERVICE_USER}|g" \
-        "${SERVICE_TEMPLATE}" > "${SERVICE_TARGET}"
+        "${SERVICE_TEMPLATE}"
+    )"
+
+    [[ "${rendered}" != *'{{REPO_ROOT}}'* ]] || die "failed to render REPO_ROOT into systemd unit"
+    [[ "${rendered}" != *'{{SERVICE_USER}}'* ]] || die "failed to render SERVICE_USER into systemd unit"
+
+    printf '%s\n' "${rendered}" > "${SERVICE_TARGET}"
 
     chmod 644 "${SERVICE_TARGET}"
     systemctl daemon-reload

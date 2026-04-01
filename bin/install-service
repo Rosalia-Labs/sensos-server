@@ -29,6 +29,15 @@ Options:
 EOF
 }
 
+repo_owner() {
+    if command -v stat >/dev/null 2>&1; then
+        stat -c '%U' "${REPO_ROOT}" 2>/dev/null && return 0
+        stat -f '%Su' "${REPO_ROOT}" 2>/dev/null && return 0
+    fi
+
+    die "unable to determine repo owner for ${REPO_ROOT}"
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -44,10 +53,6 @@ parse_args() {
     done
 }
 
-ensure_not_root() {
-    [[ "${EUID}" -ne 0 ]] || die "run ${SCRIPT_PATH} as the repo owner; it will use sudo for privileged steps"
-}
-
 confirm_install_target() {
     local reply
 
@@ -60,20 +65,32 @@ sudo_run() {
     sudo env \
         "SENSOS_REPO_ROOT=${REPO_ROOT}" \
         "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
-        "SENSOS_SERVICE_USER=${SENSOS_SERVICE_USER:-${USER}}" \
+        "SENSOS_SERVICE_USER=${SENSOS_SERVICE_USER:-$(repo_owner)}" \
         "$@"
 }
 
 main() {
+    local service_user
+
     parse_args "$@"
-    ensure_not_root
     [[ -x "${SETUP_SCRIPT}" ]] || die "missing or non-executable setup script: ${SETUP_SCRIPT}"
     [[ -x "${PREFLIGHT_SCRIPT}" ]] || die "missing or non-executable preflight script: ${PREFLIGHT_SCRIPT}"
+    service_user="${SENSOS_SERVICE_USER:-$(repo_owner)}"
     env "SENSOS_REPO_ROOT=${REPO_ROOT}" "${PREFLIGHT_SCRIPT}" >/dev/null
 
     confirm_install_target
     log "installing optional systemd service for ${REPO_ROOT}"
-    sudo_run "${SETUP_SCRIPT}"
+
+    if [[ "${EUID}" -eq 0 ]]; then
+        env \
+            "SENSOS_REPO_ROOT=${REPO_ROOT}" \
+            "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
+            "SENSOS_SERVICE_USER=${service_user}" \
+            "${SETUP_SCRIPT}"
+    else
+        sudo_run "${SETUP_SCRIPT}"
+    fi
+
     log "service install complete"
 }
 

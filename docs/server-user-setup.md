@@ -76,14 +76,14 @@ cd /home/sensos/sensos-server
 ./bin/start-server.sh
 ```
 
-If you also want the optional systemd service, a separate admin-capable user can
-run:
+If you also want the optional systemd service, run it from your normal admin
+SSH login with `sudo` against the service user's checkout:
 
 ```sh
-cd /home/sensos/sensos-server
-./bin/install-service
+sudo /home/sensos/sensos-server/bin/install-service
 sudo systemctl start sensos-server
 ```
 
-That optional service install requires a privileged path via `sudo`. The normal
-repo checkout and runtime should still stay owned by the service user.
+`bin/install-service` will install the unit against that checkout and use the
+checkout owner as the default `User=` for the service. The normal repo checkout
+and runtime should still stay owned by the service user.
