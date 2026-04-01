@@ -32,6 +32,7 @@ from core import (
     register_wireguard_key_in_db,
     update_wireguard_configs,
     create_network_entry,
+    reconcile_runtime_configs,
     lookup_client_id,
 )
 
@@ -142,8 +143,15 @@ def create_network(
 
     try:
         with get_db() as conn:
-            result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
+            result, created = create_network_entry(
+                conn.cursor(), name, wg_public_ip, wg_port
+            )
             logger.info(f"create_network_entry returned: {result}")
+
+        if created:
+            # This may restart the API proxy container. Run it after the response
+            # is sent so the create-network request does not drop mid-flight.
+            background_tasks.add_task(reconcile_runtime_configs)
 
         return result
 

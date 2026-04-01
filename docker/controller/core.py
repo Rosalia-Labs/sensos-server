@@ -372,10 +372,11 @@ def create_network_entry(
     name: str,
     wg_public_ip: str,
     wg_port: int,
-) -> dict:
+) -> tuple[dict, bool]:
     """
     Creates a new network entry in the DB, plus on-disk WireGuard config.
     If a network with this name already exists, returns its details immediately.
+    The boolean return value indicates whether a new network was created.
     """
     cur.execute(
         """
@@ -408,14 +409,17 @@ def create_network_entry(
                 f"   Refusing to continue. Restore correct private key or fix DB."
             )
 
-        return {
-            "id": existing[0],
-            "name": name,
-            "ip_range": existing[1],
-            "wg_public_ip": existing[2],
-            "wg_port": existing[3],
-            "wg_public_key": existing[4],
-        }
+        return (
+            {
+                "id": existing[0],
+                "name": name,
+                "ip_range": existing[1],
+                "wg_public_ip": existing[2],
+                "wg_port": existing[3],
+                "wg_public_key": existing[4],
+            },
+            False,
+        )
 
     ip_range = generate_default_ip_range(name)
 
@@ -448,18 +452,25 @@ def create_network_entry(
     )
     network_id = cur.fetchone()[0]
 
-    generate_api_proxy_wireguard_configs(cur)
-    generate_controller_wireguard_configs(cur)
-    generate_wireguard_container_configs(cur)
+    return (
+        {
+            "id": network_id,
+            "name": name,
+            "ip_range": str(ip_range),
+            "wg_public_ip": wg_public_ip,
+            "wg_port": wg_port,
+            "wg_public_key": public_key,
+        },
+        True,
+    )
 
-    return {
-        "id": network_id,
-        "name": name,
-        "ip_range": str(ip_range),
-        "wg_public_ip": wg_public_ip,
-        "wg_port": wg_port,
-        "wg_public_key": public_key,
-    }
+
+def reconcile_runtime_configs() -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            generate_api_proxy_wireguard_configs(cur)
+            generate_controller_wireguard_configs(cur)
+            generate_wireguard_container_configs(cur)
 
 
 def update_wireguard_configs():
