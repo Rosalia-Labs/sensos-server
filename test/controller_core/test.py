@@ -426,55 +426,46 @@ def test_server_ip_not_reserved_unless_used(mock_get_assigned):
     assert ip == BASE_NET.network_address + 3
 
 
-@mock.patch("core.wg.genkey", return_value="PRIVATE_KEY")
-@mock.patch("core.wg.pubkey", return_value="PUBLIC_KEY")
-@mock.patch("core.WireGuardInterface")
-def test_create_network_entry_new(mock_iface_cls, mock_pubkey, mock_genkey):
+def test_create_network_entry_new():
     mock_cur = mock.MagicMock()
     mock_cur.fetchone.side_effect = [
         None,
         (42,),
     ]  # First call: no network exists; second: INSERT returns ID 42
 
-    mock_iface = mock.MagicMock()
-    mock_iface_cls.return_value = mock_iface
-
-    result = core.create_network_entry(
+    result, created = core.create_network_entry(
         cur=mock_cur,
         name="testnet",
         wg_public_ip="10.0.0.1",
         wg_port=51820,
     )
 
-    # Assertions
+    assert created is True
     assert result["id"] == 42
-    assert result["wg_public_key"] == "PUBLIC_KEY"
-    assert mock_iface.set_interface.called
-    assert mock_iface.save_config.called
+    assert result["wg_public_key"] is None
     mock_cur.execute.assert_any_call(
         mock.ANY,
-        ("testnet", mock.ANY, "10.0.0.1", 51820, "PUBLIC_KEY"),
+        ("testnet", mock.ANY, "10.0.0.1", 51820, None),
     )
 
 
 @mock.patch("core.get_db")
-@mock.patch("core.wg.pubkey")
-@mock.patch("core.WireGuardInterface")
-@mock.patch("core.WG_CONTAINER_CONFIG_DIR")
+@mock.patch("core.WG_STATE_DIR")
 @mock.patch("core.API_PROXY_CONFIG_DIR")
 @mock.patch("core.CONTROLLER_CONFIG_DIR")
 def test_verify_wireguard_keys_against_database(
     mock_controller_dir,
     mock_api_dir,
-    mock_container_dir,
-    mock_iface_cls,
-    mock_pubkey,
+    mock_public_dir,
     mock_get_db,
 ):
     # Simulated config files
     container_file = mock.MagicMock()
     container_file.stem = "net1"
-    container_file.parent = mock_container_dir
+    container_file.parent = mock_public_dir
+    container_file.read_text.return_value = (
+        '{"network_name":"net1","observed":{"wg_public_key":"DERIVED_PUBLIC_KEY"}}'
+    )
 
     api_file = mock.MagicMock()
     api_file.stem = "net2"
@@ -484,17 +475,9 @@ def test_verify_wireguard_keys_against_database(
     controller_file.stem = "net3"
     controller_file.parent = mock_controller_dir
 
-    mock_container_dir.glob.return_value = [container_file]
+    mock_public_dir.glob.return_value = [container_file]
     mock_api_dir.glob.return_value = [api_file]
     mock_controller_dir.glob.return_value = [controller_file]
-
-    # Mock WireGuardInterface
-    mock_iface = mock.MagicMock()
-    mock_iface.get_private_key.return_value = "PRIVATE_KEY"
-    mock_iface.interface_entry.Address = "10.42.5.1/24"
-    mock_iface_cls.return_value = mock_iface
-
-    mock_pubkey.return_value = "DERIVED_PUBLIC_KEY"
 
     # Mock database cursor
     mock_cursor = mock.MagicMock()
@@ -516,35 +499,24 @@ def test_verify_wireguard_keys_against_database(
     core.verify_wireguard_keys_against_database(mock_cursor)
 
     # Assertions
-    assert mock_pubkey.call_count == 3
-    mock_pubkey.assert_has_calls([mock.call("PRIVATE_KEY")] * 3)
-
     sql_calls = [call_args[0][0] for call_args in mock_cursor.execute.call_args_list]
     assert any("FROM sensos.networks WHERE name = %s" in sql for sql in sql_calls)
     assert any("FROM sensos.wireguard_peers" in sql for sql in sql_calls)
 
 
 @mock.patch("core.get_db")
-@mock.patch("core.wg.pubkey")
-@mock.patch("core.WireGuardInterface")
-@mock.patch("core.WG_CONTAINER_CONFIG_DIR")
+@mock.patch("core.WG_STATE_DIR")
 def test_verify_wireguard_keys_mismatch(
-    mock_container_dir, mock_iface_cls, mock_pubkey, mock_get_db
+    mock_public_dir, mock_get_db
 ):
     # Simulate a single container config file
     container_file = mock.MagicMock()
     container_file.stem = "net1"
-    container_file.parent = mock_container_dir
-    mock_container_dir.glob.return_value = [container_file]
-
-    # Mock WireGuardInterface
-    mock_iface = mock.MagicMock()
-    mock_iface.get_private_key.return_value = "PRIVATE_KEY"
-    mock_iface.interface_entry.Address = "10.42.5.1/24"
-    mock_iface_cls.return_value = mock_iface
-
-    # Simulate pubkey mismatch
-    mock_pubkey.return_value = "DERIVED_PUBLIC_KEY"
+    container_file.parent = mock_public_dir
+    container_file.read_text.return_value = (
+        '{"network_name":"net1","observed":{"wg_public_key":"DERIVED_PUBLIC_KEY"}}'
+    )
+    mock_public_dir.glob.return_value = [container_file]
     db_pubkey = "EXPECTED_PUBLIC_KEY"
 
     # Mock database cursor to return a *different* public key

@@ -33,6 +33,7 @@ from core import (
     update_wireguard_configs,
     create_network_entry,
     reconcile_runtime_configs,
+    wait_for_network_ready,
     lookup_client_id,
 )
 
@@ -149,6 +150,16 @@ def create_network(
             logger.info(f"create_network_entry returned: {result}")
 
         if created:
+            ready = wait_for_network_ready(name)
+            result = {
+                "id": ready[0],
+                "name": name,
+                "ip_range": ready[1],
+                "wg_public_key": ready[2],
+                "wg_public_ip": ready[3],
+                "wg_port": ready[4],
+            }
+
             # This may restart the API proxy container. Run it after the response
             # is sent so the create-network request does not drop mid-flight.
             background_tasks.add_task(reconcile_runtime_configs)
@@ -236,6 +247,13 @@ def register_peer(
         )
 
     network_id, subnet, public_key, wg_public_ip, wg_port = network_details
+    if not public_key:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": f"Network '{request.network_name}' exists but is not ready yet."
+            },
+        )
 
     # Ensure subnet_offset is within range
     network = ipaddress.ip_network(subnet, strict=False)

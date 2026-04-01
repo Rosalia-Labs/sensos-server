@@ -31,7 +31,7 @@ services:
     cap_add:
       - NET_ADMIN
     volumes:
-      - sensos_wireguard_config:/wireguard_config
+      - sensos_wireguard_shared:/wireguard_config
       - sensos_controller_wg_dir:/etc/wireguard
       - sensos_api_proxy_wg_config:/api_proxy_config
       - /var/run/docker.sock:/var/run/docker.sock
@@ -50,7 +50,8 @@ services:
     environment:
       LOG_CONFS: "true"
     volumes:
-      - sensos_wireguard_config:/wireguard_config
+      - sensos_wireguard_shared:/wireguard_config
+      - sensos_wireguard_state:/var/lib/sensos-wireguard
     ports:
       - "51820:51820/udp"
       - "51821:51821/udp"
@@ -110,8 +111,10 @@ services:
 volumes:
   sensos_database:
     name: sensos_database
-  sensos_wireguard_config:
-    name: sensos_wireguard_config
+  sensos_wireguard_shared:
+    name: sensos_wireguard_shared
+  sensos_wireguard_state:
+    name: sensos_wireguard_state
   sensos_controller_wg_dir:
     name: sensos_controller_wg_dir
   sensos_api_proxy_wg_config:
