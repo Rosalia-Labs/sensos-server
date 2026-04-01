@@ -69,8 +69,8 @@ recreate on later disposable `run` boots.
 
 ```bash
 cd sensos-server
-./bin/configure-server.sh
-./bin/start-server.sh
+./bin/configure-server
+./bin/start-server
 ```
 
 If you also want reboot persistence inside the guest, have a privileged user

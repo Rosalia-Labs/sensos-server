@@ -29,7 +29,7 @@ Create the standard server backups. Optionally export them with rclone and/or
 run a user-supplied post-backup hook.
 
 Options:
-  --export          Export backups after creation using bin/export-backups.sh
+  --export          Export backups after creation using bin/export-backups
   --remote PATH     rclone destination such as 'box:sensos-server-backups'
   --move            Move backup files during export instead of copying
   --copy            Copy backup files during export (default)
@@ -104,14 +104,14 @@ main() {
     before_list="$(collect_new_backups)"
 
     log "running database backup"
-    "${SCRIPT_DIR}/backup-database.sh"
+    "${SCRIPT_DIR}/backup-database"
 
     log "running wireguard backup"
-    "${SCRIPT_DIR}/backup-wireguard.sh"
+    "${SCRIPT_DIR}/backup-wireguard"
 
     if [[ "${EXPORT_AFTER_BACKUP}" == "1" ]]; then
         log "exporting backups"
-        "${SCRIPT_DIR}/export-backups.sh" "${EXPORT_ARGS[@]}"
+        "${SCRIPT_DIR}/export-backups" "${EXPORT_ARGS[@]}"
     fi
 
     after_list="$(collect_new_backups)"

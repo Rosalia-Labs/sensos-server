@@ -30,7 +30,7 @@ The server API is exposed by the Docker host on:
 You set that with:
 
 ```sh
-./bin/configure-server.sh --api-port 8765
+./bin/configure-server --api-port 8765
 ```
 
 During client enrollment, `sensos-client` must be pointed at the same host and
@@ -66,7 +66,7 @@ The server requires HTTP Basic auth using the configured API password:
 You set the server-side password with:
 
 ```sh
-./bin/configure-server.sh --api-password '<password>'
+./bin/configure-server --api-password '<password>'
 ```
 
 During enrollment, the client operator must enter the same password when

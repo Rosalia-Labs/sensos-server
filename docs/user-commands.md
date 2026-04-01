@@ -10,8 +10,8 @@ For the client/server network contract, see [`docs/networking.md`](networking.md
 
 Typical order on a newly prepared server host:
 
-1. `./bin/configure-server.sh`
-2. `./bin/start-server.sh`
+1. `./bin/configure-server`
+2. `./bin/start-server`
 3. `./bin/create-network <network-name>`
 4. optional: `./bin/install-service`
 5. optional: `sudo systemctl start sensos-server`
@@ -76,7 +76,7 @@ Behavior:
 
 ## Core Server Commands
 
-### `bin/configure-server.sh`
+### `bin/configure-server`
 
 Writes the Docker environment file used by the server stack.
 
@@ -91,8 +91,8 @@ Important flags from the source:
 Typical use:
 
 ```sh
-./bin/configure-server.sh
-./bin/configure-server.sh --api-port 8765 --api-password '<password>'
+./bin/configure-server
+./bin/configure-server --api-port 8765 --api-password '<password>'
 ```
 
 Behavior:
@@ -122,17 +122,17 @@ Behavior:
 - creates no network automatically at server startup
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
 
-### `bin/start-server.sh`
+### `bin/start-server`
 
 Starts the Docker Compose stack from the repo-owned `docker/` directory.
 
 Typical use:
 
 ```sh
-./bin/start-server.sh
-./bin/start-server.sh --rebuild-containers
-./bin/start-server.sh --restart
-./bin/start-server.sh --no-detach
+./bin/start-server
+./bin/start-server --rebuild-containers
+./bin/start-server --restart
+./bin/start-server --no-detach
 ```
 
 Behavior:
@@ -143,16 +143,16 @@ Behavior:
 - refuses to start if SensOS containers are already running, unless `--restart` is supplied
 - can rebuild containers before start
 
-### `bin/stop-server.sh`
+### `bin/stop-server`
 
 Stops the Docker Compose stack.
 
 Typical use:
 
 ```sh
-./bin/stop-server.sh
-./bin/stop-server.sh --backup
-./bin/stop-server.sh --remove-volumes
+./bin/stop-server
+./bin/stop-server --backup
+./bin/stop-server --remove-volumes
 ```
 
 Behavior:
@@ -161,27 +161,27 @@ Behavior:
 - `--remove-volumes` tears down named volumes
 - `--no-backup` suppresses the backup step even when removing volumes
 
-### `bin/backup-database.sh`
+### `bin/backup-database`
 
 Creates a gzipped PostgreSQL backup under `backups/`.
 
 Typical use:
 
 ```sh
-./bin/backup-database.sh
+./bin/backup-database
 ```
 
-### `bin/backup-wireguard.sh`
+### `bin/backup-wireguard`
 
 Backs up WireGuard config files from running SensOS containers into `backups/`.
 
 Typical use:
 
 ```sh
-./bin/backup-wireguard.sh
+./bin/backup-wireguard
 ```
 
-### `bin/backup-server.sh`
+### `bin/backup-server`
 
 Runs the standard server backup set and can optionally export those backups
 with `rclone` and/or run a user-supplied post-backup hook.
@@ -189,16 +189,16 @@ with `rclone` and/or run a user-supplied post-backup hook.
 Typical use:
 
 ```sh
-./bin/backup-server.sh
-./bin/backup-server.sh --export --remote box:sensos-server-backups
-./bin/backup-server.sh --export --remote box:sensos-server-backups --move
-./bin/backup-server.sh --post-hook ./local/hooks/post-backup.sh
+./bin/backup-server
+./bin/backup-server --export --remote box:sensos-server-backups
+./bin/backup-server --export --remote box:sensos-server-backups --move
+./bin/backup-server --post-hook ./local/hooks/post-backup.sh
 ```
 
 Behavior:
 
-- runs `bin/backup-database.sh`
-- runs `bin/backup-wireguard.sh`
+- runs `bin/backup-database`
+- runs `bin/backup-wireguard`
 - keeps local backups by default
 - can export to a configured `rclone` remote after backup creation
 - can run a user-owned post-backup hook
@@ -211,15 +211,15 @@ Hook contract:
 - argv[2+] are the newly created backup files from this run
 - local hook scripts belong in ignored repo-local state such as `local/hooks/`
 
-### `bin/export-backups.sh`
+### `bin/export-backups`
 
 Exports existing backup artifacts from `backups/` using `rclone`.
 
 Typical use:
 
 ```sh
-./bin/export-backups.sh --remote box:sensos-server-backups
-./bin/export-backups.sh --remote box:sensos-server-backups --move
+./bin/export-backups --remote box:sensos-server-backups
+./bin/export-backups --remote box:sensos-server-backups --move
 ```
 
 Behavior:

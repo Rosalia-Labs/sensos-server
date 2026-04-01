@@ -72,8 +72,8 @@ Run the normal setup flow from the checkout owned by that user:
 
 ```sh
 cd /home/sensos/sensos-server
-./bin/configure-server.sh
-./bin/start-server.sh
+./bin/configure-server
+./bin/start-server
 ```
 
 If you also want the optional systemd service, run it from your normal admin

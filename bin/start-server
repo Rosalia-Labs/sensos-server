@@ -109,7 +109,7 @@ done
 if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
     if [ "$RESTART" = true ]; then
         echo "ℹ️  Restart option enabled. Stopping running SensOS containers..."
-        "$SCRIPT_DIR/stop-server.sh"
+        "$SCRIPT_DIR/stop-server"
 
         echo "⏳ Waiting for containers to stop..."
         TIMEOUT=60
@@ -124,7 +124,7 @@ if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
         done
     else
         echo "❌ SensOS containers are already running. Exiting." >&2
-        echo "ℹ️  Use ./stop-server.sh or run with --restart." >&2
+        echo "ℹ️  Use ./stop-server or run with --restart." >&2
         exit 1
     fi
 fi

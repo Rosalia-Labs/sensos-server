@@ -8,7 +8,7 @@ This repo supports three backup automation patterns:
 
 The normal backup entrypoint is:
 
-- [`bin/backup-server.sh`](../bin/backup-server.sh)
+- [`bin/backup-server`](../bin/backup-server)
 
 ## Recommended Model
 
@@ -24,7 +24,7 @@ Default local post-hook path:
 
 `local/hooks/post-backup.sh`
 
-If that file exists and is executable, `bin/backup-server.sh` will run it
+If that file exists and is executable, `bin/backup-server` will run it
 automatically after creating backups.
 
 ## Cron Example
@@ -36,7 +36,7 @@ MAILTO=""
 PATH=/usr/local/bin:/usr/bin:/bin
 
 # Run server backups every day at 02:15.
-15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server.sh >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
+15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
 ```
 
 If you want the built-in `rclone` export to Box:
@@ -46,7 +46,7 @@ MAILTO=""
 PATH=/usr/local/bin:/usr/bin:/bin
 
 # Run backups and copy them to Box every day at 02:15.
-15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server.sh --export --remote box:sensos-server-backups >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
+15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server --export --remote box:sensos-server-backups >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
 ```
 
 You can install that with:
@@ -72,7 +72,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKUP_DIR="${1:?missing backup dir}"
 shift || true
 
-"${REPO_ROOT}/bin/export-backups.sh" --remote box:sensos-server-backups --copy
+"${REPO_ROOT}/bin/export-backups" --remote box:sensos-server-backups --copy
 ```
 
 Place a real local version at:
@@ -91,19 +91,19 @@ The command to schedule is still the same:
 
 ```sh
 cd /path/to/sensos-server
-./bin/backup-server.sh
+./bin/backup-server
 ```
 
 or:
 
 ```sh
 cd /path/to/sensos-server
-./bin/backup-server.sh --export --remote box:sensos-server-backups
+./bin/backup-server --export --remote box:sensos-server-backups
 ```
 
 or:
 
 ```sh
 cd /path/to/sensos-server
-./bin/backup-server.sh --post-hook ./local/hooks/post-backup.sh
+./bin/backup-server --post-hook ./local/hooks/post-backup.sh
 ```

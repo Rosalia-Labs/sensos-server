@@ -102,8 +102,8 @@ Bootstrap complete.
 Next steps inside the guest:
   su - ${TARGET_USER}
   cd ${repo_path}
-  ./bin/configure-server.sh
-  ./bin/start-server.sh
+  ./bin/configure-server
+  ./bin/start-server
 
 If you want the optional systemd unit:
   cd ${repo_path}

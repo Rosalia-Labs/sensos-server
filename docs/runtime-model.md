@@ -44,9 +44,9 @@ Key paths at the repo root:
 
 Primary entrypoints:
 
-- `./bin/configure-server.sh`
-- `./bin/start-server.sh`
-- `./bin/stop-server.sh`
+- `./bin/configure-server`
+- `./bin/start-server`
+- `./bin/stop-server`
 - `./bin/install-service`
 - `./upgrade`
 
@@ -87,8 +87,8 @@ run `./bin/install-service` or install the unit manually.
 
 The default operating model is manual unprivileged use from the repo checkout:
 
-1. `./bin/configure-server.sh`
-2. `./bin/start-server.sh`
+1. `./bin/configure-server`
+2. `./bin/start-server`
 3. `./bin/create-network <network-name>`
 
 That is the baseline path to document and support.

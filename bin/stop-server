@@ -74,10 +74,10 @@ fi
 if [ "$PERFORM_BACKUP" = true ]; then
     echo "💾 Initiating backup process..."
     # Execute the backup scripts.
-    "$WORK_DIR"/../bin/backup-database.sh
+    "$WORK_DIR"/../bin/backup-database
     db_status=$?
 
-    "$WORK_DIR"/../bin/backup-wireguard.sh
+    "$WORK_DIR"/../bin/backup-wireguard
     wg_status=$?
 
     # If either backup fails, disable volume removal.
