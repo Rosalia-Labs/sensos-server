@@ -35,7 +35,7 @@ Create or reconcile a named WireGuard network through the running server API.
 Options:
   --config-server HOST   API host to contact for network creation (default: ${CONFIG_SERVER})
   --port PORT            API port (default: value from docker/.env or 8765)
-  --wg-public-ip IP      Reachable WireGuard endpoint IP or hostname for clients
+  --wg-public-ip IP      Override the default reachable WireGuard endpoint IP for clients
   --wg-port PORT         WireGuard UDP port to publish for this network
   --api-password PASS    Override API password instead of reading docker/.env
   --help                 Show this help and exit
@@ -58,6 +58,26 @@ load_env_defaults() {
     WG_PUBLIC_IP="${WG_PUBLIC_IP:-}"
     WG_PORT="${WG_PORT:-}"
     API_PASSWORD="${SENSOS_API_PASSWORD:-${API_PASSWORD:-}}"
+}
+
+resolve_public_ip() {
+    local resolver
+    local resolved_ip=""
+    local -a resolvers=(
+        "https://api.ipify.org"
+        "https://ipv4.icanhazip.com"
+    )
+
+    for resolver in "${resolvers[@]}"; do
+        if resolved_ip="$(curl -4 -fsS --connect-timeout 3 --max-time 10 "${resolver}" 2>/dev/null | tr -d '[:space:]')"; then
+            if [[ "${resolved_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+                printf '%s\n' "${resolved_ip}"
+                return
+            fi
+        fi
+    done
+
+    die "WireGuard public IP is not set and automatic public IP detection failed; set WG_PUBLIC_IP in docker/.env or pass --wg-public-ip"
 }
 
 parse_args() {
@@ -107,7 +127,9 @@ parse_args() {
 validate_required() {
     [[ -n "${NETWORK_NAME}" ]] || die "network name is required"
     [[ -n "${API_PORT}" ]] || die "API port is not set"
-    [[ -n "${WG_PUBLIC_IP}" ]] || die "WireGuard public IP is not set; pass --wg-public-ip"
+    if [[ -z "${WG_PUBLIC_IP}" ]]; then
+        WG_PUBLIC_IP="$(resolve_public_ip)"
+    fi
     [[ -n "${WG_PORT}" ]] || die "WireGuard port is not set; pass --wg-port"
     [[ -n "${API_PASSWORD}" ]] || die "API password is not set; pass --api-password or configure API_PASSWORD in docker/.env"
 }

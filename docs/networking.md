@@ -128,9 +128,14 @@ This repo now expects networks to be created explicitly after the server is
 already running, for example:
 
 ```sh
+./bin/create-network testing --wg-port 51820
+./bin/create-network biosense --wg-port 51821
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
-./bin/create-network biosense --wg-public-ip server.example.org --wg-port 51821
 ```
+
+In the first two examples, `bin/create-network` uses the host's detected public
+IPv4 address by default. Use `--wg-public-ip` when clients should target a
+different address or hostname.
 
 The server does not automatically create a default network at startup.
 

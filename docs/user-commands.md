@@ -113,15 +113,18 @@ Creates or reconciles a named client network through the running server API.
 Typical use:
 
 ```sh
+./bin/create-network testing --wg-port 51820
+./bin/create-network biosense --wg-port 51821
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
-./bin/create-network biosense --wg-public-ip server.example.org --wg-port 51821
 ./bin/create-network testing --config-server 127.0.0.1 --port 8765
 ```
 
 Behavior:
 
 - requires the server API to already be running
-- requires explicit `--wg-public-ip` and `--wg-port` because those are properties of the network
+- defaults `wg_public_ip` from `docker/.env` or by resolving the host's public IPv4 address at runtime
+- `--wg-public-ip` overrides the detected/default endpoint value
+- still requires explicit `--wg-port` because that is a network property
 - defaults the API password from `docker/.env`
 - creates no network automatically at server startup
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
