@@ -54,6 +54,12 @@ That script installs the Debian packages needed to host the server, ensures the
 `sensos` user exists with `sudo` and `docker` group membership, and clones the
 repo into that user's home directory. It is intended to be run as `root`.
 
+Important current packaging note for Debian trixie:
+
+- install both `docker.io` and `docker-compose`
+- do not assume the Compose plugin is present just because Docker is installed
+- this repo currently expects `docker-compose` to be available in the guest
+
 If you already have the repo in the guest by some other path, you can run the
 same script locally instead:
 
