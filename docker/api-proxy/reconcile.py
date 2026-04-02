@@ -19,6 +19,7 @@ if not POSTGRES_PASSWORD:
 DATABASE_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@sensos-database/postgres"
 COMPONENT = "sensos-api-proxy"
 ROLE = "api-proxy"
+SERVER_COMPONENT = "sensos-wireguard"
 WG_LOCAL_STATE_DIR = Path("/var/lib/sensos-api-proxy")
 WG_PRIVATE_KEY_DIR = WG_LOCAL_STATE_DIR / "private"
 WG_RENDERED_DIR = WG_LOCAL_STATE_DIR / "rendered"
@@ -127,6 +128,7 @@ def upsert_runtime_status(
     status: str,
     public_key: str | None,
     raw_status: str | None,
+    details: dict | None = None,
     last_error: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
@@ -135,17 +137,24 @@ def upsert_runtime_status(
             INSERT INTO sensos.runtime_wireguard_status
                 (component, role, network_id, interface_name, status, public_key, raw_status, details, last_error, updated_at)
             VALUES
-                (%s, %s, %s, %s, %s, %s, %s, '{}'::jsonb, %s, NOW())
+                (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
             ON CONFLICT (component, network_id) DO UPDATE SET
                 interface_name = EXCLUDED.interface_name,
                 status = EXCLUDED.status,
                 public_key = EXCLUDED.public_key,
                 raw_status = EXCLUDED.raw_status,
+                details = EXCLUDED.details,
                 last_error = EXCLUDED.last_error,
                 updated_at = NOW();
             """,
-            (COMPONENT, ROLE, network_id, interface_name, status, public_key, raw_status, last_error),
+            (COMPONENT, ROLE, network_id, interface_name, status, public_key, raw_status, json_dumps(details or {}), last_error),
         )
+
+
+def json_dumps(value: dict) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True)
 
 
 def ensure_proxy_peer(conn, network_id: int, proxy_ip: str) -> int:
@@ -206,7 +215,7 @@ def render_interface_config(
     private_key_path: Path,
     proxy_ip: str,
     server_public_key: str,
-    wg_port: int,
+    server_listen_port: int,
     ip_range: str,
 ) -> str:
     return (
@@ -216,7 +225,7 @@ def render_interface_config(
         "\n"
         "[Peer]\n"
         f"PublicKey = {server_public_key}\n"
-        f"Endpoint = sensos-wireguard:{wg_port}\n"
+        f"Endpoint = sensos-wireguard:{server_listen_port}\n"
         f"AllowedIPs = {ip_range}\n"
         "PersistentKeepalive = 25\n"
     )
@@ -228,7 +237,7 @@ def reconcile_network(
     name: str,
     ip_range_cidr: str,
     server_public_key: str,
-    wg_port: int,
+    server_listen_port: int,
 ) -> None:
     ip_range = ipaddress.ip_network(ip_range_cidr, strict=False)
     proxy_ip = str(ip_range.network_address + 1)
@@ -241,7 +250,7 @@ def reconcile_network(
         private_key_path=private_key_path,
         proxy_ip=proxy_ip,
         server_public_key=server_public_key,
-        wg_port=wg_port,
+        server_listen_port=server_listen_port,
         ip_range=str(ip_range),
     )
     rendered_path = WG_RENDERED_DIR / f"{name}.conf"
@@ -267,6 +276,7 @@ def reconcile_network(
         status="ready",
         public_key=public_key,
         raw_status=live_status,
+        details={},
         last_error=None,
     )
 
@@ -279,6 +289,7 @@ def mark_error(conn, network_id: int, interface_name: str, public_key: str | Non
         status="error",
         public_key=public_key,
         raw_status=current_status(interface_name),
+        details={},
         last_error=str(exc),
     )
 
@@ -305,11 +316,20 @@ def reconcile_all() -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, name, ip_range, wg_public_key, wg_port
-                FROM sensos.networks
-                WHERE wg_public_key IS NOT NULL
+                SELECT n.id,
+                       n.name,
+                       n.ip_range,
+                       n.wg_public_key,
+                       rs.details->>'listen_port'
+                FROM sensos.networks n
+                JOIN sensos.runtime_wireguard_status rs
+                  ON rs.network_id = n.id
+                 AND rs.component = %s
+                WHERE n.wg_public_key IS NOT NULL
+                  AND rs.details ? 'listen_port'
                 ORDER BY name;
-                """
+                """,
+                (SERVER_COMPONENT,),
             )
             networks = cur.fetchall()
 
@@ -317,7 +337,7 @@ def reconcile_all() -> None:
         active_ids = {network_id for network_id, _, _, _, _ in networks}
         cleanup_removed_networks(conn, active_names, active_ids)
 
-        for network_id, name, ip_range, server_public_key, wg_port in networks:
+        for network_id, name, ip_range, server_public_key, server_listen_port in networks:
             public_key = None
             try:
                 private_key_path = ensure_private_key(name)
@@ -328,7 +348,7 @@ def reconcile_all() -> None:
                     name=name,
                     ip_range_cidr=str(ip_range),
                     server_public_key=server_public_key,
-                    wg_port=wg_port,
+                    server_listen_port=int(server_listen_port),
                 )
             except Exception as exc:
                 log(f"failed to reconcile {name}: {exc}")

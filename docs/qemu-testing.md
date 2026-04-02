@@ -22,10 +22,16 @@ Layout:
 - `test/qemu/artifacts/images/edk2-arm64-vars.fd`
 - `test/qemu/artifacts/iso/debian-trixie-arm64-netinst.iso`
 
-By default, the helper creates two 32 GB qcow2 disks:
+The current helper creates two 32 GB qcow2 disks:
 
 - base/system disk: `32G`
 - data disk: `32G`
+
+Current note:
+
+- the server QEMU environment does not actually need the second data disk
+- the extra disk is only needed for the client-side QEMU environment
+- the server helper still creates and attaches the data disk today, but that is not a server runtime requirement
 
 ## Workflow
 
@@ -96,6 +102,98 @@ test/qemu/run-debian-trixie-arm64 run
 
 The `run` command uses `-snapshot`, so guest disk changes are discarded when
 QEMU exits.
+
+## Validated Test Procedure
+
+The following procedure has been validated for a server VM and a separate client
+VM running on one macOS host with QEMU user networking.
+
+### Server VM bring-up
+
+Inside the server guest:
+
+```bash
+cd ~/sensos-server
+./bin/configure-server
+./bin/start-server
+```
+
+Create the test network from inside the server guest:
+
+```bash
+./bin/create-network testing \
+  --config-server 127.0.0.1 \
+  --port 8765 \
+  --wg-public-ip 10.0.2.2 \
+  --wg-port 15182
+```
+
+This is the correct split for the server guest:
+
+- use `127.0.0.1:8765` for the local API call inside the guest
+- publish `10.0.2.2:15182` as the WireGuard endpoint that client guests can reach via the macOS host
+
+### Server verification
+
+Inside the server guest, the following checks should pass:
+
+```bash
+source docker/.env
+curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/get-network-info?network_name=testing
+curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/wireguard-status
+docker exec sensos-wireguard wg show
+docker exec sensos-api-proxy wg show
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" sensos-database \
+  psql -U postgres -d postgres -c \
+  "select n.name, r.component, r.status, r.last_error
+   from sensos.networks n
+   left join sensos.runtime_wireguard_status r on r.network_id = n.id
+   order by n.name, r.component;"
+```
+
+Healthy result:
+
+- the `testing` network exists
+- `sensos-wireguard` and `sensos-api-proxy` both report `status = ready`
+- `last_error` is empty for both runtime rows
+- `wg show` in both containers shows a live `testing` interface
+
+### Client VM enrollment
+
+Inside a separate client guest:
+
+```bash
+config-network --config-server 10.0.2.2 --port 18765 --network testing
+```
+
+This is the correct split for the client guest:
+
+- `10.0.2.2:18765` reaches the server API through the macOS host forward
+- the returned WireGuard endpoint `10.0.2.2:15182` also reaches the server through the macOS host forward
+
+Validated outcome:
+
+- peer registration succeeded
+- client public-key registration succeeded
+- the client wrote `/etc/wireguard/testing.conf`
+- the client completed SSH key exchange and local setup
+
+### Post-enrollment verification
+
+Back in the server guest:
+
+```bash
+source docker/.env
+curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/wireguard-status
+docker exec sensos-wireguard wg show
+docker exec sensos-api-proxy wg show
+```
+
+Expected result:
+
+- the server-side `testing` interface shows the client peer
+- the proxy-side `testing` interface remains up
+- handshakes and transfer counters appear after the client brings up WireGuard
 
 ## Connectivity
 

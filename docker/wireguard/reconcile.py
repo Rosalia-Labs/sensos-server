@@ -18,6 +18,8 @@ if not POSTGRES_PASSWORD:
 DATABASE_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@sensos-database/postgres"
 COMPONENT = "sensos-wireguard"
 ROLE = "server"
+LOCAL_PORT_START = int(os.getenv("SENSOS_WG_INTERNAL_PORT_START", "51820"))
+LOCAL_PORT_COUNT = int(os.getenv("SENSOS_WG_INTERNAL_PORT_COUNT", "10"))
 
 WG_LOCAL_STATE_DIR = Path("/var/lib/sensos-wireguard")
 WG_PRIVATE_KEY_DIR = WG_LOCAL_STATE_DIR / "private"
@@ -148,6 +150,7 @@ def upsert_runtime_status(
     status: str,
     public_key: str | None,
     raw_status: str | None,
+    details: dict | None = None,
     last_error: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
@@ -156,17 +159,61 @@ def upsert_runtime_status(
             INSERT INTO sensos.runtime_wireguard_status
                 (component, role, network_id, interface_name, status, public_key, raw_status, details, last_error, updated_at)
             VALUES
-                (%s, %s, %s, %s, %s, %s, %s, '{}'::jsonb, %s, NOW())
+                (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
             ON CONFLICT (component, network_id) DO UPDATE SET
                 interface_name = EXCLUDED.interface_name,
                 status = EXCLUDED.status,
                 public_key = EXCLUDED.public_key,
                 raw_status = EXCLUDED.raw_status,
+                details = EXCLUDED.details,
                 last_error = EXCLUDED.last_error,
                 updated_at = NOW();
             """,
-            (COMPONENT, ROLE, network_id, interface_name, status, public_key, raw_status, last_error),
+            (COMPONENT, ROLE, network_id, interface_name, status, public_key, raw_status, json_dumps(details or {}), last_error),
         )
+
+
+def json_dumps(value: dict) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True)
+
+
+def allocate_local_listen_port(conn, network_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT details->>'listen_port'
+            FROM sensos.runtime_wireguard_status
+            WHERE component = %s
+              AND network_id = %s;
+            """,
+            (COMPONENT, network_id),
+        )
+        row = cur.fetchone()
+        if row and row[0]:
+            return int(row[0])
+
+        cur.execute(
+            """
+            SELECT details->>'listen_port'
+            FROM sensos.runtime_wireguard_status
+            WHERE component = %s
+              AND details ? 'listen_port';
+            """,
+            (COMPONENT,),
+        )
+        used_ports = {
+            int(port_text)
+            for (port_text,) in cur.fetchall()
+            if port_text is not None
+        }
+
+    for candidate in range(LOCAL_PORT_START, LOCAL_PORT_START + LOCAL_PORT_COUNT):
+        if candidate not in used_ports:
+            return candidate
+
+    raise RuntimeError("no available internal WireGuard listen ports remain")
 
 
 def publish_public_key(conn, network_id: int, public_key: str) -> None:
@@ -181,9 +228,10 @@ def publish_public_key(conn, network_id: int, public_key: str) -> None:
         )
 
 
-def reconcile_network(conn, network_id: int, name: str, wg_port: int) -> None:
+def reconcile_network(conn, network_id: int, name: str) -> None:
     private_key_path = ensure_private_key(name)
     public_key = derive_public_key(private_key_path)
+    local_listen_port = allocate_local_listen_port(conn, network_id)
     publish_public_key(conn, network_id, public_key)
 
     with conn.cursor() as cur:
@@ -200,7 +248,7 @@ def reconcile_network(conn, network_id: int, name: str, wg_port: int) -> None:
         )
         peers = cur.fetchall()
 
-    rendered = render_interface_config(private_key_path, wg_port, peers)
+    rendered = render_interface_config(private_key_path, local_listen_port, peers)
     rendered_path = WG_RENDERED_DIR / f"{name}.conf"
     runtime_path = WG_CONFIG_DIR / f"{name}.conf"
     rendered_path.write_text(rendered, encoding="utf-8")
@@ -224,11 +272,19 @@ def reconcile_network(conn, network_id: int, name: str, wg_port: int) -> None:
         status="ready",
         public_key=public_key,
         raw_status=live_status,
+        details={"listen_port": local_listen_port},
         last_error=None,
     )
 
 
-def mark_error(conn, network_id: int, interface_name: str, public_key: str | None, exc: Exception) -> None:
+def mark_error(
+    conn,
+    network_id: int,
+    interface_name: str,
+    public_key: str | None,
+    exc: Exception,
+) -> None:
+    local_listen_port = allocate_local_listen_port(conn, network_id)
     upsert_runtime_status(
         conn,
         network_id=network_id,
@@ -236,6 +292,7 @@ def mark_error(conn, network_id: int, interface_name: str, public_key: str | Non
         status="error",
         public_key=public_key,
         raw_status=current_status(interface_name),
+        details={"listen_port": local_listen_port},
         last_error=str(exc),
     )
 
@@ -262,23 +319,23 @@ def reconcile_all() -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, name, wg_port
+                SELECT id, name
                 FROM sensos.networks
                 ORDER BY name;
                 """
             )
             networks = cur.fetchall()
 
-        active_names = {name for _, name, _ in networks}
-        active_ids = {network_id for network_id, _, _ in networks}
+        active_names = {name for _, name in networks}
+        active_ids = {network_id for network_id, _ in networks}
         cleanup_removed_networks(conn, active_names, active_ids)
 
-        for network_id, name, wg_port in networks:
+        for network_id, name in networks:
             public_key = None
             try:
                 private_key_path = ensure_private_key(name)
                 public_key = derive_public_key(private_key_path)
-                reconcile_network(conn, network_id, name, wg_port)
+                reconcile_network(conn, network_id, name)
             except Exception as exc:
                 log(f"failed to reconcile {name}: {exc}")
                 mark_error(conn, network_id, name, public_key, exc)
