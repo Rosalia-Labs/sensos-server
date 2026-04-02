@@ -94,6 +94,41 @@ def test_create_network_waits_for_readiness(monkeypatch, client):
     assert resp.json()["wg_public_key"] == "server-pubkey"
 
 
+def test_create_network_without_port_uses_allocator(monkeypatch, client):
+    captured = {}
+
+    def fake_create_network_entry(cur, name, wg_public_ip, wg_port):
+        captured["wg_port"] = wg_port
+        return (
+            {
+                "id": 1,
+                "name": name,
+                "ip_range": "10.0.0.0/16",
+                "wg_public_ip": wg_public_ip,
+                "wg_port": 51281,
+                "wg_public_key": None,
+            },
+            True,
+        )
+
+    monkeypatch.setattr(api, "create_network_entry", fake_create_network_entry)
+    monkeypatch.setattr(
+        api,
+        "wait_for_network_ready",
+        lambda name: (1, "10.0.0.0/16", "server-pubkey", "1.2.3.4", 51281),
+    )
+    mock_conn = mock.MagicMock()
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+
+    resp = client.post(
+        "/create-network",
+        data={"name": "test", "wg_public_ip": "1.2.3.4"},
+    )
+    assert resp.status_code == 200
+    assert captured["wg_port"] is None
+    assert resp.json()["wg_port"] == 51281
+
+
 def test_register_peer_invalid_subnet(monkeypatch, client):
     monkeypatch.setattr(
         api,

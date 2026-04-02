@@ -122,22 +122,25 @@ def create_network(
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
     wg_public_ip: str = Form(...),
-    wg_port: str = Form(...),
+    wg_port: str | None = Form(None),
 ):
-    try:
-        wg_port = int(wg_port)
-        if not (1 <= wg_port <= 65535):
-            raise ValueError()
-    except ValueError:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Invalid WireGuard port. Must be between 1 and 65535."},
-        )
+    if wg_port in (None, ""):
+        parsed_wg_port = None
+    else:
+        try:
+            parsed_wg_port = int(wg_port)
+            if not (1 <= parsed_wg_port <= 65535):
+                raise ValueError()
+        except ValueError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "Invalid WireGuard port. Must be between 1 and 65535."},
+            )
 
     try:
         with get_db() as conn:
             result, created = create_network_entry(
-                conn.cursor(), name, wg_public_ip, wg_port
+                conn.cursor(), name, wg_public_ip, parsed_wg_port
             )
             logger.info(f"create_network_entry returned: {result}")
 

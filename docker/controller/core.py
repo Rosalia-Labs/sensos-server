@@ -43,6 +43,8 @@ RUNTIME_COMPONENT_WIREGUARD = "sensos-wireguard"
 RUNTIME_COMPONENT_API_PROXY = "sensos-api-proxy"
 RUNTIME_ROLE_SERVER = "server"
 RUNTIME_ROLE_API_PROXY = "api-proxy"
+PUBLIC_WG_PORT_START = 51281
+PUBLIC_WG_PORT_END = 51289
 
 
 @asynccontextmanager
@@ -249,7 +251,7 @@ def create_network_entry(
     cur: Cursor,
     name: str,
     wg_public_ip: str,
-    wg_port: int,
+    wg_port: int | None = None,
 ) -> tuple[dict, bool]:
     cur.execute(
         """
@@ -273,6 +275,9 @@ def create_network_entry(
             False,
         )
 
+    if wg_port is None:
+        wg_port = allocate_public_wg_port(cur)
+
     ip_range = generate_default_ip_range(name)
     cur.execute(
         """
@@ -295,6 +300,26 @@ def create_network_entry(
             "wg_public_key": None,
         },
         True,
+    )
+
+
+def allocate_public_wg_port(cur: Cursor) -> int:
+    cur.execute(
+        """
+        SELECT wg_port
+        FROM sensos.networks
+        WHERE wg_port BETWEEN %s AND %s;
+        """,
+        (PUBLIC_WG_PORT_START, PUBLIC_WG_PORT_END),
+    )
+    used_ports = {row[0] for row in cur.fetchall()}
+
+    for candidate in range(PUBLIC_WG_PORT_START, PUBLIC_WG_PORT_END + 1):
+        if candidate not in used_ports:
+            return candidate
+
+    raise RuntimeError(
+        f"no available public WireGuard ports remain in {PUBLIC_WG_PORT_START}-{PUBLIC_WG_PORT_END}"
     )
 
 

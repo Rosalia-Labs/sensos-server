@@ -206,7 +206,7 @@ ssh -p 2223 <user>@127.0.0.1
 It also forwards the server API back to the host:
 
 - API: `127.0.0.1:18765 -> guest:8765`
-- WireGuard UDP: `127.0.0.1:15182/udp -> guest:51820/udp`
+- WireGuard UDP: `127.0.0.1:15182/udp -> guest:51281/udp`
 
 This makes two-VM testing practical:
 
@@ -226,7 +226,7 @@ server VM through the macOS host.
 
 For the WireGuard tunnel, the same host IP works: client traffic to
 `10.0.2.2:15182/udp` is forwarded by macOS into the server VM's WireGuard port
-on `51820/udp`.
+on `51281/udp`.
 
 ## Installer display
 

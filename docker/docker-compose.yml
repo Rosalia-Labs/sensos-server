@@ -44,16 +44,15 @@ services:
     volumes:
       - sensos_wireguard_state:/var/lib/sensos-wireguard
     ports:
-      - "51820:51820/udp"
-      - "51821:51821/udp"
-      - "51822:51822/udp"
-      - "51823:51823/udp"
-      - "51824:51824/udp"
-      - "51825:51825/udp"
-      - "51826:51826/udp"
-      - "51827:51827/udp"
-      - "51828:51828/udp"
-      - "51829:51829/udp"
+      - "51281:51281/udp"
+      - "51282:51282/udp"
+      - "51283:51283/udp"
+      - "51284:51284/udp"
+      - "51285:51285/udp"
+      - "51286:51286/udp"
+      - "51287:51287/udp"
+      - "51288:51288/udp"
+      - "51289:51289/udp"
     healthcheck:
       test: ["CMD", "wg", "show"]
       interval: 10s

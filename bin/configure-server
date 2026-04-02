@@ -10,7 +10,6 @@ cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
 # Define default values
-DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8765
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
@@ -22,7 +21,6 @@ print_help() {
 Usage: $0 [options]
 
 Options:
-  --db-port PORT           Set database port (default: $DEFAULT_DB_PORT)
   --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
   --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
   --api-password PWD       Set API password (default: $DEFAULT_API_PASSWORD)
@@ -35,10 +33,6 @@ EOF
 # Allow command-line overrides
 while [[ $# -gt 0 ]]; do
     case "$1" in
-    --db-port)
-        DB_PORT="$2"
-        shift 2
-        ;;
     --api-port)
         API_PORT="$2"
         shift 2
@@ -66,7 +60,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Set defaults if variables not provided
-DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
 API_PORT=${API_PORT:-$DEFAULT_API_PORT}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
 API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
@@ -81,7 +74,6 @@ fi
 
 # Write configuration to .env
 cat >.env <<EOF
-DB_PORT=$DB_PORT
 API_PORT=$API_PORT
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 API_PASSWORD=$API_PASSWORD

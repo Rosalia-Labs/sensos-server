@@ -86,7 +86,6 @@ Writes the Docker environment file used by the server stack.
 
 Important flags from the source:
 
-- `--db-port`
 - `--api-port`
 - `--postgres-password`
 - `--api-password`
@@ -113,8 +112,8 @@ Creates or reconciles a named client network through the running server API.
 Typical use:
 
 ```sh
-./bin/create-network testing --wg-port 51820
-./bin/create-network biosense --wg-port 51821
+./bin/create-network testing
+./bin/create-network biosense
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
 ./bin/create-network testing --config-server 127.0.0.1 --port 8765
 ```
@@ -123,8 +122,9 @@ Behavior:
 
 - requires the server API to already be running
 - defaults `wg_public_ip` from `docker/.env` or by resolving the host's public IPv4 address at runtime
+- defaults `wg_port` by allocating the next free public WireGuard port in `51281..51289`
 - `--wg-public-ip` overrides the detected/default endpoint value
-- still requires explicit `--wg-port` because that is a network property
+- `--wg-port` overrides the default allocated public port
 - defaults the API password from `docker/.env`
 - creates no network automatically at server startup
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command

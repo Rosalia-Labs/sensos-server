@@ -18,8 +18,8 @@ if not POSTGRES_PASSWORD:
 DATABASE_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@sensos-database/postgres"
 COMPONENT = "sensos-wireguard"
 ROLE = "server"
-LOCAL_PORT_START = int(os.getenv("SENSOS_WG_INTERNAL_PORT_START", "51820"))
-LOCAL_PORT_COUNT = int(os.getenv("SENSOS_WG_INTERNAL_PORT_COUNT", "10"))
+PUBLIC_PORT_START = 51281
+PUBLIC_PORT_END = 51289
 
 WG_LOCAL_STATE_DIR = Path("/var/lib/sensos-wireguard")
 WG_PRIVATE_KEY_DIR = WG_LOCAL_STATE_DIR / "private"
@@ -179,41 +179,27 @@ def json_dumps(value: dict) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def allocate_local_listen_port(conn, network_id: int) -> int:
+def resolve_local_listen_port(conn, network_id: int) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT details->>'listen_port'
-            FROM sensos.runtime_wireguard_status
-            WHERE component = %s
-              AND network_id = %s;
+            SELECT wg_port
+            FROM sensos.networks
+            WHERE id = %s;
             """,
-            (COMPONENT, network_id),
+            (network_id,),
         )
         row = cur.fetchone()
-        if row and row[0]:
-            return int(row[0])
+        if not row:
+            raise RuntimeError(f"network {network_id} not found")
+        public_port = int(row[0])
 
-        cur.execute(
-            """
-            SELECT details->>'listen_port'
-            FROM sensos.runtime_wireguard_status
-            WHERE component = %s
-              AND details ? 'listen_port';
-            """,
-            (COMPONENT,),
-        )
-        used_ports = {
-            int(port_text)
-            for (port_text,) in cur.fetchall()
-            if port_text is not None
-        }
+    if 1 <= public_port <= 65535:
+        return public_port
 
-    for candidate in range(LOCAL_PORT_START, LOCAL_PORT_START + LOCAL_PORT_COUNT):
-        if candidate not in used_ports:
-            return candidate
-
-    raise RuntimeError("no available internal WireGuard listen ports remain")
+    raise RuntimeError(
+        f"wg_port {public_port} is not a valid WireGuard listen port"
+    )
 
 
 def publish_public_key(conn, network_id: int, public_key: str) -> None:
@@ -231,7 +217,7 @@ def publish_public_key(conn, network_id: int, public_key: str) -> None:
 def reconcile_network(conn, network_id: int, name: str) -> None:
     private_key_path = ensure_private_key(name)
     public_key = derive_public_key(private_key_path)
-    local_listen_port = allocate_local_listen_port(conn, network_id)
+    local_listen_port = resolve_local_listen_port(conn, network_id)
     publish_public_key(conn, network_id, public_key)
 
     with conn.cursor() as cur:
@@ -284,7 +270,7 @@ def mark_error(
     public_key: str | None,
     exc: Exception,
 ) -> None:
-    local_listen_port = allocate_local_listen_port(conn, network_id)
+    local_listen_port = resolve_local_listen_port(conn, network_id)
     upsert_runtime_status(
         conn,
         network_id=network_id,

@@ -36,7 +36,7 @@ Options:
   --config-server HOST   API host to contact for network creation (default: ${CONFIG_SERVER})
   --port PORT            API port (default: value from docker/.env or 8765)
   --wg-public-ip IP      Override the default reachable WireGuard endpoint IP for clients
-  --wg-port PORT         WireGuard UDP port to publish for this network
+  --wg-port PORT         Override the default WireGuard UDP port for this network
   --api-password PASS    Override API password instead of reading docker/.env
   --help                 Show this help and exit
 EOF
@@ -130,7 +130,6 @@ validate_required() {
     if [[ -z "${WG_PUBLIC_IP}" ]]; then
         WG_PUBLIC_IP="$(resolve_public_ip)"
     fi
-    [[ -n "${WG_PORT}" ]] || die "WireGuard port is not set; pass --wg-port"
     [[ -n "${API_PASSWORD}" ]] || die "API password is not set; pass --api-password or configure API_PASSWORD in docker/.env"
 }
 
@@ -173,6 +172,7 @@ PY
 
 main() {
     local status_code
+    local -a curl_args
 
     require_command curl
     require_command python3
@@ -182,17 +182,22 @@ main() {
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
+    curl_args=(
+        -sS
+        -o "${RESPONSE_FILE}"
+        -w '%{http_code}'
+        -u "sensos:${API_PASSWORD}"
+        -X POST
+        -F "name=${NETWORK_NAME}"
+        -F "wg_public_ip=${WG_PUBLIC_IP}"
+    )
+    if [[ -n "${WG_PORT}" ]]; then
+        curl_args+=(-F "wg_port=${WG_PORT}")
+    fi
 
     log "creating or reconciling network '${NETWORK_NAME}' via http://${CONFIG_SERVER}:${API_PORT}/create-network"
     if ! status_code="$(
-        curl -sS \
-            -o "${RESPONSE_FILE}" \
-            -w '%{http_code}' \
-            -u "sensos:${API_PASSWORD}" \
-            -X POST \
-            -F "name=${NETWORK_NAME}" \
-            -F "wg_public_ip=${WG_PUBLIC_IP}" \
-            -F "wg_port=${WG_PORT}" \
+        curl "${curl_args[@]}" \
             "http://${CONFIG_SERVER}:${API_PORT}/create-network"
     )"; then
         die "failed to contact the server API at http://${CONFIG_SERVER}:${API_PORT}/create-network"

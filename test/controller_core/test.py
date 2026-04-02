@@ -123,17 +123,36 @@ def test_authenticate_failure(monkeypatch):
 def test_create_network_entry_new():
     mock_cur = mock.MagicMock()
     mock_cur.fetchone.side_effect = [None, (42,)]
+    mock_cur.fetchall.return_value = []
 
     result, created = core.create_network_entry(
         cur=mock_cur,
         name="testnet",
         wg_public_ip="10.0.0.1",
-        wg_port=51820,
+        wg_port=None,
     )
 
     assert created is True
     assert result["id"] == 42
     assert result["wg_public_key"] is None
+    assert result["wg_port"] == core.PUBLIC_WG_PORT_START
+
+
+def test_allocate_public_wg_port_uses_next_available():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchall.return_value = [(51281,), (51282,), (51284,)]
+
+    assert core.allocate_public_wg_port(mock_cur) == 51283
+
+
+def test_allocate_public_wg_port_raises_when_range_exhausted():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchall.return_value = [
+        (port,) for port in range(core.PUBLIC_WG_PORT_START, core.PUBLIC_WG_PORT_END + 1)
+    ]
+
+    with pytest.raises(RuntimeError, match="no available public WireGuard ports remain"):
+        core.allocate_public_wg_port(mock_cur)
 
 
 @mock.patch("core.get_db")

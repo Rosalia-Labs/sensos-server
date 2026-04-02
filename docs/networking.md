@@ -98,13 +98,27 @@ able to reach it from wherever they operate.
 
 Current Compose behavior in this repo:
 
-- the host forwards UDP ports `51820` through `51829` to the `sensos-wireguard` container
+- the host forwards UDP ports `51281` through `51289` to the `sensos-wireguard` container
 
 That means:
 
 - any network created with a `wg_port` in that range can work without editing Compose
 - if you create a network on some other port, clients will not be able to reach
   it until you also update host/container port exposure
+- on hosts using `ufw`, you typically also need to allow that UDP range explicitly
+
+Example `ufw` rule:
+
+```sh
+sudo ufw allow 51281:51289/udp
+```
+
+If you are exposing the enrollment API directly on its default port, the
+matching `ufw` rule is:
+
+```sh
+sudo ufw allow 8765/tcp
+```
 
 ## Creating A Network
 
@@ -128,14 +142,15 @@ This repo now expects networks to be created explicitly after the server is
 already running, for example:
 
 ```sh
-./bin/create-network testing --wg-port 51820
-./bin/create-network biosense --wg-port 51821
+./bin/create-network testing
+./bin/create-network biosense
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
 ```
 
 In the first two examples, `bin/create-network` uses the host's detected public
-IPv4 address by default. Use `--wg-public-ip` when clients should target a
-different address or hostname.
+IPv4 address and allocates the next free public WireGuard port in `51281..51289`.
+Use `--wg-public-ip` or `--wg-port` when clients should target a different
+address, hostname, or port.
 
 The server does not automatically create a default network at startup.
 
@@ -206,6 +221,7 @@ Likely causes:
 For two-VM testing on one host:
 
 - server VM helper forwards host `18765` to guest `8765`
+- server VM helper forwards host `15182/udp` to guest `51281/udp` by default
 - client VM can reach the host as `10.0.2.2`
 
 So from the client VM, a common enrollment target is:
