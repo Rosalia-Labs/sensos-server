@@ -111,8 +111,10 @@ the repo-root runtime model:
 - verify the checkout and current server config
 - optionally `git pull --ff-only`
 - run version-aware migrations
-- optionally refresh the systemd unit
-- optionally restart the service
+- record installed version state without requiring root
+- rebuild and restart the running Docker stack when the server is already up
+- optionally refresh the systemd unit from an admin account
+- optionally restart the service from an admin account
 
 This keeps the operational flow familiar without forcing a separate deployed
 overlay model that the Docker-first server does not need.

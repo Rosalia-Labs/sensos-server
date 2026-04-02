@@ -9,7 +9,10 @@ REPO_ROOT="${SCRIPT_DIR}"
 PREFLIGHT_SCRIPT="${REPO_ROOT}/setup/00-preflight"
 MIGRATIONS_SCRIPT="${REPO_ROOT}/migrations/run"
 SETUP_SCRIPT="${REPO_ROOT}/setup/install"
-INSTALL_STATE_FILE="${SENSOS_INSTALL_STATE_FILE:-/var/lib/sensos-server/install-state.env}"
+START_SERVER_SCRIPT="${REPO_ROOT}/bin/start-server"
+SYSTEM_INSTALL_STATE_FILE="/var/lib/sensos-server/install-state.env"
+LOCAL_INSTALL_STATE_FILE="${REPO_ROOT}/.sensos-server/install-state.env"
+INSTALL_STATE_FILE=""
 SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
 OFFLINE=0
 REFRESH_SERVICE=0
@@ -104,18 +107,73 @@ ensure_upstream() {
     git -C "${REPO_ROOT}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || die "current branch has no upstream; set one before running ${SCRIPT_PATH}"
 }
 
+resolve_install_state_file() {
+    if [[ -n "${SENSOS_INSTALL_STATE_FILE:-}" ]]; then
+        printf '%s\n' "${SENSOS_INSTALL_STATE_FILE}"
+        return
+    fi
+
+    if [[ -e "${SYSTEM_INSTALL_STATE_FILE}" ]]; then
+        if [[ -w "${SYSTEM_INSTALL_STATE_FILE}" ]]; then
+            printf '%s\n' "${SYSTEM_INSTALL_STATE_FILE}"
+        else
+            printf '%s\n' "${LOCAL_INSTALL_STATE_FILE}"
+        fi
+        return
+    fi
+
+    if [[ -d "$(dirname "${SYSTEM_INSTALL_STATE_FILE}")" && -w "$(dirname "${SYSTEM_INSTALL_STATE_FILE}")" ]]; then
+        printf '%s\n' "${SYSTEM_INSTALL_STATE_FILE}"
+        return
+    fi
+
+    printf '%s\n' "${LOCAL_INSTALL_STATE_FILE}"
+}
+
 sudo_run() {
-    sudo env \
+    if ! sudo env \
         "SENSOS_REPO_ROOT=${REPO_ROOT}" \
         "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
         "SENSOS_SERVICE_USER=${SENSOS_SERVICE_USER:-${USER}}" \
-        "$@"
+        "$@"; then
+        die "sudo failed. Run ${SCRIPT_PATH} from an admin account for --refresh-service/--restart-service, or rerun without those flags as the repo owner"
+    fi
 }
 
 read_installed_version() {
     if [[ -r "${INSTALL_STATE_FILE}" ]]; then
         awk -F= '/^INSTALLED_VERSION=/{print $2}' "${INSTALL_STATE_FILE}" 2>/dev/null || true
     fi
+}
+
+write_installed_state() {
+    local state_dir="$1"
+    local version="$2"
+
+    mkdir -p "${state_dir}"
+    cat > "${INSTALL_STATE_FILE}" <<EOF
+INSTALLED_VERSION=${version}
+REPO_ROOT=${REPO_ROOT}
+SERVICE_NAME=${SERVICE_NAME}
+SERVICE_USER=${SENSOS_SERVICE_USER:-${USER}}
+EOF
+    chmod 644 "${INSTALL_STATE_FILE}"
+    log "recorded installed version in ${INSTALL_STATE_FILE}"
+}
+
+server_stack_running() {
+    docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .
+}
+
+reconcile_runtime_if_running() {
+    if ! server_stack_running; then
+        log "server containers are not running; skipping runtime rebuild/restart"
+        return
+    fi
+
+    [[ -x "${START_SERVER_SCRIPT}" ]] || die "missing or non-executable start script: ${START_SERVER_SCRIPT}"
+    log "rebuilding and restarting the running server stack"
+    "${START_SERVER_SCRIPT}" --rebuild-containers --restart
 }
 
 main() {
@@ -125,6 +183,7 @@ main() {
 
     parse_args "$@"
     ensure_not_root
+    INSTALL_STATE_FILE="$(resolve_install_state_file)"
     if [[ "${OFFLINE}" != "1" ]]; then
         ensure_git_repo
         ensure_clean_repo
@@ -158,6 +217,8 @@ main() {
 
     log "running migrations for ${old_version} -> ${new_version}"
     "${MIGRATIONS_SCRIPT}" "${old_version}" "${new_version}"
+    write_installed_state "$(dirname "${INSTALL_STATE_FILE}")" "${new_version}"
+    reconcile_runtime_if_running
 
     if [[ "${REFRESH_SERVICE}" == "1" ]]; then
         log "refreshing optional ${SERVICE_NAME} systemd service"
@@ -167,7 +228,9 @@ main() {
     if [[ "${RESTART_SERVICE}" == "1" ]]; then
         [[ "${REFRESH_SERVICE}" == "1" ]] || die "--restart-service requires --refresh-service"
         log "restarting ${SERVICE_NAME}"
-        sudo systemctl restart "${SERVICE_NAME}"
+        if ! sudo systemctl restart "${SERVICE_NAME}"; then
+            die "sudo failed while restarting ${SERVICE_NAME}. Run ${SCRIPT_PATH} from an admin account for service management"
+        fi
     fi
 
     log "upgrade complete at version ${new_version}"

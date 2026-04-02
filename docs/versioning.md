@@ -43,9 +43,13 @@ After `1.0.0`, use stricter semver-style meaning:
 
 Each machine should record local install state outside the tracked source tree.
 
-Current install state path:
+Preferred install state path:
 
 `/var/lib/sensos-server/install-state.env`
+
+If that root-owned path is not writable from the repo owner account, `./upgrade`
+falls back to a repo-local state file at `.sensos-server/install-state.env` so
+unprivileged upgrades can still track the applied version correctly.
 
 Current fields written by setup:
 
@@ -101,8 +105,9 @@ update flow. It:
 - requires a clean git worktree before pulling
 - uses `git pull --ff-only`
 - runs version-aware migrations from [`migrations/run`](../migrations/run)
-- reruns setup
-- optionally restarts the service
+- records the applied version in the active install-state file
+- rebuilds and restarts the running Docker stack
+- optionally reruns privileged setup and restarts the service when invoked from an admin account
 
 The repo also includes [`bin/install-service`](../bin/install-service) for the
 optional systemd integration step. It prompts with a `[y/N]` warning, then runs

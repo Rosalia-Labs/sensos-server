@@ -71,10 +71,12 @@ Behavior:
 - in normal mode, it must be run from a clean git worktree
 - in normal mode, the current branch must have an upstream
 - runs migrations between installed and repo versions
-- does not require `sudo` unless you ask it to refresh the optional service install
+- records the upgraded version in a writable install-state file
+- if the server stack is already running, it rebuilds and restarts the containers so the new repo contents take effect
+- does not require `sudo` for the normal repo-owned Docker runtime path
 - `--offline` skips `git pull` and upgrades from the repo contents already on disk
-- `--refresh-service` reinstalls the optional `sensos-server` unit after pull
-- `--restart-service` restarts `sensos-server` and requires `--refresh-service`
+- `--refresh-service` reinstalls the optional `sensos-server` unit after pull and should be run from an admin account with `sudo`
+- `--restart-service` restarts `sensos-server`, requires `--refresh-service`, and should be run from an admin account with `sudo`
 
 ## Core Server Commands
 
