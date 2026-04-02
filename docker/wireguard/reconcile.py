@@ -130,6 +130,17 @@ def current_status(interface_name: str) -> str:
         return (exc.stderr or "").strip()
 
 
+def verify_interface_live(interface_name: str) -> str:
+    if not interface_exists(interface_name):
+        raise RuntimeError(f"wireguard interface '{interface_name}' is not present")
+
+    status = current_status(interface_name)
+    if not status or "Unable to access interface" in status:
+        raise RuntimeError(f"wireguard interface '{interface_name}' is not active")
+
+    return status
+
+
 def upsert_runtime_status(
     conn,
     network_id: int,
@@ -195,18 +206,24 @@ def reconcile_network(conn, network_id: int, name: str, wg_port: int) -> None:
     rendered_path.write_text(rendered, encoding="utf-8")
     rendered_path.chmod(0o600)
 
-    if not runtime_path.exists() or runtime_path.read_text(encoding="utf-8") != rendered:
+    needs_apply = (
+        not runtime_path.exists()
+        or runtime_path.read_text(encoding="utf-8") != rendered
+        or not interface_exists(name)
+    )
+    if needs_apply:
         shutil.copyfile(rendered_path, runtime_path)
         runtime_path.chmod(0o600)
         apply_interface(name)
 
+    live_status = verify_interface_live(name)
     upsert_runtime_status(
         conn,
         network_id=network_id,
         interface_name=name,
         status="ready",
         public_key=public_key,
-        raw_status=current_status(name),
+        raw_status=live_status,
         last_error=None,
     )
 
