@@ -83,6 +83,7 @@ def test_insert_peer_success(mock_get_db):
 @mock.patch("core.get_db")
 async def test_lifespan_runs_schema_setup(mock_get_db):
     fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [None, None]
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     mock_get_db.return_value.__enter__.return_value = mock_conn
@@ -92,6 +93,8 @@ async def test_lifespan_runs_schema_setup(mock_get_db):
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE SCHEMA IF NOT EXISTS sensos;" in executed
+    assert 'CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA public;' in executed
+    assert "CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public;" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
 
 

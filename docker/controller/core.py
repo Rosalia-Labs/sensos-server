@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+                ensure_shared_extensions(cur)
                 cur.execute("SET search_path TO sensos, public;")
                 create_version_history_table(cur)
                 update_version_history_table(cur)
@@ -93,6 +94,29 @@ def get_db(retries: int = 10, delay: int = 3):
                 retries,
             )
             time.sleep(delay)
+
+
+def ensure_shared_extensions(cur):
+    ensure_extension_in_public(cur, "pgcrypto")
+    ensure_extension_in_public(cur, "postgis")
+
+
+def ensure_extension_in_public(cur, extension_name: str):
+    cur.execute(
+        """
+        SELECT n.nspname
+        FROM pg_extension e
+        JOIN pg_namespace n ON n.oid = e.extnamespace
+        WHERE e.extname = %s;
+        """,
+        (extension_name,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        cur.execute(f'CREATE EXTENSION IF NOT EXISTS "{extension_name}" WITH SCHEMA public;')
+        return
+    if row[0] != "public":
+        cur.execute(f'ALTER EXTENSION "{extension_name}" SET SCHEMA public;')
 
 
 def lookup_client_id(conn, wireguard_ip):
@@ -355,7 +379,6 @@ def create_networks_table(cur):
 def create_wireguard_peers_table(cur):
     cur.execute(
         """
-        CREATE EXTENSION IF NOT EXISTS "pgcrypto";
         CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
             id SERIAL PRIMARY KEY,
             uuid UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -464,7 +487,6 @@ def create_hardware_profile_table(cur):
 def create_peer_location_table(cur):
     cur.execute(
         """
-        CREATE EXTENSION IF NOT EXISTS postgis;
         CREATE TABLE IF NOT EXISTS sensos.peer_locations (
             id SERIAL PRIMARY KEY,
             peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
