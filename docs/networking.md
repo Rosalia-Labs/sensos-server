@@ -103,6 +103,7 @@ Current Compose behavior in this repo:
 That means:
 
 - any network created with a `wg_port` in that range can work without editing Compose
+- automatic port allocation therefore supports at most 9 networks with the default setup
 - if you create a network on some other port, clients will not be able to reach
   it until you also update host/container port exposure
 - on hosts using `ufw`, you typically also need to allow that UDP range explicitly
@@ -151,6 +152,11 @@ In the first two examples, `bin/create-network` uses the host's detected public
 IPv4 address and allocates the next free public WireGuard port in `51281..51289`.
 Use `--wg-public-ip` or `--wg-port` when clients should target a different
 address, hostname, or port.
+
+If all 9 default WireGuard ports are already assigned, network creation stops.
+At that point you need manual intervention: free an existing port, pick an
+override port with `--wg-port`, and extend host/container/firewall exposure for
+that port.
 
 The server does not automatically create a default network at startup.
 

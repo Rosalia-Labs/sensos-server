@@ -123,10 +123,12 @@ Behavior:
 - requires the server API to already be running
 - defaults `wg_public_ip` from `docker/.env` or by resolving the host's public IPv4 address at runtime
 - defaults `wg_port` by allocating the next free public WireGuard port in `51281..51289`
+- with the default port range, automatic allocation supports at most 9 networks before manual port exposure/config changes are required
 - `--wg-public-ip` overrides the detected/default endpoint value
 - `--wg-port` overrides the default allocated public port
 - defaults the API password from `docker/.env`
 - creates no network automatically at server startup
+- stops with a clear error if no default WireGuard port remains available
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
 
 ### `bin/start-server`

@@ -170,6 +170,32 @@ if wg_public_ip == "10.0.2.2":
 PY
 }
 
+print_api_error() {
+    local response_file="$1"
+
+    python3 - "$response_file" <<'PY'
+import json
+import sys
+
+response_path = sys.argv[1]
+
+try:
+    with open(response_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    with open(response_path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+    if text:
+        print(text)
+    sys.exit(0)
+
+if isinstance(data, dict) and data.get("error"):
+    print(data["error"])
+else:
+    print(json.dumps(data))
+PY
+}
+
 main() {
     local status_code
     local -a curl_args
@@ -206,7 +232,7 @@ main() {
     if [[ "${status_code}" != "200" ]]; then
         printf '[create-network] ERROR: API returned HTTP %s\n' "${status_code}" >&2
         if [[ -s "${RESPONSE_FILE}" ]]; then
-            cat "${RESPONSE_FILE}" >&2
+            print_api_error "${RESPONSE_FILE}" >&2
         fi
         exit 1
     fi
