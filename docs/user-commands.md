@@ -5,6 +5,8 @@ bring-up sequence, what each command does, and the commands you are likely to
 run during setup, upgrade, or debugging.
 
 For the client/server network contract, see [`docs/networking.md`](networking.md).
+For the current server container orchestration model, see
+[`docs/container-control-plane.md`](container-control-plane.md).
 
 ## Typical Setup Sequence
 
@@ -142,6 +144,8 @@ Behavior:
 - loads repo version and git metadata into the container build/runtime environment
 - refuses to start if SensOS containers are already running, unless `--restart` is supplied
 - can rebuild containers before start
+- starts the DB-backed control-plane stack, where the database coordinates
+  container WireGuard reconciliation
 
 ### `bin/stop-server`
 

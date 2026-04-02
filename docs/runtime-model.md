@@ -50,6 +50,9 @@ Primary entrypoints:
 - `./bin/install-service`
 - `./upgrade`
 
+For the current DB-backed container orchestration model, see
+[`docs/container-control-plane.md`](container-control-plane.md).
+
 ## Runtime State
 
 The repo contains both source and a small amount of machine-local runtime state.
@@ -92,6 +95,10 @@ The default operating model is manual unprivileged use from the repo checkout:
 3. `./bin/create-network <network-name>`
 
 That is the baseline path to document and support.
+
+At runtime, the controller acts as the API and schema bootstrap service while
+the WireGuard-capable containers reconcile their own local state from the
+database. The database is the control plane for local container coordination.
 
 If a machine owner wants automatic startup after reboot, they can install the
 optional systemd unit separately.
