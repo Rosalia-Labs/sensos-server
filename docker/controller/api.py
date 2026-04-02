@@ -7,14 +7,12 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import ipaddress
 
 from fastapi import (
     APIRouter,
     Depends,
-    BackgroundTasks,
     Form,
     HTTPException,
     status,
@@ -30,9 +28,7 @@ from core import (
     get_network_details,
     search_for_next_available_ip,
     register_wireguard_key_in_db,
-    update_wireguard_configs,
     create_network_entry,
-    reconcile_runtime_configs,
     wait_for_network_ready,
     lookup_client_id,
 )
@@ -48,9 +44,6 @@ from models import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-WG_STATUS_DIR = Path("/wireguard_config")
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -126,7 +119,6 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
 @router.post("/create-network")
 def create_network(
-    background_tasks: BackgroundTasks,
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
     wg_public_ip: str = Form(...),
@@ -149,7 +141,7 @@ def create_network(
             )
             logger.info(f"create_network_entry returned: {result}")
 
-        if created:
+        if created or not result["wg_public_key"]:
             ready = wait_for_network_ready(name)
             result = {
                 "id": ready[0],
@@ -159,10 +151,6 @@ def create_network(
                 "wg_public_ip": ready[3],
                 "wg_port": ready[4],
             }
-
-            # This may restart the API proxy container. Run it after the response
-            # is sent so the create-network request does not drop mid-flight.
-            background_tasks.add_task(reconcile_runtime_configs)
 
         return result
 
@@ -292,7 +280,6 @@ def register_peer(
 @router.post("/register-wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
-    background_tasks: BackgroundTasks,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """Endpoint that registers a WireGuard key for an existing peer."""
@@ -303,8 +290,6 @@ def register_wireguard_key(
             status_code=404,
             content={"error": f"Peer '{request.wg_ip}' not found."},
         )
-
-    background_tasks.add_task(update_wireguard_configs)
 
     return result
 
@@ -649,18 +634,36 @@ def wireguard_status_dashboard(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """
-    Displays an HTML dashboard showing WireGuard peer status for all active interfaces.
-    Falls back to a warning if no status files are found.
+    Displays the last runtime status published by the DB-backed reconcilers.
     """
-    status_files = sorted(WG_STATUS_DIR.glob("wireguard_status_*.txt"))
-    if not status_files:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT c.component,
+                       c.role,
+                       n.name,
+                       c.interface_name,
+                       c.status,
+                       c.public_key,
+                       c.raw_status,
+                       c.last_error,
+                       c.updated_at
+                FROM sensos.runtime_wireguard_status c
+                JOIN sensos.networks n ON n.id = c.network_id
+                ORDER BY n.name, c.component;
+                """
+            )
+            rows = cur.fetchall()
+
+    if not rows:
         return HTMLResponse(
             """
             <html>
             <head><title>WireGuard Status</title></head>
             <body>
-                <h2 style='color: red;'>⚠️ No wireguard_status_*.txt files found.</h2>
-                <p>The background service may not be running or has not yet written any status updates.</p>
+                <h2 style='color: red;'>⚠️ No runtime status rows found.</h2>
+                <p>The WireGuard reconcilers may not be running yet.</p>
             </body>
             </html>
             """,
@@ -721,20 +724,21 @@ def wireguard_status_dashboard(
         </style>
     </head>
     <body>
-        <h2>🔐 WireGuard Peer Status</h2>
+        <h2>🔐 WireGuard Runtime Status</h2>
     """
 
-    for status_path in status_files:
-        interface_name = status_path.stem.replace("wireguard_status_", "")
-        try:
-            output = status_path.read_text()
-        except Exception as e:
-            html += f"<h3 style='color: red;'>❌ Failed to read {status_path.name}: {e}</h3>"
-            continue
+    for component, role, network_name, interface_name, state, public_key, raw_status, last_error, updated_at in rows:
+        peers = parse_peers(raw_status or "")
 
-        peers = parse_peers(output)
-
-        html += f"<h3>Interface: <code>{interface_name}</code></h3>"
+        html += (
+            f"<h3>Network: <code>{network_name}</code> | Component: <code>{component}</code></h3>"
+            f"<p><strong>Role:</strong> {role} | <strong>Interface:</strong> <code>{interface_name}</code> "
+            f"| <strong>Status:</strong> {state} | <strong>Updated:</strong> {updated_at}</p>"
+        )
+        if public_key:
+            html += f"<p><strong>Public Key:</strong> <code>{public_key}</code></p>"
+        if last_error:
+            html += f"<p style='color: red;'><strong>Last Error:</strong> {last_error}</p>"
         html += """
         <table>
             <tr>
@@ -756,6 +760,9 @@ def wireguard_status_dashboard(
                 <td>{p.get("transfer", "—").replace("received", "⬇").replace("sent", "⬆")}</td>
             </tr>
             """
+
+        if not peers:
+            html += "<tr><td colspan='5'>No peers reported in the latest runtime snapshot.</td></tr>"
 
         html += "</table>"
 

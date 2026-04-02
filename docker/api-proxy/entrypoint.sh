@@ -4,28 +4,21 @@
 
 set -euo pipefail
 
-echo "📡 Bringing up all WireGuard interfaces from /etc/wireguard..."
+RECONCILE_INTERVAL_SECONDS="${SENSOS_WG_RECONCILE_INTERVAL_SECONDS:-10}"
 
-shopt -s nullglob
-conf_files=(/etc/wireguard/*.conf)
-shopt -u nullglob
+python3 /reconcile.py || true
 
-if [[ ${#conf_files[@]} -eq 0 ]]; then
-    echo "⚠️ No WireGuard config files found in /etc/wireguard. Skipping interface bring-up."
-else
-    for conf in "${conf_files[@]}"; do
-        iface=$(basename "$conf" .conf)
-        if ip link show "$iface" &>/dev/null; then
-            echo "🔄 Interface '$iface' is already active."
-        else
-            echo "🚀 Bringing up interface '$iface'..."
-            wg-quick up "$iface" || echo "⚠️ Failed to bring up '$iface'"
-        fi
-    done
-fi
+cleanup() {
+    kill "$loop_pid" 2>/dev/null || true
+    wait "$loop_pid" 2>/dev/null || true
+}
 
-echo "🔍 Current WireGuard state:"
-wg
+trap cleanup EXIT INT TERM
 
-echo "📦 Starting nginx..."
+while true; do
+    sleep "$RECONCILE_INTERVAL_SECONDS"
+    python3 /reconcile.py || true
+done &
+loop_pid=$!
+
 exec nginx -g "daemon off;"

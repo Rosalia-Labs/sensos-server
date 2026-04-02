@@ -2,9 +2,9 @@ FROM debian:bookworm-slim
 
 # Install required packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl iproute2 wireguard ca-certificates openssh-client \
+    curl ca-certificates openssh-client \
     python3 python3-venv python3-pip iputils-ping net-tools \
-    dnsutils iptables tcpdump telnet procps netcat-openbsd wget
+    dnsutils tcpdump telnet procps netcat-openbsd wget
 
 # Add PostgreSQL client repository
 RUN install -d /usr/share/postgresql-common/pgdg && \
@@ -16,9 +16,6 @@ RUN install -d /usr/share/postgresql-common/pgdg && \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client-17 && rm -rf /var/lib/apt/lists/*
-
-RUN update-alternatives --set iptables /usr/sbin/iptables-legacy; \
-    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
 # Create unprivileged user
 RUN useradd -m -s /bin/bash sensos
@@ -43,7 +40,7 @@ ENV PATH="/app/venv/bin:$PATH"
 
 # Install Python dependencies inside venv
 RUN pip install --upgrade pip && \
-    pip install fastapi uvicorn python-multipart psycopg logging docker
+    pip install fastapi uvicorn python-multipart psycopg
 
 # Pass build arguments for versioning (must be passed via `--build-arg`)
 ARG VERSION_MAJOR

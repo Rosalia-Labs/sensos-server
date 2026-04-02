@@ -17,6 +17,6 @@ trap 'refresh_status' SIGUSR1
 mkdir -p "${WG_STATE_DIR}"
 
 while true; do
-    python3 /reconcile.py
+    python3 /reconcile.py || true
     sleep "${RECONCILE_INTERVAL_SECONDS}"
 done

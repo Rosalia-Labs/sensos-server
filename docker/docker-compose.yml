@@ -15,7 +15,6 @@ services:
     restart: always
     depends_on:
       - sensos-database
-      - sensos-wireguard
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -28,13 +27,6 @@ services:
       GIT_TAG: ${GIT_TAG}
       GIT_DIRTY: ${GIT_DIRTY}
       EXPOSE_CONTAINERS: ${EXPOSE_CONTAINERS}
-    cap_add:
-      - NET_ADMIN
-    volumes:
-      - sensos_wireguard_shared:/wireguard_config
-      - sensos_controller_wg_dir:/etc/wireguard
-      - sensos_api_proxy_wg_config:/api_proxy_config
-      - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "8765"
     networks:
@@ -48,9 +40,8 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      LOG_CONFS: "true"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - sensos_wireguard_shared:/wireguard_config
       - sensos_wireguard_state:/var/lib/sensos-wireguard
     ports:
       - "51820:51820/udp"
@@ -96,11 +87,11 @@ services:
     container_name: sensos-api-proxy
     depends_on:
       - sensos-controller
+      - sensos-database
     restart: always
     env_file: .env
-    privileged: true
     volumes:
-      - sensos_api_proxy_wg_config:/etc/wireguard
+      - sensos_api_proxy_state:/var/lib/sensos-api-proxy
     cap_add:
       - NET_ADMIN
     ports:
@@ -111,14 +102,10 @@ services:
 volumes:
   sensos_database:
     name: sensos_database
-  sensos_wireguard_shared:
-    name: sensos_wireguard_shared
   sensos_wireguard_state:
     name: sensos_wireguard_state
-  sensos_controller_wg_dir:
-    name: sensos_controller_wg_dir
-  sensos_api_proxy_wg_config:
-    name: sensos_api_proxy_wg_config
+  sensos_api_proxy_state:
+    name: sensos_api_proxy_state
 
 networks:
   sensos_network:

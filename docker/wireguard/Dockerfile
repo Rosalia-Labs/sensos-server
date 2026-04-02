@@ -5,7 +5,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
     iproute2 \
     python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --break-system-packages psycopg[binary]
 
 COPY entrypoint.sh /entrypoint.sh
 COPY reconcile.py /reconcile.py

@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
-import os
+import ipaddress
 import shutil
 import subprocess
 import time
+import os
 
 import psycopg
 
@@ -16,17 +17,16 @@ if not POSTGRES_PASSWORD:
     raise ValueError("POSTGRES_PASSWORD is required")
 
 DATABASE_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@sensos-database/postgres"
-COMPONENT = "sensos-wireguard"
-ROLE = "server"
-
-WG_LOCAL_STATE_DIR = Path("/var/lib/sensos-wireguard")
+COMPONENT = "sensos-api-proxy"
+ROLE = "api-proxy"
+WG_LOCAL_STATE_DIR = Path("/var/lib/sensos-api-proxy")
 WG_PRIVATE_KEY_DIR = WG_LOCAL_STATE_DIR / "private"
 WG_RENDERED_DIR = WG_LOCAL_STATE_DIR / "rendered"
 WG_CONFIG_DIR = Path("/etc/wireguard")
 
 
 def log(message: str) -> None:
-    print(f"[wireguard-reconcile] {message}", flush=True)
+    print(f"[api-proxy-reconcile] {message}", flush=True)
 
 
 def get_db(retries: int = 10, delay: int = 3):
@@ -72,27 +72,6 @@ def ensure_private_key(interface_name: str) -> Path:
 
 def derive_public_key(private_key_path: Path) -> str:
     return run_command(["wg", "pubkey"], input_text=private_key_path.read_text())
-
-
-def render_interface_config(private_key_path: Path, wg_port: int, peers: list[tuple[str, str]]) -> str:
-    lines = [
-        "[Interface]",
-        f"PrivateKey = {private_key_path.read_text(encoding='utf-8').strip()}",
-        f"ListenPort = {wg_port}",
-        "",
-    ]
-
-    for wg_ip, public_key in peers:
-        lines.extend(
-            [
-                "[Peer]",
-                f"AllowedIPs = {wg_ip}/32",
-                f"PublicKey = {public_key}",
-                "",
-            ]
-        )
-
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def interface_exists(interface_name: str) -> bool:
@@ -158,38 +137,102 @@ def upsert_runtime_status(
         )
 
 
-def publish_public_key(conn, network_id: int, public_key: str) -> None:
+def ensure_proxy_peer(conn, network_id: int, proxy_ip: str) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE sensos.networks
-               SET wg_public_key = %s
-             WHERE id = %s AND wg_public_key IS DISTINCT FROM %s;
+            SELECT id
+            FROM sensos.wireguard_peers
+            WHERE network_id = %s AND wg_ip = %s;
             """,
-            (public_key, network_id, public_key),
+            (network_id, proxy_ip),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+        cur.execute(
+            """
+            INSERT INTO sensos.wireguard_peers (network_id, wg_ip, note)
+            VALUES (%s, %s, %s)
+            RETURNING id;
+            """,
+            (network_id, proxy_ip, "API Proxy Container"),
+        )
+        return cur.fetchone()[0]
+
+
+def ensure_active_proxy_key(conn, peer_id: int, public_key: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT wg_public_key
+            FROM sensos.wireguard_keys
+            WHERE peer_id = %s AND is_active = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """,
+            (peer_id,),
+        )
+        row = cur.fetchone()
+        if row and row[0] == public_key:
+            return
+
+        cur.execute(
+            "UPDATE sensos.wireguard_keys SET is_active = FALSE WHERE peer_id = %s;",
+            (peer_id,),
+        )
+        cur.execute(
+            """
+            INSERT INTO sensos.wireguard_keys (peer_id, wg_public_key, is_active)
+            VALUES (%s, %s, TRUE);
+            """,
+            (peer_id, public_key),
         )
 
 
-def reconcile_network(conn, network_id: int, name: str, wg_port: int) -> None:
+def render_interface_config(
+    private_key_path: Path,
+    proxy_ip: str,
+    server_public_key: str,
+    wg_port: int,
+    ip_range: str,
+) -> str:
+    return (
+        "[Interface]\n"
+        f"PrivateKey = {private_key_path.read_text(encoding='utf-8').strip()}\n"
+        f"Address = {proxy_ip}/32\n"
+        "\n"
+        "[Peer]\n"
+        f"PublicKey = {server_public_key}\n"
+        f"Endpoint = sensos-wireguard:{wg_port}\n"
+        f"AllowedIPs = {ip_range}\n"
+        "PersistentKeepalive = 25\n"
+    )
+
+
+def reconcile_network(
+    conn,
+    network_id: int,
+    name: str,
+    ip_range_cidr: str,
+    server_public_key: str,
+    wg_port: int,
+) -> None:
+    ip_range = ipaddress.ip_network(ip_range_cidr, strict=False)
+    proxy_ip = str(ip_range.network_address + 1)
     private_key_path = ensure_private_key(name)
     public_key = derive_public_key(private_key_path)
-    publish_public_key(conn, network_id, public_key)
+    peer_id = ensure_proxy_peer(conn, network_id, proxy_ip)
+    ensure_active_proxy_key(conn, peer_id, public_key)
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT host(p.wg_ip)::text, k.wg_public_key
-            FROM sensos.wireguard_peers p
-            JOIN sensos.wireguard_keys k ON k.peer_id = p.id
-            WHERE p.network_id = %s
-              AND k.is_active = TRUE
-            ORDER BY p.wg_ip;
-            """,
-            (network_id,),
-        )
-        peers = cur.fetchall()
-
-    rendered = render_interface_config(private_key_path, wg_port, peers)
+    rendered = render_interface_config(
+        private_key_path=private_key_path,
+        proxy_ip=proxy_ip,
+        server_public_key=server_public_key,
+        wg_port=wg_port,
+        ip_range=str(ip_range),
+    )
     rendered_path = WG_RENDERED_DIR / f"{name}.conf"
     runtime_path = WG_CONFIG_DIR / f"{name}.conf"
     rendered_path.write_text(rendered, encoding="utf-8")
@@ -245,23 +288,31 @@ def reconcile_all() -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, name, wg_port
+                SELECT id, name, ip_range, wg_public_key, wg_port
                 FROM sensos.networks
+                WHERE wg_public_key IS NOT NULL
                 ORDER BY name;
                 """
             )
             networks = cur.fetchall()
 
-        active_names = {name for _, name, _ in networks}
-        active_ids = {network_id for network_id, _, _ in networks}
+        active_names = {name for _, name, _, _, _ in networks}
+        active_ids = {network_id for network_id, _, _, _, _ in networks}
         cleanup_removed_networks(conn, active_names, active_ids)
 
-        for network_id, name, wg_port in networks:
+        for network_id, name, ip_range, server_public_key, wg_port in networks:
             public_key = None
             try:
                 private_key_path = ensure_private_key(name)
                 public_key = derive_public_key(private_key_path)
-                reconcile_network(conn, network_id, name, wg_port)
+                reconcile_network(
+                    conn,
+                    network_id=network_id,
+                    name=name,
+                    ip_range_cidr=str(ip_range),
+                    server_public_key=server_public_key,
+                    wg_port=wg_port,
+                )
             except Exception as exc:
                 log(f"failed to reconcile {name}: {exc}")
                 mark_error(conn, network_id, name, public_key, exc)
