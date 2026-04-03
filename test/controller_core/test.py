@@ -127,15 +127,16 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None, None]
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.5.2")
+    core.apply_schema_migrations(fake_cur, "0.5.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
-    assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
-    assert "RENAME COLUMN client_id TO peer_id" in executed
-    assert "DROP COLUMN network_id" in executed
+    assert "wg_public_ip TEXT NOT NULL" in executed
+    assert "peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.ssh_keys" in executed
+    assert "UNIQUE (peer_id, ssh_public_key)" in executed
 
 
 @pytest.mark.asyncio
@@ -167,17 +168,40 @@ def test_get_db_retries_and_fails(mock_connect):
     assert mock_connect.call_count == 3
 
 
-def test_authenticate_success(monkeypatch):
-    monkeypatch.setattr(core, "API_PASSWORD", "secret")
-    credentials = HTTPBasicCredentials(username="any", password="secret")
-    assert core.authenticate(credentials) == credentials
+def test_authenticate_admin_success(monkeypatch):
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+    credentials = HTTPBasicCredentials(username="any", password="admin-secret")
+    assert core.authenticate_admin(credentials) == credentials
 
 
-def test_authenticate_failure(monkeypatch):
-    monkeypatch.setattr(core, "API_PASSWORD", "secret")
+def test_authenticate_admin_failure(monkeypatch):
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
     credentials = HTTPBasicCredentials(username="any", password="wrongpassword")
     with pytest.raises(HTTPException) as exc_info:
-        core.authenticate(credentials)
+        core.authenticate_admin(credentials)
+    assert exc_info.value.status_code == 401
+
+
+def test_authenticate_client_accepts_client_password(monkeypatch):
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="any", password="client-secret")
+    assert core.authenticate_client(credentials) == credentials
+
+
+def test_authenticate_client_accepts_admin_password(monkeypatch):
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="any", password="admin-secret")
+    assert core.authenticate_client(credentials) == credentials
+
+
+def test_authenticate_client_rejects_other_password(monkeypatch):
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="any", password="wrongpassword")
+    with pytest.raises(HTTPException) as exc_info:
+        core.authenticate_client(credentials)
     assert exc_info.value.status_code == 401
 
 

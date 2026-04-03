@@ -28,9 +28,13 @@ DATABASE_URL = (
     f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
 )
 
-API_PASSWORD = os.getenv("API_PASSWORD")
-if not API_PASSWORD:
-    raise ValueError("API_PASSWORD is not set. Exiting.")
+LEGACY_API_PASSWORD = os.getenv("API_PASSWORD")
+ADMIN_API_PASSWORD = os.getenv("ADMIN_API_PASSWORD", LEGACY_API_PASSWORD or "")
+CLIENT_API_PASSWORD = os.getenv("CLIENT_API_PASSWORD", LEGACY_API_PASSWORD or "")
+if not ADMIN_API_PASSWORD:
+    raise ValueError("ADMIN_API_PASSWORD or API_PASSWORD must be set. Exiting.")
+if not CLIENT_API_PASSWORD:
+    raise ValueError("CLIENT_API_PASSWORD or API_PASSWORD must be set. Exiting.")
 
 VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
 VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")
@@ -105,8 +109,14 @@ async def lifespan(app: FastAPI):
 security = HTTPBasic()
 
 
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.password != API_PASSWORD:
+def authenticate_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    if credentials.password != ADMIN_API_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return credentials
+
+
+def authenticate_client(credentials: HTTPBasicCredentials = Depends(security)):
+    if credentials.password not in {CLIENT_API_PASSWORD, ADMIN_API_PASSWORD}:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials
 
@@ -177,70 +187,11 @@ def create_initial_schema(cur):
     create_runtime_wireguard_status_table(cur)
 
 
-def migrate_network_endpoint_to_text(cur):
-    cur.execute("SET search_path TO sensos, public;")
-    cur.execute(
-        """
-        ALTER TABLE sensos.networks
-        ALTER COLUMN wg_public_ip TYPE TEXT
-        USING wg_public_ip::text;
-        """
-    )
-
-
-def migrate_client_status_to_peer_id(cur):
-    cur.execute("SET search_path TO sensos, public;")
-    cur.execute(
-        """
-        ALTER TABLE sensos.client_status
-        RENAME COLUMN client_id TO peer_id;
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE sensos.client_status
-        ADD CONSTRAINT client_status_peer_id_fkey
-        FOREIGN KEY (peer_id) REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE;
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in
-        ON sensos.client_status (peer_id, last_check_in DESC);
-        """
-    )
-
-
-def migrate_remove_ssh_keys_network_id(cur):
-    cur.execute("SET search_path TO sensos, public;")
-    cur.execute(
-        """
-        ALTER TABLE sensos.ssh_keys
-        DROP COLUMN network_id;
-        """
-    )
-
-
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
-        version=parse_version_key("0.1.0"),
-        name="initial schema",
-        apply=create_initial_schema,
-    ),
-    SchemaMigration(
         version=parse_version_key("0.5.0"),
-        name="allow hostname wireguard endpoints",
-        apply=migrate_network_endpoint_to_text,
-    ),
-    SchemaMigration(
-        version=parse_version_key("0.5.1"),
-        name="rename client_status client_id to peer_id",
-        apply=migrate_client_status_to_peer_id,
-    ),
-    SchemaMigration(
-        version=parse_version_key("0.5.2"),
-        name="remove redundant ssh_keys network_id",
-        apply=migrate_remove_ssh_keys_network_id,
+        name="initial release schema",
+        apply=create_initial_schema,
     ),
 ]
 

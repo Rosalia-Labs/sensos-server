@@ -25,7 +25,8 @@ from fastapi.security import HTTPBasicCredentials
 from core import (
     get_db,
     insert_peer,
-    authenticate,
+    authenticate_admin,
+    authenticate_client,
     get_network_details,
     search_for_next_available_ip,
     register_wireguard_key_in_db,
@@ -59,7 +60,7 @@ def healthz(request: Request):
 
 
 @router.get("/", response_class=HTMLResponse)
-def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
+def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate_admin)):
     """
     Display a dashboard with network version and status information.
     Uses get_db() from core to fetch the latest version info and list networks.
@@ -131,7 +132,7 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
 @router.post("/create-network")
 def create_network(
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
     name: str = Form(...),
     wg_public_ip: str = Form(...),
     wg_port: str | None = Form(None),
@@ -183,7 +184,7 @@ def create_network(
 
 
 @router.get("/list-peers", response_class=HTMLResponse)
-def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
+def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate_admin)):
     """Displays a web page listing all registered WireGuard peers."""
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -241,7 +242,7 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
 @router.post("/register-peer")
 def register_peer(
     request: RegisterPeerRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     """Registers a new peer, computes IP within a subnetwork, and returns the network's public key and connection details."""
     network_details = get_network_details(request.network_name)
@@ -297,7 +298,7 @@ def register_peer(
 @router.post("/register-wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     """Endpoint that registers a WireGuard key for an existing peer."""
     result = register_wireguard_key_in_db(request.wg_ip, request.wg_public_key)
@@ -314,7 +315,7 @@ def register_wireguard_key(
 @router.post("/set-peer-active")
 def set_peer_active(
     request: SetPeerActiveRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     if not set_peer_active_state(request.wg_ip, request.is_active):
         return JSONResponse(
@@ -327,7 +328,7 @@ def set_peer_active(
 @router.post("/delete-peer")
 def delete_peer_endpoint(
     request: DeletePeerRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     if not delete_peer(request.wg_ip):
         return JSONResponse(
@@ -340,7 +341,7 @@ def delete_peer_endpoint(
 @router.post("/exchange-ssh-keys")
 def exchange_ssh_keys(
     request: RegisterSSHKeyRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     """Registers an SSH public key for a peer."""
     with get_db() as conn:
@@ -414,7 +415,7 @@ def exchange_ssh_keys(
 @router.get("/inspect-database", response_class=HTMLResponse)
 def inspect_database(
     limit: int = 10,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     """Inspect all database tables in a single formatted HTML output."""
     with get_db() as conn:
@@ -489,7 +490,7 @@ def inspect_database(
 
 @router.get("/get-peer-info")
 def get_peer_info(
-    ip_address: str, credentials: HTTPBasicCredentials = Depends(authenticate)
+    ip_address: str, credentials: HTTPBasicCredentials = Depends(authenticate_admin)
 ):
     """
     Given an IP address, returns:
@@ -559,7 +560,7 @@ def get_peer_info(
 @router.post("/client-status")
 def client_status(
     status: ClientStatusRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     with get_db() as conn:
         peer_id = lookup_peer_id(conn, status.wireguard_ip)
@@ -594,7 +595,7 @@ def client_status(
 
 @router.get("/get-wireguard-network-names")
 def get_defined_networks(
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -605,7 +606,7 @@ def get_defined_networks(
 
 @router.get("/get-network-info")
 def get_network_info(
-    network_name: str, credentials: HTTPBasicCredentials = Depends(authenticate)
+    network_name: str, credentials: HTTPBasicCredentials = Depends(authenticate_admin)
 ):
     """Retrieve all details for a given network, excluding the database ID."""
     with get_db() as conn:
@@ -638,7 +639,7 @@ def get_network_info(
 @router.post("/upload-hardware-profile")
 def upload_hardware_profile(
     profile: HardwareProfile,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     profile_data = profile.model_dump()
     wg_ip = profile_data.pop("wg_ip", None)
@@ -678,7 +679,7 @@ def upload_hardware_profile(
 
 @router.get("/wireguard-status", response_class=HTMLResponse)
 def wireguard_status_dashboard(
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     """
     Displays the last runtime status published by the DB-backed reconcilers.
@@ -820,7 +821,7 @@ def wireguard_status_dashboard(
 @router.post("/set-peer-location")
 def set_client_location(
     req: LocationUpdateRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_client),
 ):
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -849,7 +850,7 @@ def set_client_location(
 @router.get("/get-peer_location")
 def get_client_location(
     wg_ip: str,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
 ):
     with get_db() as conn:
         with conn.cursor() as cur:

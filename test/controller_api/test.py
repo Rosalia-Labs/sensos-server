@@ -18,7 +18,10 @@ def client():
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
-    app.dependency_overrides[api.authenticate] = lambda: HTTPBasicCredentials(
+    app.dependency_overrides[api.authenticate_admin] = lambda: HTTPBasicCredentials(
+        username="admin", password="admin"
+    )
+    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="test", password="test"
     )
     return TestClient(app)
@@ -292,6 +295,19 @@ def test_get_defined_networks_requires_authentication(monkeypatch):
     unauthenticated_client = TestClient(app)
 
     resp = unauthenticated_client.get("/get-wireguard-network-names")
+    assert resp.status_code == 401
+
+
+def test_client_credentials_cannot_access_admin_route(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = True
+    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
+        username="client", password="client"
+    )
+    client = TestClient(app)
+
+    resp = client.get("/get-wireguard-network-names")
     assert resp.status_code == 401
 
 
