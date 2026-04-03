@@ -177,6 +177,27 @@ Behavior:
 - if `sensos-database` is running, shows a short database summary including
   network, peer, key, and runtime-status counts
 
+### `bin/network-overview`
+
+Prints a denser single-screen summary focused on configured networks and recent
+client activity.
+
+Typical use:
+
+```sh
+./bin/network-overview
+./bin/network-overview --networks 20 --clients 12
+```
+
+Behavior:
+
+- requires Docker access and a running `sensos-database` container
+- shows one compact row per network with CIDR, WireGuard endpoint, runtime
+  readiness, peer counts, and freshest client check-in age
+- shows a short trailing table of the most recent client check-ins
+- defaults to `12` network rows and `8` client rows to keep output within a
+  terminal screen, with limits adjustable via flags
+
 ### `bin/stop-server`
 
 Stops the Docker Compose stack.

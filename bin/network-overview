@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${REPO_ROOT}/docker"
+ENV_FILE="${DOCKER_DIR}/.env"
+
+MAX_NETWORKS=12
+MAX_CLIENTS=8
+
+print_line() {
+    printf '%s\n' "$*"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: network-overview [--networks N] [--clients N]
+
+Print a compact one-screen summary of defined networks and recent client
+check-ins from the running SensOS server stack.
+EOF
+}
+
+require_repo() {
+    [[ -d "${DOCKER_DIR}" ]] || {
+        print_line "ERROR: missing docker directory at ${DOCKER_DIR}" >&2
+        exit 1
+    }
+}
+
+load_env() {
+    if [[ -f "${ENV_FILE}" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${ENV_FILE}"
+        set +a
+    fi
+}
+
+have_docker() {
+    command -v docker >/dev/null 2>&1
+}
+
+docker_access() {
+    docker info >/dev/null 2>&1
+}
+
+db_running() {
+    docker ps --filter "name=^sensos-database$" --format '{{.Names}}' | grep -q '^sensos-database$'
+}
+
+psql_query() {
+    local sql="$1"
+    docker exec -e PGPASSWORD="${POSTGRES_PASSWORD:-}" sensos-database \
+        psql -U postgres -d postgres -X -A -F $'\t' -P pager=off -qtc "${sql}" 2>/dev/null | tr -d '\r'
+}
+
+format_age() {
+    local seconds="${1:--1}"
+
+    if [[ -z "${seconds}" || "${seconds}" == "-1" ]]; then
+        printf -- "-"
+        return
+    fi
+    if (( seconds < 60 )); then
+        printf '%ss' "${seconds}"
+    elif (( seconds < 3600 )); then
+        printf '%sm' "$((seconds / 60))"
+    elif (( seconds < 86400 )); then
+        printf '%sh' "$((seconds / 3600))"
+    else
+        printf '%sd' "$((seconds / 86400))"
+    fi
+}
+
+truncate_field() {
+    local text="$1"
+    local width="$2"
+
+    if (( ${#text} <= width )); then
+        printf '%s' "${text}"
+    elif (( width <= 1 )); then
+        printf '%s' "${text:0:width}"
+    else
+        printf '%s~' "${text:0:$((width - 1))}"
+    fi
+}
+
+print_header() {
+    print_line "SensOS Network Overview"
+    print_line "  repo: ${REPO_ROOT}"
+    print_line "  limits: networks=${MAX_NETWORKS} clients=${MAX_CLIENTS}"
+}
+
+print_networks() {
+    local sql row count
+    sql="
+WITH peer_counts AS (
+    SELECT
+        p.network_id,
+        COUNT(*) AS peer_count,
+        COUNT(*) FILTER (WHERE p.is_active) AS active_peer_count
+    FROM sensos.wireguard_peers p
+    GROUP BY p.network_id
+),
+latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+),
+client_counts AS (
+    SELECT
+        p.network_id,
+        COUNT(ls.peer_id) AS reporting_clients,
+        MAX(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint) FILTER (WHERE ls.last_check_in IS NOT NULL) AS oldest_reporting_age_seconds,
+        MIN(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint) FILTER (WHERE ls.last_check_in IS NOT NULL) AS freshest_reporting_age_seconds
+    FROM sensos.wireguard_peers p
+    LEFT JOIN latest_status ls ON ls.peer_id = p.id
+    GROUP BY p.network_id
+),
+runtime_counts AS (
+    SELECT
+        r.network_id,
+        COUNT(*) AS runtime_count,
+        COUNT(*) FILTER (WHERE r.status = 'ready') AS ready_count,
+        COUNT(*) FILTER (WHERE COALESCE(r.last_error, '') <> '') AS error_count
+    FROM sensos.runtime_wireguard_status r
+    GROUP BY r.network_id
+)
+SELECT
+    n.name,
+    host(n.ip_range) || '/' || masklen(n.ip_range),
+    n.wg_public_ip,
+    n.wg_port,
+    COALESCE(rc.ready_count, 0),
+    COALESCE(rc.runtime_count, 0),
+    COALESCE(rc.error_count, 0),
+    COALESCE(pc.peer_count, 0),
+    COALESCE(pc.active_peer_count, 0),
+    COALESCE(cc.reporting_clients, 0),
+    COALESCE(cc.freshest_reporting_age_seconds, -1)
+FROM sensos.networks n
+LEFT JOIN peer_counts pc ON pc.network_id = n.id
+LEFT JOIN client_counts cc ON cc.network_id = n.id
+LEFT JOIN runtime_counts rc ON rc.network_id = n.id
+ORDER BY n.name
+LIMIT ${MAX_NETWORKS};
+"
+
+    print_line "Networks"
+    printf '%-18s %-18s %-21s %5s %5s %5s %5s %5s %6s\n' \
+        "NAME" "CIDR" "ENDPOINT" "PORT" "RT" "PEER" "ACTV" "CLNT" "LAST"
+
+    count=0
+    while IFS=$'\t' read -r name cidr endpoint port ready_count runtime_count error_count peer_count active_count client_count freshest_age; do
+        [[ -n "${name}" ]] || continue
+        local runtime_state last_seen
+        runtime_state="${ready_count}/${runtime_count}"
+        if [[ "${error_count}" != "0" ]]; then
+            runtime_state="${runtime_state}!"
+        fi
+        last_seen="$(format_age "${freshest_age}")"
+        printf '%-18s %-18s %-21s %5s %5s %5s %5s %5s %6s\n' \
+            "$(truncate_field "${name}" 18)" \
+            "$(truncate_field "${cidr}" 18)" \
+            "$(truncate_field "${endpoint}" 21)" \
+            "${port}" \
+            "${runtime_state}" \
+            "${peer_count}" \
+            "${active_count}" \
+            "${client_count}" \
+            "${last_seen}"
+        count=$((count + 1))
+    done < <(psql_query "${sql}")
+
+    if (( count == 0 )); then
+        print_line "  no networks found"
+    fi
+}
+
+print_clients() {
+    local sql count
+    sql="
+WITH latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in,
+        hostname,
+        version,
+        status_message
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+)
+SELECT
+    n.name,
+    host(p.wg_ip),
+    COALESCE(NULLIF(ls.hostname, ''), '-'),
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
+    COALESCE(NULLIF(ls.version, ''), '-'),
+    COALESCE(NULLIF(ls.status_message, ''), '-')
+FROM latest_status ls
+JOIN sensos.wireguard_peers p ON p.id = ls.peer_id
+JOIN sensos.networks n ON n.id = p.network_id
+ORDER BY ls.last_check_in DESC, n.name, p.wg_ip
+LIMIT ${MAX_CLIENTS};
+"
+
+    print_line "Recent Clients"
+    printf '%-16s %-16s %-18s %6s %-12s %s\n' \
+        "NETWORK" "WG IP" "HOSTNAME" "AGE" "VERSION" "STATUS"
+
+    count=0
+    while IFS=$'\t' read -r network_name wg_ip hostname age_seconds version status_message; do
+        [[ -n "${network_name}" ]] || continue
+        printf '%-16s %-16s %-18s %6s %-12s %s\n' \
+            "$(truncate_field "${network_name}" 16)" \
+            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${hostname}" 18)" \
+            "$(format_age "${age_seconds}")" \
+            "$(truncate_field "${version}" 12)" \
+            "$(truncate_field "${status_message}" 24)"
+        count=$((count + 1))
+    done < <(psql_query "${sql}")
+
+    if (( count == 0 )); then
+        print_line "  no client check-ins found"
+    fi
+}
+
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            --networks)
+                shift
+                [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]] || {
+                    print_line "ERROR: --networks requires an integer" >&2
+                    exit 1
+                }
+                MAX_NETWORKS="$1"
+                ;;
+            --clients)
+                shift
+                [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]] || {
+                    print_line "ERROR: --clients requires an integer" >&2
+                    exit 1
+                }
+                MAX_CLIENTS="$1"
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                print_line "ERROR: unknown argument: $1" >&2
+                usage >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+main() {
+    parse_args "$@"
+    require_repo
+    load_env
+    print_header
+
+    if ! have_docker; then
+        print_line "Runtime"
+        print_line "  docker binary: missing"
+        exit 0
+    fi
+
+    if ! docker_access; then
+        print_line "Runtime"
+        print_line "  docker access: unavailable for current user"
+        exit 0
+    fi
+
+    if ! db_running; then
+        print_line "Runtime"
+        print_line "  sensos-database: not running"
+        exit 0
+    fi
+
+    print_networks
+    print_clients
+}
+
+main "$@"
