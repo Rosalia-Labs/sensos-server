@@ -32,7 +32,8 @@ typically by being in the `docker` group.
 Privileged host actions should be done from a separate admin account rather
 than by granting `sudo` to the service user.
 
-On Debian-family systems, install `docker.io`, `docker-compose`, and `curl`.
+On Debian-family systems, install `docker-cli`, `docker.io`,
+`docker-compose`, and `curl`.
 
 ## Expected Layout
 

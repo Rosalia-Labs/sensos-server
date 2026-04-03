@@ -76,7 +76,7 @@ Important current QEMU note:
 
 Important current packaging note for Debian trixie:
 
-- install both `docker.io` and `docker-compose`
+- install `docker-cli`, `docker.io`, and `docker-compose`
 - do not assume the Compose plugin is present just because Docker is installed
 - this repo currently expects `docker-compose` to be available in the guest
 

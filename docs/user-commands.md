@@ -25,7 +25,8 @@ Notes:
 - this repo is designed to run directly from the checkout owned by the service user
 - the current user must be able to run Docker, usually by being in the `docker` group
 - see [`docs/server-user-setup.md`](server-user-setup.md) for a dedicated host-user bootstrap example
-- on Debian-family systems, install `docker.io`, `docker-compose`, and `curl`
+- on Debian-family systems, install `docker-cli`, `docker.io`,
+  `docker-compose`, and `curl`
 
 ## Optional Host Integration
 

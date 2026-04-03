@@ -8,6 +8,7 @@ REPO_DIR_NAME="${SENSOS_QEMU_REPO_DIR:-sensos-server}"
 APT_PACKAGES=(
     ca-certificates
     curl
+    docker-cli
     docker.io
     docker-compose
     git
