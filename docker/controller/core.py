@@ -87,12 +87,14 @@ def schema_migration_target_version() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.schema_ready = False
     logger.info("initializing database schema")
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 apply_schema_migrations(cur, schema_migration_target_version())
                 update_version_history_table(cur)
+        app.state.schema_ready = True
         logger.info("database schema initialized")
     except Exception as exc:
         logger.error("database initialization failed: %s", exc, exc_info=True)

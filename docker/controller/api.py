@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     Form,
     HTTPException,
+    Request,
     status,
 )
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -48,6 +49,13 @@ from models import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/healthz")
+def healthz(request: Request):
+    if getattr(request.app.state, "schema_ready", False):
+        return {"status": "ok"}
+    return JSONResponse(status_code=503, content={"status": "starting"})
 
 
 @router.get("/", response_class=HTMLResponse)

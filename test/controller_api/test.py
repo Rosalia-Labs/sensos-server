@@ -17,10 +17,33 @@ from api import router
 def client():
     app = FastAPI()
     app.include_router(router)
+    app.state.schema_ready = True
     app.dependency_overrides[api.authenticate] = lambda: HTTPBasicCredentials(
         username="test", password="test"
     )
     return TestClient(app)
+
+
+def test_healthz_reports_starting_before_schema_ready():
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = False
+    client = TestClient(app)
+
+    resp = client.get("/healthz")
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "starting"}
+
+
+def test_healthz_reports_ok_when_schema_ready():
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = True
+    client = TestClient(app)
+
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
 
 
 def test_dashboard_success(monkeypatch, client):

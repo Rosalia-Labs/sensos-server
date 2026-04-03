@@ -195,8 +195,7 @@ config-network --config-server 10.0.2.2 --port 18765 --network testing
 
 ## Transition Items Still Open
 
-- startup ordering is still rough: the reconcilers may log `UndefinedTable` on first boot if they beat schema initialization
-- there is no explicit readiness or dependency gate between controller schema bootstrap and reconciler startup
+- Compose now gates reconciler startup on the controller `/healthz` endpoint, so schema bootstrap should complete before the reconcilers begin querying control-plane tables
 - Compose still exposes a fixed UDP range for WireGuard ports instead of deriving host exposure from defined networks
 - the runtime status model is intentionally minimal and does not yet capture richer reconciliation intent/history
 - the backup path and backup docs have not yet been fully reworked around the new per-container private-key ownership model

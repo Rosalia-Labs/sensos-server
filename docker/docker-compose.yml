@@ -14,7 +14,8 @@ services:
     container_name: sensos-controller
     restart: always
     depends_on:
-      - sensos-database
+      sensos-database:
+        condition: service_healthy
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -29,6 +30,11 @@ services:
       EXPOSE_CONTAINERS: ${EXPOSE_CONTAINERS}
     expose:
       - "8765"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/healthz"]
+      interval: 5s
+      retries: 12
+      start_period: 5s
     networks:
       - sensos_network
 
@@ -36,6 +42,11 @@ services:
     build: ./wireguard
     container_name: sensos-wireguard
     restart: unless-stopped
+    depends_on:
+      sensos-controller:
+        condition: service_healthy
+      sensos-database:
+        condition: service_healthy
     env_file: .env
     cap_add:
       - NET_ADMIN
@@ -85,8 +96,10 @@ services:
       context: ./api-proxy
     container_name: sensos-api-proxy
     depends_on:
-      - sensos-controller
-      - sensos-database
+      sensos-controller:
+        condition: service_healthy
+      sensos-database:
+        condition: service_healthy
     restart: always
     env_file: .env
     volumes:
