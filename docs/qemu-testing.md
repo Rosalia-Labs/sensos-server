@@ -47,19 +47,23 @@ test/qemu/artifacts/iso/debian-trixie-arm64-netinst.iso
 test/qemu/run-debian-trixie-arm64 install
 ```
 
-3. After Debian finishes installing and reboots inside QEMU, log in as `root`
-   in the VM before quitting QEMU and run the guest bootstrap script there.
+3. After Debian finishes installing and reboots inside QEMU, log in to the VM,
+   switch to `root`, and run the guest bootstrap script before quitting QEMU.
+   On Debian that usually means `su -` with the root password you set during
+   install, or `su -c '<command>'`.
 
 ```bash
+su -
 apt-get update
 apt-get install -y curl
 curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/test/qemu/bootstrap-debian-server | bash
 ```
 
 That script installs the Debian packages needed to host the server and ensures
-the `sensos` user exists for the Docker runtime path. It is intended to be run
-as `root`. Use a separate admin account for `sudo` and other privileged host
-actions.
+the `sensos` user exists for the Docker runtime path. It must be run as
+`root`. When it clones the repo, it does so as `sensos`, so the checkout is not
+owned by `root`. Use a separate admin account for `sudo` and other privileged
+host actions.
 
 Important current QEMU note:
 
@@ -111,7 +115,7 @@ install the optional systemd unit:
 
 ```bash
 ./bin/install-service
-sudo systemctl start sensos-server
+su -c 'systemctl start sensos-server'
 ```
 
 ## Validated Test Procedure
