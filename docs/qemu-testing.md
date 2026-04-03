@@ -48,9 +48,9 @@ test/qemu/run-debian-trixie-arm64 install
 ```
 
 3. After Debian finishes installing and reboots inside QEMU, log in to the VM,
-   switch to `root`, and run the guest bootstrap script before quitting QEMU.
-   On Debian that usually means `su -` with the root password you set during
-   install, or `su -c '<command>'`.
+   switch to `root`, and run the guest bootstrap script before shutting the
+   guest down. On Debian that usually means `su -` with the root password you
+   set during install, or `su -c '<command>'`.
 
 ```bash
 su -
@@ -60,16 +60,19 @@ curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/tes
 ```
 
 That script installs the Debian packages needed to host the server and ensures
-the `sensos` user exists for the Docker runtime path. It must be run as
-`root`. Use a separate admin account for `sudo` and other privileged host
-actions.
+the `sensos` user exists for the Docker runtime path. It also clones or updates
+the repo in that user's home directory and, when run interactively, offers to
+shut the guest down cleanly when it finishes. It must be run as `root`. Use a
+separate admin account for `sudo` and other privileged host actions.
 
 Important current QEMU note:
 
-- do not rely on a persistent git checkout in the guest image or on the qcow2
-  overlay disk
-- in practice, git works poorly there
-- clone the repo in each disposable `run` boot instead
+- the `install` boot writes directly to the persistent base qcow2 image
+- changes made during `install` persist only if you shut the guest down cleanly
+  from inside the VM before exiting QEMU
+- if you kill QEMU or just close the window during `install`, you can lose
+  writes or leave the guest filesystem dirty
+- the later `run` boot is the disposable one because it uses `-snapshot`
 
 Important current packaging note for Debian trixie:
 
@@ -84,10 +87,10 @@ same script locally instead:
 ./test/qemu/bootstrap-debian-server
 ```
 
-Do that before quitting the install boot so the user setup and package install
-become part of the persistent base image. Do not treat the repo checkout as
-part of that persistent base image; clone it later during disposable `run`
-boots.
+Do that before shutting the guest down so the user setup and package install
+become part of the persistent base image. If you also clone the repo during the
+`install` boot and then shut the guest down cleanly, that checkout is part of
+the persistent base image too.
 
 4. Once the base image is set up the way you want, shut down the guest cleanly,
    exit QEMU, and use disposable run boots when you want a non-sticky test session:
@@ -99,8 +102,9 @@ test/qemu/run-debian-trixie-arm64 run
 The `run` command uses `-snapshot`, so guest disk changes are discarded when
 QEMU exits.
 
-5. In each disposable `run` boot, clone the repo, configure the server, and
-   start it:
+5. In each disposable `run` boot, either reuse the repo checkout already baked
+   into the base image or clone a fresh checkout for that session. Then
+   configure the server and start it:
 
 ```bash
 rm -rf ~/sensos-server
@@ -109,6 +113,9 @@ cd sensos-server
 ./bin/configure-server
 ./bin/start-server
 ```
+
+If you want the checkout itself to persist across boots, clone it during the
+`install` boot and then shut the guest down cleanly before exiting QEMU.
 
 If you also want reboot persistence inside the guest, have a privileged user
 install the optional systemd unit:

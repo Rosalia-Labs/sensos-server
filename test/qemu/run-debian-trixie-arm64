@@ -43,6 +43,7 @@ Usage:
 
 Commands:
   install   Boot the Debian ARM64 installer ISO and write to the base disk image.
+            Shut the guest down cleanly before exiting QEMU or writes may be lost.
   run       Boot the installed base image with -snapshot, discarding changes on shutdown.
 
 Artifacts are kept under:

@@ -66,32 +66,82 @@ install_packages() {
     apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
 }
 
-print_next_steps() {
-    local target_home repo_path
+target_home() {
+    getent passwd "${TARGET_USER}" | cut -d: -f6
+}
 
-    target_home="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
-    repo_path="${target_home}/${REPO_DIR_NAME}"
+repo_path() {
+    printf '%s/%s\n' "$(target_home)" "${REPO_DIR_NAME}"
+}
+
+run_as_target_user() {
+    local command="$1"
+    su - "${TARGET_USER}" -c "${command}"
+}
+
+ensure_repo_checkout() {
+    local repo_path_value
+
+    repo_path_value="$(repo_path)"
+    if [[ -d "${repo_path_value}/.git" ]]; then
+        log "updating repo checkout at ${repo_path_value}"
+        run_as_target_user "git -C '${repo_path_value}' fetch --all --prune"
+        run_as_target_user "git -C '${repo_path_value}' pull --ff-only"
+        return
+    fi
+
+    if [[ -e "${repo_path_value}" ]]; then
+        log "removing non-git path at ${repo_path_value}"
+        rm -rf "${repo_path_value}"
+    fi
+
+    log "cloning repo to ${repo_path_value}"
+    run_as_target_user "git clone '${REPO_URL}' '${repo_path_value}'"
+}
+
+offer_shutdown() {
+    if [[ ! -t 0 ]]; then
+        return
+    fi
+
+    local reply
+    printf '\nShut down the guest cleanly now? [Y/n] '
+    read -r reply
+    case "${reply:-Y}" in
+        y|Y|yes|YES|"")
+            log "shutting down guest"
+            shutdown -h now
+            ;;
+        *)
+            log "leaving guest running; shut it down cleanly before exiting QEMU"
+            ;;
+    esac
+}
+
+print_next_steps() {
+    local repo_path_value
+
+    repo_path_value="$(repo_path)"
 
     cat <<EOF
 
 Bootstrap complete.
 
 Next steps:
-  exit the install boot and stop QEMU
+  shut the guest down cleanly from inside the VM
+  once the guest is halted, use QEMU's Power Down or otherwise exit QEMU
   start a disposable run boot with:
     test/qemu/run-debian-trixie-arm64 run
 
 Then inside the guest:
   su - ${TARGET_USER}
-  rm -rf ${repo_path}
-  git clone ${REPO_URL} ${repo_path}
-  cd ${repo_path}
+  cd ${repo_path_value}
   ./bin/configure-server
   ./bin/start-server
 
 If you want the optional systemd unit, install and start it from a privileged
-session after cloning the repo in a run boot:
-  cd ${repo_path}
+session:
+  cd ${repo_path_value}
   ./bin/install-service
   su -c 'systemctl start sensos-server'
 
@@ -104,7 +154,9 @@ main() {
     ensure_group docker
     ensure_user
     ensure_group_membership docker
+    ensure_repo_checkout
     print_next_steps
+    offer_shutdown
 }
 
 main "$@"
