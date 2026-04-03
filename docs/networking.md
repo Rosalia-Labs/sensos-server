@@ -87,7 +87,7 @@ Current implementation note:
 
 Each registered network stores:
 
-- a public/reachable endpoint IP
+- a public/reachable endpoint address or hostname
 - a WireGuard UDP port
 
 That data is returned to the client during `register-peer`, and the client
@@ -129,7 +129,7 @@ sudo ufw allow 8765/tcp
 When a new network is created, the server stores:
 
 - `name`
-- `wg_public_ip`
+- `wg_public_ip` as the client-visible WireGuard endpoint address
 - `wg_port`
 - a generated `10.<hash(name)>.0.0/16` WireGuard address range
 

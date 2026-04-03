@@ -175,11 +175,27 @@ def create_initial_schema(cur):
     create_runtime_wireguard_status_table(cur)
 
 
+def migrate_network_endpoint_to_text(cur):
+    cur.execute("SET search_path TO sensos, public;")
+    cur.execute(
+        """
+        ALTER TABLE sensos.networks
+        ALTER COLUMN wg_public_ip TYPE TEXT
+        USING wg_public_ip::text;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.1.0"),
         name="initial schema",
         apply=create_initial_schema,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.5.0"),
+        name="allow hostname wireguard endpoints",
+        apply=migrate_network_endpoint_to_text,
     ),
 ]
 
@@ -515,7 +531,7 @@ def create_networks_table(cur):
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             ip_range CIDR UNIQUE NOT NULL,
-            wg_public_ip INET NOT NULL,
+            wg_public_ip TEXT NOT NULL,
             wg_port INTEGER NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
             wg_public_key TEXT UNIQUE,
             UNIQUE (wg_public_ip, wg_port)

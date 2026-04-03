@@ -107,12 +107,13 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None, None]
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.1.0")
+    core.apply_schema_migrations(fake_cur, "0.5.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
+    assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
 
 
 @pytest.mark.asyncio
@@ -174,6 +175,22 @@ def test_create_network_entry_new():
     assert result["id"] == 42
     assert result["wg_public_key"] is None
     assert result["wg_port"] == core.PUBLIC_WG_PORT_START
+
+
+def test_create_network_entry_accepts_hostname_endpoint():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.side_effect = [None, (42,)]
+    mock_cur.fetchall.return_value = []
+
+    result, created = core.create_network_entry(
+        cur=mock_cur,
+        name="testnet",
+        wg_public_ip="server.example.org",
+        wg_port=51820,
+    )
+
+    assert created is True
+    assert result["wg_public_ip"] == "server.example.org"
 
 
 def test_allocate_public_wg_port_uses_next_available():
