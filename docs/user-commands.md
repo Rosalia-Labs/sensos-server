@@ -132,7 +132,27 @@ Behavior:
 - `--wg-port` overrides the default allocated public port
 - defaults the API password from `docker/.env`
 - creates no network automatically at server startup
+- if a named network already exists with a different published endpoint, the
+  command fails with a clear conflict and does not mutate the existing network
 - stops with a clear error if no default WireGuard port remains available
+- prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
+
+### `bin/update-network-endpoint`
+
+Updates the published client-facing WireGuard endpoint for an existing network.
+
+Typical use:
+
+```sh
+./bin/update-network-endpoint testing --wg-public-ip 10.0.2.2 --wg-port 15182
+```
+
+Behavior:
+
+- requires the server API to already be running
+- requires an existing network name
+- updates only the published WireGuard endpoint fields used by clients
+- avoids direct database editing for environment-specific corrections such as QEMU host forwarding
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
 
 ### `bin/start-server`

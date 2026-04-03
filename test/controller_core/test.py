@@ -240,6 +240,89 @@ def test_create_network_entry_accepts_hostname_endpoint():
     assert result["wg_public_ip"] == "server.example.org"
 
 
+def test_create_network_entry_rejects_endpoint_change_without_reconcile():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.return_value = (
+        42,
+        "10.0.0.0/16",
+        "45.20.196.87",
+        51281,
+        "server-pubkey",
+    )
+
+    with pytest.raises(RuntimeError, match="explicit network endpoint update path"):
+        core.create_network_entry(
+            cur=mock_cur,
+            name="testnet",
+            wg_public_ip="10.0.2.2",
+            wg_port=15182,
+        )
+
+
+def test_create_network_entry_rejects_public_ip_change_without_port_override():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.return_value = (
+        42,
+        "10.0.0.0/16",
+        "45.20.196.87",
+        51281,
+        "server-pubkey",
+    )
+
+    with pytest.raises(RuntimeError, match="explicit network endpoint update path"):
+        core.create_network_entry(
+            cur=mock_cur,
+            name="testnet",
+            wg_public_ip="10.0.2.2",
+            wg_port=None,
+        )
+
+
+def test_update_network_endpoint_updates_existing_row():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.return_value = (
+        42,
+        "testnet",
+        "10.0.0.0/16",
+        "10.0.2.2",
+        15182,
+        "server-pubkey",
+    )
+
+    result = core.update_network_endpoint(
+        cur=mock_cur,
+        name="testnet",
+        wg_public_ip="10.0.2.2",
+        wg_port=15182,
+    )
+
+    assert result["name"] == "testnet"
+    assert result["wg_public_ip"] == "10.0.2.2"
+    assert result["wg_port"] == 15182
+    mock_cur.execute.assert_any_call(
+        """
+        UPDATE sensos.networks
+        SET wg_public_ip = %s, wg_port = %s
+        WHERE name = %s
+        RETURNING id, name, ip_range, wg_public_ip, wg_port, wg_public_key;
+                """,
+        ("10.0.2.2", 15182, "testnet"),
+    )
+
+
+def test_update_network_endpoint_rejects_missing_network():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.return_value = None
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        core.update_network_endpoint(
+            cur=mock_cur,
+            name="missing",
+            wg_public_ip="10.0.2.2",
+            wg_port=15182,
+        )
+
+
 def test_allocate_public_wg_port_uses_next_available():
     mock_cur = mock.MagicMock()
     mock_cur.fetchall.return_value = [(51281,), (51282,), (51284,)]

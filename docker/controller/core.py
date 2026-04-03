@@ -384,6 +384,15 @@ def create_network_entry(
     )
     existing = cur.fetchone()
     if existing:
+        endpoint_changed = existing[2] != wg_public_ip
+        if wg_port is not None and existing[3] != wg_port:
+            endpoint_changed = True
+        if endpoint_changed:
+            raise RuntimeError(
+                f"network '{name}' already exists with endpoint "
+                f"{existing[2]}:{existing[3]}; use the explicit network endpoint "
+                "update path to change the published client endpoint"
+            )
         return (
             {
                 "id": existing[0],
@@ -422,6 +431,35 @@ def create_network_entry(
         },
         True,
     )
+
+
+def update_network_endpoint(
+    cur: Cursor,
+    name: str,
+    wg_public_ip: str,
+    wg_port: int,
+) -> dict:
+    cur.execute(
+        """
+        UPDATE sensos.networks
+        SET wg_public_ip = %s, wg_port = %s
+        WHERE name = %s
+        RETURNING id, name, ip_range, wg_public_ip, wg_port, wg_public_key;
+        """,
+        (wg_public_ip, wg_port, name),
+    )
+    updated = cur.fetchone()
+    if not updated:
+        raise RuntimeError(f"network '{name}' does not exist")
+
+    return {
+        "id": updated[0],
+        "name": updated[1],
+        "ip_range": updated[2],
+        "wg_public_ip": updated[3],
+        "wg_port": updated[4],
+        "wg_public_key": updated[5],
+    }
 
 
 def allocate_public_wg_port(cur: Cursor) -> int:

@@ -31,6 +31,7 @@ from core import (
     search_for_next_available_ip,
     register_wireguard_key_in_db,
     create_network_entry,
+    update_network_endpoint,
     wait_for_network_ready,
     lookup_peer_id,
     set_peer_active_state,
@@ -153,7 +154,10 @@ def create_network(
     try:
         with get_db() as conn:
             result, created = create_network_entry(
-                conn.cursor(), name, wg_public_ip, parsed_wg_port
+                conn.cursor(),
+                name,
+                wg_public_ip,
+                parsed_wg_port,
             )
             logger.info(f"create_network_entry returned: {result}")
 
@@ -177,6 +181,55 @@ def create_network(
         )
     except Exception as e:
         logger.error("create-network failed", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": str(e)},
+        )
+
+
+@router.post("/update-network-endpoint")
+def update_network_endpoint_route(
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
+    name: str = Form(...),
+    wg_public_ip: str = Form(...),
+    wg_port: str = Form(...),
+):
+    try:
+        parsed_wg_port = int(wg_port)
+        if not (1 <= parsed_wg_port <= 65535):
+            raise ValueError()
+    except ValueError:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "Invalid WireGuard port. Must be between 1 and 65535."},
+        )
+
+    try:
+        with get_db() as conn:
+            result = update_network_endpoint(
+                conn.cursor(), name, wg_public_ip, parsed_wg_port
+            )
+
+        if not result["wg_public_key"]:
+            ready = wait_for_network_ready(name)
+            result = {
+                "id": ready[0],
+                "name": name,
+                "ip_range": ready[1],
+                "wg_public_key": ready[2],
+                "wg_public_ip": ready[3],
+                "wg_port": ready[4],
+            }
+
+        return result
+
+    except RuntimeError as e:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": str(e)},
+        )
+    except Exception as e:
+        logger.error("update-network-endpoint failed", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": str(e)},

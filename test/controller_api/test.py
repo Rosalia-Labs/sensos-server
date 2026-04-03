@@ -185,6 +185,49 @@ def test_create_network_accepts_hostname_endpoint(monkeypatch, client):
     assert resp.json()["wg_public_ip"] == "server.example.org"
 
 
+def test_update_network_endpoint_invalid_port(client):
+    resp = client.post(
+        "/update-network-endpoint",
+        data={"name": "test", "wg_public_ip": "10.0.2.2", "wg_port": "99999"},
+    )
+    assert resp.status_code == 400
+    assert "Invalid WireGuard port" in resp.text
+
+
+def test_update_network_endpoint_returns_updated_network(monkeypatch, client):
+    captured = {}
+
+    def fake_update_network_endpoint(cur, name, wg_public_ip, wg_port):
+        captured["name"] = name
+        captured["wg_public_ip"] = wg_public_ip
+        captured["wg_port"] = wg_port
+        return {
+            "id": 1,
+            "name": name,
+            "ip_range": "10.0.0.0/16",
+            "wg_public_ip": wg_public_ip,
+            "wg_port": wg_port,
+            "wg_public_key": "server-pubkey",
+        }
+
+    monkeypatch.setattr(api, "update_network_endpoint", fake_update_network_endpoint)
+    mock_conn = mock.MagicMock()
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+
+    resp = client.post(
+        "/update-network-endpoint",
+        data={
+            "name": "test",
+            "wg_public_ip": "10.0.2.2",
+            "wg_port": "15182",
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["name"] == "test"
+    assert captured["wg_public_ip"] == "10.0.2.2"
+    assert captured["wg_port"] == 15182
+
+
 def test_register_peer_invalid_subnet(monkeypatch, client):
     monkeypatch.setattr(
         api,

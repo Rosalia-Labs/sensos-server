@@ -152,6 +152,17 @@ Create the test network from inside the server guest:
   --wg-port 15182
 ```
 
+If the network was already created with a non-QEMU endpoint, reconcile it
+explicitly instead of editing the database by hand:
+
+```bash
+./bin/update-network-endpoint testing \
+  --config-server 127.0.0.1 \
+  --port 8765 \
+  --wg-public-ip 10.0.2.2 \
+  --wg-port 15182
+```
+
 This is the correct split for the server guest:
 
 - use `127.0.0.1:8765` for the local API call inside the guest
