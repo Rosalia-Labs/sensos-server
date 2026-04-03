@@ -109,6 +109,12 @@ update flow. It:
 - rebuilds and restarts the running Docker stack
 - optionally reruns privileged setup and restarts the service when invoked from an admin account
 
+Database schema changes are handled separately from those host/repo upgrade
+steps. For this repo, keep database schema migrations programmatic and in-tree
+inside the controller code as ordered Python migration steps recorded in the
+database itself; do not introduce a separate external migration framework just
+to manage the SensOS schema.
+
 The repo also includes [`bin/install-service`](../bin/install-service) for the
 optional systemd integration step. It prompts with a `[y/N]` warning, then runs
 the repo's setup scripts and installs host integration around the live repo

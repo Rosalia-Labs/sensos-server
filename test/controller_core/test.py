@@ -98,11 +98,29 @@ def test_insert_peer_success(mock_get_db):
     assert core.insert_peer(1, "10.0.0.2", note="test note") == (123, "some-uuid")
 
 
+def test_parse_version_key_orders_release_after_prerelease():
+    assert core.parse_version_key("1.1.2-dev") < core.parse_version_key("1.1.2")
+
+
+def test_apply_schema_migrations_records_applied_versions():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [None, None]
+    fake_cur.fetchall.return_value = []
+
+    core.apply_schema_migrations(fake_cur, "0.1.0")
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
+    assert "INSERT INTO sensos.schema_migrations" in executed
+
+
 @pytest.mark.asyncio
 @mock.patch("core.get_db")
 async def test_lifespan_runs_schema_setup(mock_get_db):
     fake_cur = mock.MagicMock()
     fake_cur.fetchone.side_effect = [None, None]
+    fake_cur.fetchall.return_value = []
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     mock_get_db.return_value.__enter__.return_value = mock_conn
@@ -111,9 +129,10 @@ async def test_lifespan_runs_schema_setup(mock_get_db):
         pass
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE SCHEMA IF NOT EXISTS sensos;" in executed
     assert 'CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA public;' in executed
-    assert "CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public;" in executed
+    assert 'CREATE EXTENSION IF NOT EXISTS "postgis" WITH SCHEMA public;' in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
 
 

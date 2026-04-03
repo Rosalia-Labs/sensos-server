@@ -39,6 +39,7 @@ class RegisterSSHKeyRequest(BaseModel):
 
 
 class ClientStatusRequest(BaseModel):
+    wireguard_ip: str
     hostname: str
     uptime_seconds: int
     disk_available_gb: float

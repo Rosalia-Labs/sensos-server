@@ -5,11 +5,13 @@ import ipaddress
 import logging
 import os
 import psycopg
+import re
 import socket
 import time
 
 from contextlib import asynccontextmanager
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -47,25 +49,50 @@ PUBLIC_WG_PORT_START = 51281
 PUBLIC_WG_PORT_END = 51289
 
 
+@dataclass(frozen=True, order=True)
+class SchemaMigration:
+    version: tuple[int, int, int, int, str]
+    name: str
+    apply: Callable[[Cursor], None]
+
+
+SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:([.-])([A-Za-z0-9.-]+))?$")
+
+
+def parse_version_key(version: str) -> tuple[int, int, int, int, str]:
+    match = SEMVER_RE.fullmatch(version)
+    if not match:
+        raise ValueError(f"invalid version '{version}'")
+    major, minor, patch, _, suffix = match.groups()
+    return (
+        int(major),
+        int(minor),
+        int(patch),
+        1 if suffix is None else 0,
+        suffix or "",
+    )
+
+
+def current_server_version() -> str:
+    base = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
+    return f"{base}-{VERSION_SUFFIX}" if VERSION_SUFFIX else base
+
+
+def schema_migration_target_version() -> str:
+    version = current_server_version()
+    if SEMVER_RE.fullmatch(version):
+        return version
+    return render_version_key(SCHEMA_MIGRATIONS[-1].version)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("initializing database schema")
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
-                ensure_shared_extensions(cur)
-                cur.execute("SET search_path TO sensos, public;")
-                create_version_history_table(cur)
+                apply_schema_migrations(cur, schema_migration_target_version())
                 update_version_history_table(cur)
-                create_networks_table(cur)
-                create_wireguard_peers_table(cur)
-                create_wireguard_keys_table(cur)
-                create_ssh_keys_table(cur)
-                create_client_status_table(cur)
-                create_hardware_profile_table(cur)
-                create_peer_location_table(cur)
-                create_runtime_wireguard_status_table(cur)
         logger.info("database schema initialized")
     except Exception as exc:
         logger.error("database initialization failed: %s", exc, exc_info=True)
@@ -119,6 +146,72 @@ def ensure_extension_in_public(cur, extension_name: str):
         return
     if row[0] != "public":
         cur.execute(f'ALTER EXTENSION "{extension_name}" SET SCHEMA public;')
+
+
+def ensure_schema_migrations_table(cur):
+    cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.schema_migrations (
+            version TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+
+
+def create_initial_schema(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_version_history_table(cur)
+    create_networks_table(cur)
+    create_wireguard_peers_table(cur)
+    create_wireguard_keys_table(cur)
+    create_ssh_keys_table(cur)
+    create_client_status_table(cur)
+    create_hardware_profile_table(cur)
+    create_peer_location_table(cur)
+    create_runtime_wireguard_status_table(cur)
+
+
+SCHEMA_MIGRATIONS = [
+    SchemaMigration(
+        version=parse_version_key("0.1.0"),
+        name="initial schema",
+        apply=create_initial_schema,
+    ),
+]
+
+
+def apply_schema_migrations(cur, target_version: str):
+    ensure_schema_migrations_table(cur)
+    target_key = parse_version_key(target_version)
+
+    cur.execute("SELECT version FROM sensos.schema_migrations;")
+    applied_versions = {row[0] for row in cur.fetchall()}
+
+    for migration in SCHEMA_MIGRATIONS:
+        migration_version = render_version_key(migration.version)
+        if migration.version > target_key or migration_version in applied_versions:
+            continue
+        migration.apply(cur)
+        cur.execute(
+            """
+            INSERT INTO sensos.schema_migrations (version, name)
+            VALUES (%s, %s)
+            ON CONFLICT (version) DO NOTHING;
+            """,
+            (migration_version, migration.name),
+        )
+
+
+def render_version_key(version_key: tuple[int, int, int, int, str]) -> str:
+    major, minor, patch, release_rank, suffix = version_key
+    base = f"{major}.{minor}.{patch}"
+    if release_rank == 1:
+        return base
+    return f"{base}-{suffix}"
 
 
 def lookup_client_id(conn, wireguard_ip):
