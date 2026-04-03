@@ -59,10 +59,10 @@ apt-get install -y curl
 curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/test/qemu/bootstrap-debian-server | bash
 ```
 
-That script installs the Debian packages needed to host the server, ensures the
-`sensos` user exists for the Docker runtime path, and drops a small clone
-helper into that user's home directory. It must be run as `root`. Use a
-separate admin account for `sudo` and other privileged host actions.
+That script installs the Debian packages needed to host the server and ensures
+the `sensos` user exists for the Docker runtime path. It must be run as
+`root`. Use a separate admin account for `sudo` and other privileged host
+actions.
 
 Important current QEMU note:
 
@@ -84,10 +84,10 @@ same script locally instead:
 ./test/qemu/bootstrap-debian-server
 ```
 
-Do that before quitting the install boot so the user setup, package install,
-and clone helper become part of the persistent base image. Do not treat the
-repo checkout as part of that persistent base image; clone it later during
-disposable `run` boots.
+Do that before quitting the install boot so the user setup and package install
+become part of the persistent base image. Do not treat the repo checkout as
+part of that persistent base image; clone it later during disposable `run`
+boots.
 
 4. Once the base image is set up the way you want, shut down the guest cleanly,
    exit QEMU, and use disposable run boots when you want a non-sticky test session:
@@ -103,7 +103,8 @@ QEMU exits.
    start it:
 
 ```bash
-~/clone-sensos-server
+rm -rf ~/sensos-server
+git clone https://github.com/Rosalia-Labs/sensos-server.git ~/sensos-server
 cd sensos-server
 ./bin/configure-server
 ./bin/start-server
@@ -127,7 +128,8 @@ VM running on one macOS host with QEMU user networking.
 Inside the server guest:
 
 ```bash
-~/clone-sensos-server
+rm -rf ~/sensos-server
+git clone https://github.com/Rosalia-Labs/sensos-server.git ~/sensos-server
 cd ~/sensos-server
 ./bin/configure-server
 ./bin/start-server
