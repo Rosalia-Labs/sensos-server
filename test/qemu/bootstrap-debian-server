@@ -101,14 +101,20 @@ print_next_steps() {
 
 Bootstrap complete.
 
-Next steps inside each disposable run boot:
+Next steps:
+  exit the install boot and stop QEMU
+  start a disposable run boot with:
+    test/qemu/run-debian-trixie-arm64 run
+
+Then inside the guest:
   su - ${TARGET_USER}
   ${helper_path}
   cd ${repo_path}
   ./bin/configure-server
   ./bin/start-server
 
-If you want the optional systemd unit:
+If you want the optional systemd unit, install and start it from a privileged
+session after cloning the repo in a run boot:
   cd ${repo_path}
   ./bin/install-service
   su -c 'systemctl start sensos-server'
