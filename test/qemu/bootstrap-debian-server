@@ -66,40 +66,44 @@ install_packages() {
     apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
 }
 
-clone_repo() {
-    local target_home repo_path
+install_clone_helper() {
+    local target_home helper_path
 
     target_home="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
     [[ -n "${target_home}" ]] || die "unable to determine home directory for ${TARGET_USER}"
-    repo_path="${target_home}/${REPO_DIR_NAME}"
+    helper_path="${target_home}/clone-${REPO_DIR_NAME}"
 
-    if [[ -d "${repo_path}/.git" ]]; then
-        log "repository already exists at ${repo_path}; refreshing remote metadata"
-        su - "${TARGET_USER}" -c "git -C '${repo_path}' remote set-url origin '${REPO_URL}'"
-        su - "${TARGET_USER}" -c "git -C '${repo_path}' fetch --all --tags"
-        return
-    fi
+    log "installing clone helper at ${helper_path}"
+    cat > "${helper_path}" <<EOF
+#!/bin/bash
+set -euo pipefail
 
-    if [[ -e "${repo_path}" ]]; then
-        die "path exists but is not a git checkout: ${repo_path}"
-    fi
+repo_url='${REPO_URL}'
+repo_dir='${REPO_DIR_NAME}'
+repo_path="\$HOME/\${repo_dir}"
 
-    log "cloning ${REPO_URL} into ${repo_path}"
-    su - "${TARGET_USER}" -c "git clone '${REPO_URL}' '${repo_path}'"
+rm -rf "\${repo_path}"
+git clone "\${repo_url}" "\${repo_path}"
+echo "cloned \${repo_url} into \${repo_path}"
+EOF
+    chown "${TARGET_USER}:${TARGET_USER}" "${helper_path}"
+    chmod 0755 "${helper_path}"
 }
 
 print_next_steps() {
-    local target_home repo_path
+    local target_home repo_path helper_path
 
     target_home="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
     repo_path="${target_home}/${REPO_DIR_NAME}"
+    helper_path="${target_home}/clone-${REPO_DIR_NAME}"
 
     cat <<EOF
 
 Bootstrap complete.
 
-Next steps inside the guest:
+Next steps inside each disposable run boot:
   su - ${TARGET_USER}
+  ${helper_path}
   cd ${repo_path}
   ./bin/configure-server
   ./bin/start-server
@@ -118,7 +122,7 @@ main() {
     ensure_group docker
     ensure_user
     ensure_group_membership docker
-    clone_repo
+    install_clone_helper
     print_next_steps
 }
 
