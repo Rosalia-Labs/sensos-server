@@ -56,10 +56,17 @@ apt-get install -y curl
 curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/test/qemu/bootstrap-debian-server | bash
 ```
 
-That script installs the Debian packages needed to host the server, ensures the
-`sensos` user exists for the repo checkout and Docker runtime path, and clones
-the repo into that user's home directory. It is intended to be run as `root`.
-Use a separate admin account for `sudo` and other privileged host actions.
+That script installs the Debian packages needed to host the server and ensures
+the `sensos` user exists for the Docker runtime path. It is intended to be run
+as `root`. Use a separate admin account for `sudo` and other privileged host
+actions.
+
+Important current QEMU note:
+
+- do not rely on a persistent git checkout in the guest image or on the qcow2
+  overlay disk
+- in practice, git works poorly there
+- clone the repo in each disposable `run` boot instead
 
 Important current packaging note for Debian trixie:
 
@@ -74,13 +81,26 @@ same script locally instead:
 ./test/qemu/bootstrap-debian-server
 ```
 
-Do that before quitting the install boot so the user setup, package install, and
-repo checkout become part of the persistent base image instead of something you
-recreate on later disposable `run` boots.
+Do that before quitting the install boot so the user setup and package install
+become part of the persistent base image. Do not treat the repo checkout as
+part of that persistent base image; clone it later during disposable `run`
+boots.
 
-4. Log in as `sensos`, configure the server, and start it:
+4. Once the base image is set up the way you want, shut down the guest cleanly,
+   exit QEMU, and use disposable run boots when you want a non-sticky test session:
 
 ```bash
+test/qemu/run-debian-trixie-arm64 run
+```
+
+The `run` command uses `-snapshot`, so guest disk changes are discarded when
+QEMU exits.
+
+5. In each disposable `run` boot, clone the repo, configure the server, and
+   start it:
+
+```bash
+git clone https://github.com/Rosalia-Labs/sensos-server.git
 cd sensos-server
 ./bin/configure-server
 ./bin/start-server
@@ -94,16 +114,6 @@ install the optional systemd unit:
 sudo systemctl start sensos-server
 ```
 
-5. Once the base image is set up the way you want, shut down the guest cleanly,
-   exit QEMU, and use disposable run boots when you want a non-sticky test session:
-
-```bash
-test/qemu/run-debian-trixie-arm64 run
-```
-
-The `run` command uses `-snapshot`, so guest disk changes are discarded when
-QEMU exits.
-
 ## Validated Test Procedure
 
 The following procedure has been validated for a server VM and a separate client
@@ -114,6 +124,7 @@ VM running on one macOS host with QEMU user networking.
 Inside the server guest:
 
 ```bash
+git clone https://github.com/Rosalia-Labs/sensos-server.git
 cd ~/sensos-server
 ./bin/configure-server
 ./bin/start-server
@@ -140,8 +151,8 @@ Inside the server guest, the following checks should pass:
 
 ```bash
 source docker/.env
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/get-network-info?network_name=testing
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/wireguard-status
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/get-network-info?network_name=testing
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/wireguard-status
 docker exec sensos-wireguard wg show
 docker exec sensos-api-proxy wg show
 docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" sensos-database \
@@ -185,7 +196,7 @@ Back in the server guest:
 
 ```bash
 source docker/.env
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/wireguard-status
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/wireguard-status
 docker exec sensos-wireguard wg show
 docker exec sensos-api-proxy wg show
 ```

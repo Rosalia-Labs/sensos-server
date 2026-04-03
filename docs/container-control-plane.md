@@ -79,12 +79,14 @@ Current reserved addresses inside each network:
 The current reconciliation flow is:
 
 1. the controller starts and ensures the `sensos` schema exists
-2. `bin/create-network` creates a row in `sensos.networks`
-3. `sensos-wireguard` sees the new network in the database
-4. `sensos-wireguard` generates or reuses its private key, derives a public key, and updates `sensos.networks.wg_public_key`
-5. `sensos-api-proxy` sees the network public key and reconciles its own local WireGuard interface
-6. `sensos-api-proxy` ensures its peer row and active public key exist in `sensos.wireguard_peers` and `sensos.wireguard_keys`
-7. both reconcilers publish status rows into `sensos.runtime_wireguard_status`
+2. the controller reports healthy on `GET /healthz` only after schema/bootstrap work completes
+3. Compose waits for that controller health check before starting `sensos-wireguard` and `sensos-api-proxy`
+4. `bin/create-network` creates a row in `sensos.networks`
+5. `sensos-wireguard` sees the new network in the database
+6. `sensos-wireguard` generates or reuses its private key, derives a public key, and updates `sensos.networks.wg_public_key`
+7. `sensos-api-proxy` sees the network public key and reconciles its own local WireGuard interface
+8. `sensos-api-proxy` ensures its peer row and active public key exist in `sensos.wireguard_peers` and `sensos.wireguard_keys`
+9. both reconcilers publish status rows into `sensos.runtime_wireguard_status`
 
 Peer registration is separate:
 
@@ -123,6 +125,18 @@ The current privilege split is:
 
 This is a deliberate step toward reducing host-level privilege usage and
 removing broad cross-container control.
+
+## API Access Split
+
+The controller API now has three access classes:
+
+- `GET /healthz` is unauthenticated and exists only for local orchestration readiness checks
+- client-operational routes accept either `CLIENT_API_PASSWORD` or `ADMIN_API_PASSWORD`
+- operator and debugging routes require `ADMIN_API_PASSWORD`
+
+This keeps client enrollment and telemetry separate from the more sensitive
+operator surface such as peer deletion, network creation, and database
+inspection.
 
 ## Operational Checks
 
@@ -195,9 +209,8 @@ config-network --config-server 10.0.2.2 --port 18765 --network testing
 
 ## Transition Items Still Open
 
-- Compose now gates reconciler startup on the controller `/healthz` endpoint, so schema bootstrap should complete before the reconcilers begin querying control-plane tables
 - Compose still exposes a fixed UDP range for WireGuard ports instead of deriving host exposure from defined networks
 - the runtime status model is intentionally minimal and does not yet capture richer reconciliation intent/history
 - the backup path and backup docs have not yet been fully reworked around the new per-container private-key ownership model
 - automated integration coverage for the new DB-backed reconciliation flow is still incomplete
-- the client-side steady-state assumptions should be revalidated against the new `.1 = API proxy` and `.2+ = clients` address allocation model
+- the client-side steady-state assumptions should be revalidated against the current address allocation model where `.1` is the API proxy, automatic client allocation defaults to `x.y.1.1+`, and `x.y.0.*` can still be used intentionally for infrastructure assignments
