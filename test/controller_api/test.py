@@ -227,6 +227,41 @@ def test_register_wireguard_key_not_found(monkeypatch, client):
     assert resp.status_code == 404
 
 
+def test_get_network_info_accepts_client_auth(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = True
+    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
+        username="client", password="client"
+    )
+    app.dependency_overrides[api.authenticate_admin] = lambda: (_ for _ in ()).throw(
+        AssertionError("admin auth should not be required")
+    )
+    client = TestClient(app)
+
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (
+        "testnet",
+        "10.0.0.0/16",
+        "server.example.org",
+        51820,
+        "server-pubkey",
+    )
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+
+    resp = client.get("/get-network-info", params={"network_name": "testnet"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "name": "testnet",
+        "ip_range": "10.0.0.0/16",
+        "wg_public_ip": "server.example.org",
+        "wg_port": 51820,
+        "wg_public_key": "server-pubkey",
+    }
+
+
 def test_set_peer_active_updates_inventory_state(monkeypatch, client):
     captured = {}
 

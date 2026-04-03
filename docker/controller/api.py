@@ -606,7 +606,7 @@ def get_defined_networks(
 
 @router.get("/get-network-info")
 def get_network_info(
-    network_name: str, credentials: HTTPBasicCredentials = Depends(authenticate_admin)
+    network_name: str, credentials: HTTPBasicCredentials = Depends(authenticate_client)
 ):
     """Retrieve all details for a given network, excluding the database ID."""
     with get_db() as conn:
