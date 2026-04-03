@@ -20,8 +20,8 @@ usage() {
     cat <<'EOF'
 Usage: network-overview [--networks N] [--clients N]
 
-Print a compact one-screen summary of defined networks and recent client
-check-ins from the running SensOS server stack.
+Print a compact one-screen summary of defined networks and registered clients
+from the running SensOS server stack.
 EOF
 }
 
@@ -200,27 +200,36 @@ WITH latest_status AS (
 SELECT
     n.name,
     host(p.wg_ip),
+    CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
     COALESCE(NULLIF(ls.hostname, ''), '-'),
     COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
     COALESCE(NULLIF(ls.version, ''), '-'),
-    COALESCE(NULLIF(ls.status_message, ''), '-')
-FROM latest_status ls
-JOIN sensos.wireguard_peers p ON p.id = ls.peer_id
+    CASE
+        WHEN ls.peer_id IS NULL THEN 'registered'
+        ELSE COALESCE(NULLIF(ls.status_message, ''), 'checked-in')
+    END
+FROM sensos.wireguard_peers p
 JOIN sensos.networks n ON n.id = p.network_id
-ORDER BY ls.last_check_in DESC, n.name, p.wg_ip
+LEFT JOIN latest_status ls ON ls.peer_id = p.id
+ORDER BY
+    CASE WHEN ls.last_check_in IS NULL THEN 1 ELSE 0 END,
+    ls.last_check_in DESC NULLS LAST,
+    n.name,
+    p.wg_ip
 LIMIT ${MAX_CLIENTS};
 "
 
-    print_line "Recent Clients"
-    printf '%-16s %-16s %-18s %6s %-12s %s\n' \
-        "NETWORK" "WG IP" "HOSTNAME" "AGE" "VERSION" "STATUS"
+    print_line "Registered Clients"
+    printf '%-16s %-16s %-4s %-18s %6s %-12s %s\n' \
+        "NETWORK" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
 
     count=0
-    while IFS=$'\t' read -r network_name wg_ip hostname age_seconds version status_message; do
+    while IFS=$'\t' read -r network_name wg_ip is_active hostname age_seconds version status_message; do
         [[ -n "${network_name}" ]] || continue
-        printf '%-16s %-16s %-18s %6s %-12s %s\n' \
+        printf '%-16s %-16s %-4s %-18s %6s %-12s %s\n' \
             "$(truncate_field "${network_name}" 16)" \
             "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${is_active}" 4)" \
             "$(truncate_field "${hostname}" 18)" \
             "$(format_age "${age_seconds}")" \
             "$(truncate_field "${version}" 12)" \
@@ -229,7 +238,7 @@ LIMIT ${MAX_CLIENTS};
     done < <(psql_query "${sql}")
 
     if (( count == 0 )); then
-        print_line "  no client check-ins found"
+        print_line "  no registered clients found"
     fi
 }
 
