@@ -8,13 +8,22 @@ from typing import Optional
 
 class RegisterPeerRequest(BaseModel):
     network_name: str
-    subnet_offset: int = 0
+    subnet_offset: int = 1
     note: Optional[str] = None
 
 
 class RegisterWireguardKeyRequest(BaseModel):
     wg_ip: str
     wg_public_key: str
+
+
+class SetPeerActiveRequest(BaseModel):
+    wg_ip: str
+    is_active: bool
+
+
+class DeletePeerRequest(BaseModel):
+    wg_ip: str
 
 
 class RegisterSSHKeyRequest(BaseModel):

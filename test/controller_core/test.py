@@ -37,18 +37,37 @@ def test_resolve_hostname_dns(monkeypatch):
 
 
 @mock.patch("core.get_assigned_ips", return_value=set())
-def test_search_for_next_available_ip_reserves_only_proxy(mock_get_assigned):
+def test_search_for_next_available_ip_starts_in_first_client_subnet(mock_get_assigned):
     ip = core.search_for_next_available_ip("10.254.0.0/16", network_id=42)
+    assert ip == ipaddress.ip_address("10.254.1.1")
+
+
+@mock.patch(
+    "core.get_assigned_ips",
+    return_value={ipaddress.ip_address(f"10.254.1.{i}") for i in range(1, 10)},
+)
+def test_search_for_next_available_ip_skips_used_hosts(mock_get_assigned):
+    ip = core.search_for_next_available_ip("10.254.0.0/16", network_id=42)
+    assert ip == ipaddress.ip_address("10.254.1.10")
+
+
+@mock.patch("core.get_assigned_ips", return_value=set())
+def test_search_for_next_available_ip_can_start_in_infra_subnet(mock_get_assigned):
+    ip = core.search_for_next_available_ip(
+        "10.254.0.0/16", network_id=42, start_third_octet=0
+    )
     assert ip == ipaddress.ip_address("10.254.0.2")
 
 
 @mock.patch(
     "core.get_assigned_ips",
-    return_value={ipaddress.ip_address(f"10.254.0.{i}") for i in range(1, 10)},
+    return_value={
+        *(ipaddress.ip_address(f"10.254.1.{i}") for i in range(1, 255)),
+    },
 )
-def test_search_for_next_available_ip_skips_used_hosts(mock_get_assigned):
+def test_search_for_next_available_ip_skips_dot_zero_and_dot_255(mock_get_assigned):
     ip = core.search_for_next_available_ip("10.254.0.0/16", network_id=42)
-    assert ip == ipaddress.ip_address("10.254.0.10")
+    assert ip == ipaddress.ip_address("10.254.2.1")
 
 
 @mock.patch("core.get_db")

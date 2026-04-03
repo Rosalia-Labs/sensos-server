@@ -93,6 +93,9 @@ Each registered network stores:
 That data is returned to the client during `register-peer`, and the client
 writes it into `/etc/wireguard/<network>.conf`.
 
+Peer rows reserve their WireGuard IPs until they are deleted. Marking a peer
+inactive does not free its IP; deleting the peer does.
+
 The Docker host must actually expose the chosen UDP port, and clients must be
 able to reach it from wherever they operate.
 
@@ -129,6 +132,15 @@ When a new network is created, the server stores:
 - `wg_public_ip`
 - `wg_port`
 - a generated `10.<hash(name)>.0.0/16` WireGuard address range
+
+Inside that `/16`, `x.y.0.1` is reserved for the API proxy. Client allocation
+then picks the next free host address while scanning the `/16` continuously,
+starting at `x.y.1.1` by default, while skipping any address ending in `.0` or
+`.255`.
+If you want clients to begin in `x.y.2.*`, `x.y.3.*`, and so on, start
+enrollment with the corresponding `subnet_offset`.
+Use `subnet_offset=0` only when you explicitly want automatic allocation in
+`x.y.0.*`.
 
 Operationally, this means:
 

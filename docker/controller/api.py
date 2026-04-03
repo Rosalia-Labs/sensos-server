@@ -31,11 +31,15 @@ from core import (
     create_network_entry,
     wait_for_network_ready,
     lookup_client_id,
+    set_peer_active_state,
+    delete_peer,
 )
 
 from models import (
     RegisterPeerRequest,
     RegisterWireguardKeyRequest,
+    SetPeerActiveRequest,
+    DeletePeerRequest,
     RegisterSSHKeyRequest,
     LocationUpdateRequest,
     ClientStatusRequest,
@@ -177,7 +181,7 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT p.wg_ip, n.name AS network_name
+                SELECT p.wg_ip, n.name AS network_name, p.is_active
                 FROM sensos.wireguard_peers p
                 JOIN sensos.networks n ON p.network_id = n.id
                 ORDER BY n.name, p.wg_ip;
@@ -203,15 +207,17 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
             <tr>
                 <th>WireGuard IP</th>
                 <th>Network Name</th>
+                <th>Active</th>
             </tr>
     """
 
     for row in peers:
-        wg_ip, network_name = row
+        wg_ip, network_name, is_active = row
         peer_table += f"""
         <tr>
             <td>{wg_ip}</td>
             <td>{network_name}</td>
+            <td>{"yes" if is_active else "no"}</td>
         </tr>
         """
 
@@ -295,6 +301,32 @@ def register_wireguard_key(
         )
 
     return result
+
+
+@router.post("/set-peer-active")
+def set_peer_active(
+    request: SetPeerActiveRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    if not set_peer_active_state(request.wg_ip, request.is_active):
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Peer '{request.wg_ip}' not found."},
+        )
+    return {"wg_ip": request.wg_ip, "is_active": request.is_active}
+
+
+@router.post("/delete-peer")
+def delete_peer_endpoint(
+    request: DeletePeerRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    if not delete_peer(request.wg_ip):
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Peer '{request.wg_ip}' not found."},
+        )
+    return {"wg_ip": request.wg_ip, "deleted": True}
 
 
 @router.post("/exchange-ssh-keys")
@@ -455,6 +487,7 @@ def get_peer_info(
     """
     Given an IP address, returns:
       - exists: True if the IP is registered as a peer; otherwise False.
+      - is_active: whether the peer is still marked active in inventory.
       - network_name: the name of the network the peer is registered to, or None.
       - network_wg_public_key: the WireGuard public key of the network, or None.
       - peer_wg_public_key: the WireGuard public key stored for the peer, or None.
@@ -464,19 +497,20 @@ def get_peer_info(
         with conn.cursor() as cur:
             # Check if the IP exists in the wireguard_peers table
             cur.execute(
-                "SELECT id, network_id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
+                "SELECT id, network_id, is_active FROM sensos.wireguard_peers WHERE wg_ip = %s;",
                 (ip_address,),
             )
             peer = cur.fetchone()
             if not peer:
                 return {
                     "exists": False,
+                    "is_active": None,
                     "network_name": None,
                     "network_wg_public_key": None,
                     "peer_wg_public_key": None,
                     "ssh_public_key": None,
                 }
-            peer_id, network_id = peer
+            peer_id, network_id, is_active = peer
 
             # Get network details from the networks table
             cur.execute(
@@ -507,6 +541,7 @@ def get_peer_info(
 
     return {
         "exists": True,
+        "is_active": is_active,
         "network_name": network_name,
         "network_wg_public_key": network_wg_public_key,
         "peer_wg_public_key": peer_wg_public_key,

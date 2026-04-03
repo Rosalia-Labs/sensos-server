@@ -140,12 +140,65 @@ def test_register_peer_invalid_subnet(monkeypatch, client):
     assert resp.status_code == 400
 
 
+def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
+    monkeypatch.setattr(
+        api,
+        "get_network_details",
+        lambda name: (1, "10.0.0.0/16", "pubkey", "1.2.3.4", 51820),
+    )
+    monkeypatch.setattr(api, "insert_peer", lambda network_id, wg_ip, note=None: (123, "peer-uuid"))
+
+    captured = {}
+
+    def fake_search(subnet, network_id, start_third_octet=1):
+        captured["start_third_octet"] = start_third_octet
+        return "10.0.1.1"
+
+    monkeypatch.setattr(api, "search_for_next_available_ip", fake_search)
+
+    resp = client.post("/register-peer", json={"network_name": "test"})
+    assert resp.status_code == 200
+    assert captured["start_third_octet"] == 1
+    assert resp.json()["wg_ip"] == "10.0.1.1"
+
+
 def test_register_wireguard_key_not_found(monkeypatch, client):
     monkeypatch.setattr(api, "register_wireguard_key_in_db", lambda wg_ip, pubkey: None)
     resp = client.post(
         "/register-wireguard-key",
         json={"wg_ip": "10.0.0.2", "wg_public_key": "dummy"},
     )
+    assert resp.status_code == 404
+
+
+def test_set_peer_active_updates_inventory_state(monkeypatch, client):
+    captured = {}
+
+    def fake_set_peer_active_state(wg_ip, is_active):
+        captured["wg_ip"] = wg_ip
+        captured["is_active"] = is_active
+        return True
+
+    monkeypatch.setattr(api, "set_peer_active_state", fake_set_peer_active_state)
+
+    resp = client.post("/set-peer-active", json={"wg_ip": "10.0.1.7", "is_active": False})
+    assert resp.status_code == 200
+    assert captured == {"wg_ip": "10.0.1.7", "is_active": False}
+    assert resp.json() == {"wg_ip": "10.0.1.7", "is_active": False}
+
+
+def test_delete_peer_purges_inventory_entry(monkeypatch, client):
+    monkeypatch.setattr(api, "delete_peer", lambda wg_ip: wg_ip == "10.0.1.7")
+
+    resp = client.post("/delete-peer", json={"wg_ip": "10.0.1.7"})
+    assert resp.status_code == 200
+    assert resp.json() == {"wg_ip": "10.0.1.7", "deleted": True}
+
+
+def test_delete_peer_returns_not_found(monkeypatch, client):
+    monkeypatch.setattr(api, "delete_peer", lambda wg_ip: False)
+
+    resp = client.post("/delete-peer", json={"wg_ip": "10.0.1.99"})
     assert resp.status_code == 404
 
 

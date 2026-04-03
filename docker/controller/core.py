@@ -333,29 +333,65 @@ def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:
             return {ipaddress.ip_address(row[0]) for row in cur.fetchall()}
 
 
+def set_peer_active_state(wg_ip: str, is_active: bool) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.wireguard_peers
+                SET is_active = %s
+                WHERE wg_ip = %s
+                RETURNING id;
+                """,
+                (is_active, wg_ip),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
+def delete_peer(wg_ip: str) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
+                (wg_ip,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            peer_id = row[0]
+            cur.execute("DELETE FROM sensos.client_status WHERE client_id = %s;", (peer_id,))
+            cur.execute(
+                "DELETE FROM sensos.wireguard_peers WHERE id = %s;",
+                (peer_id,),
+            )
+            conn.commit()
+            return True
+
+
 def search_for_next_available_ip(
     network: str,
     network_id: int,
-    start_third_octet: int = 0,
+    start_third_octet: int = 1,
 ) -> Optional[ipaddress.IPv4Address]:
     ip_range = ipaddress.ip_network(network, strict=False)
     used_ips = get_assigned_ips(network_id)
 
     # .1 is reserved for the API proxy inside the tunnel.
     used_ips.add(ip_range.network_address + 1)
+    start_ip = ipaddress.ip_address(
+        int(ip_range.network_address) + start_third_octet * 256 + (2 if start_third_octet == 0 else 1)
+    )
 
-    base_bytes = bytearray(ip_range.network_address.packed)
-    max_subnet = ip_range.num_addresses // 256
-
-    for third_octet in range(start_third_octet, max_subnet):
-        base_bytes[2] = third_octet
-        base_bytes[3] = 0
-        subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
-        subnet_net = ipaddress.ip_network(f"{subnet_base}/24", strict=False)
-
-        for host_ip in subnet_net.hosts():
-            if host_ip not in used_ips:
-                return host_ip
+    for host_int in range(int(start_ip), int(ip_range.broadcast_address)):
+        host_ip = ipaddress.ip_address(host_int)
+        if host_ip.packed[-1] in (0, 255):
+            continue
+        if host_ip not in used_ips:
+            return host_ip
 
     return None
 
@@ -413,6 +449,12 @@ def create_wireguard_peers_table(cur):
             registered_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(uuid)
         );
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.wireguard_peers
+        ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
         """
     )
 

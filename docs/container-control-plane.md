@@ -65,7 +65,14 @@ Private key handling now follows strict local ownership:
 Current reserved addresses inside each network:
 
 - `.1`: API proxy WireGuard address
-- client peers are assigned starting at `.2`
+- the rest of `x.y.0.*` is available for infrastructure-style assignments if you
+  manage them explicitly
+- automatic client peer allocation reserves `.1` and then assigns the next free
+  host address while scanning the `/16` continuously from the selected starting
+  point, skipping any address ending in `.0` or `.255`:
+  `x.y.1.1`, `x.y.1.2`, ..., `x.y.1.254`, `x.y.2.1`, ...
+- enrollment can override that starting `/24` via `subnet_offset`; use
+  `subnet_offset=0` if you explicitly want automatic allocation in `x.y.0.*`
 
 ## Reconciliation Model
 
@@ -85,6 +92,13 @@ Peer registration is separate:
 2. the server allocates a client WireGuard IP and returns network connection details
 3. the client later calls `register-wireguard-key`
 4. `sensos-wireguard` picks up the new active peer public key from the database and reconciles the server interface
+
+Peer lifecycle is also explicit:
+
+- mark a peer inactive when it still matters in inventory but should keep its
+  assigned IP reserved
+- delete a peer only when it should be fully purged; that removes the peer row
+  and makes the WireGuard IP available for reuse
 
 ## Runtime State Volumes
 
