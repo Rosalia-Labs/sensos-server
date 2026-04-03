@@ -237,7 +237,7 @@ def test_client_status_accepts_wireguard_ip_payload(monkeypatch, client):
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
-    monkeypatch.setattr(api, "lookup_client_id", lambda conn, wireguard_ip: 123 if wireguard_ip == "10.0.1.7" else None)
+    monkeypatch.setattr(api, "lookup_peer_id", lambda conn, wireguard_ip: 123 if wireguard_ip == "10.0.1.7" else None)
 
     resp = client.post(
         "/client-status",
@@ -260,6 +260,28 @@ def test_client_status_accepts_wireguard_ip_payload(monkeypatch, client):
     assert resp.json() == {"message": "Client status updated successfully"}
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "INSERT INTO sensos.client_status" in executed
+    assert "peer_id, last_check_in" in executed
+
+
+def test_get_defined_networks_requires_authentication(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    unauthenticated_client = TestClient(app)
+
+    resp = unauthenticated_client.get("/get-wireguard-network-names")
+    assert resp.status_code == 401
+
+
+def test_get_defined_networks_returns_names(monkeypatch, client):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = [("testing",), ("biosense",)]
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+
+    resp = client.get("/get-wireguard-network-names")
+    assert resp.status_code == 200
+    assert resp.json() == {"networks": ["testing", "biosense"]}
 
 
 def test_wireguard_status_uses_database_rows(monkeypatch, client):

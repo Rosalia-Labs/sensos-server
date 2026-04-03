@@ -186,6 +186,39 @@ def migrate_network_endpoint_to_text(cur):
     )
 
 
+def migrate_client_status_to_peer_id(cur):
+    cur.execute("SET search_path TO sensos, public;")
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        RENAME COLUMN client_id TO peer_id;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD CONSTRAINT client_status_peer_id_fkey
+        FOREIGN KEY (peer_id) REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in
+        ON sensos.client_status (peer_id, last_check_in DESC);
+        """
+    )
+
+
+def migrate_remove_ssh_keys_network_id(cur):
+    cur.execute("SET search_path TO sensos, public;")
+    cur.execute(
+        """
+        ALTER TABLE sensos.ssh_keys
+        DROP COLUMN network_id;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.1.0"),
@@ -196,6 +229,16 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.5.0"),
         name="allow hostname wireguard endpoints",
         apply=migrate_network_endpoint_to_text,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.5.1"),
+        name="rename client_status client_id to peer_id",
+        apply=migrate_client_status_to_peer_id,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.5.2"),
+        name="remove redundant ssh_keys network_id",
+        apply=migrate_remove_ssh_keys_network_id,
     ),
 ]
 
@@ -230,7 +273,7 @@ def render_version_key(version_key: tuple[int, int, int, int, str]) -> str:
     return f"{base}-{suffix}"
 
 
-def lookup_client_id(conn, wireguard_ip):
+def lookup_peer_id(conn, wireguard_ip):
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s",
@@ -488,7 +531,6 @@ def delete_peer(wg_ip: str) -> bool:
             if row is None:
                 return False
             peer_id = row[0]
-            cur.execute("DELETE FROM sensos.client_status WHERE client_id = %s;", (peer_id,))
             cur.execute(
                 "DELETE FROM sensos.wireguard_peers WHERE id = %s;",
                 (peer_id,),
@@ -603,7 +645,6 @@ def create_ssh_keys_table(cur):
         """
         CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
             id SERIAL PRIMARY KEY,
-            network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
             peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             username TEXT NOT NULL,
             uid INTEGER NOT NULL,
@@ -625,7 +666,7 @@ def create_client_status_table(cur):
         """
         CREATE TABLE IF NOT EXISTS sensos.client_status (
             id SERIAL PRIMARY KEY,
-            client_id INTEGER NOT NULL,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             last_check_in TIMESTAMPTZ,
             uptime_seconds INTEGER,
             hostname TEXT,
@@ -638,6 +679,12 @@ def create_client_status_table(cur):
             version TEXT,
             status_message TEXT
         );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in
+        ON sensos.client_status (peer_id, last_check_in DESC);
         """
     )
 

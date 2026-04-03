@@ -127,13 +127,15 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None, None]
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.5.0")
+    core.apply_schema_migrations(fake_cur, "0.5.2")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
+    assert "RENAME COLUMN client_id TO peer_id" in executed
+    assert "DROP COLUMN network_id" in executed
 
 
 @pytest.mark.asyncio

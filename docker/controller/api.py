@@ -30,7 +30,7 @@ from core import (
     register_wireguard_key_in_db,
     create_network_entry,
     wait_for_network_ready,
-    lookup_client_id,
+    lookup_peer_id,
     set_peer_active_state,
     delete_peer,
 )
@@ -339,7 +339,7 @@ def exchange_ssh_keys(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT network_id, id FROM sensos.wireguard_peers WHERE wg_ip = %s;
+                SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;
                 """,
                 (request.wg_ip,),
             )
@@ -351,19 +351,18 @@ def exchange_ssh_keys(
                     detail=f"Peer with WireGuard IP '{request.wg_ip}' not found.",
                 )
 
-            network_id, peer_id = result
+            peer_id = result[0]
 
             cur.execute(
                 """
                 INSERT INTO sensos.ssh_keys 
-                (network_id, peer_id, username, uid, ssh_public_key, key_type, key_size, 
+                (peer_id, username, uid, ssh_public_key, key_type, key_size, 
                  key_comment, fingerprint, expires_at, last_used)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (peer_id, ssh_public_key) DO NOTHING
                 RETURNING *;
                 """,
                 (
-                    network_id,
                     peer_id,
                     request.username,
                     request.uid,
@@ -555,12 +554,12 @@ def client_status(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     with get_db() as conn:
-        client_id = lookup_client_id(conn, status.wireguard_ip)
+        peer_id = lookup_peer_id(conn, status.wireguard_ip)
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO sensos.client_status (
-                    client_id, last_check_in, hostname, uptime_seconds,
+                    peer_id, last_check_in, hostname, uptime_seconds,
                     disk_available_gb, memory_used_mb, memory_total_mb,
                     load_1m, load_5m, load_15m, version, status_message
                 ) VALUES (
@@ -568,7 +567,7 @@ def client_status(
                 )
                 """,
                 (
-                    client_id,
+                    peer_id,
                     status.hostname,
                     status.uptime_seconds,
                     status.disk_available_gb,
@@ -586,7 +585,9 @@ def client_status(
 
 
 @router.get("/get-wireguard-network-names")
-def get_defined_networks():
+def get_defined_networks(
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT name FROM sensos.networks;")
