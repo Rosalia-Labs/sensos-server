@@ -313,6 +313,22 @@ def generate_default_ip_range(name: str) -> ipaddress.IPv4Network:
     return ipaddress.ip_network(f"10.{hash_val}.0.0/16")
 
 
+def allocate_network_ip_range(cur: Cursor, name: str) -> ipaddress.IPv4Network:
+    preferred = generate_default_ip_range(name)
+    preferred_second_octet = int(str(preferred.network_address).split(".")[1])
+
+    cur.execute("SELECT ip_range FROM sensos.networks;")
+    used_ranges = {str(ipaddress.ip_network(row[0], strict=False)) for row in cur.fetchall()}
+
+    for offset in range(256):
+        candidate_second_octet = (preferred_second_octet + offset) % 256
+        candidate = ipaddress.ip_network(f"10.{candidate_second_octet}.0.0/16")
+        if str(candidate) not in used_ranges:
+            return candidate
+
+    raise RuntimeError("no available default 10.x.0.0/16 network ranges remain")
+
+
 def insert_peer(
     network_id: int, wg_ip: str, note: Optional[str] = None
 ) -> Tuple[int, str]:
@@ -387,7 +403,7 @@ def create_network_entry(
     if wg_port is None:
         wg_port = allocate_public_wg_port(cur)
 
-    ip_range = generate_default_ip_range(name)
+    ip_range = allocate_network_ip_range(cur, name)
     cur.execute(
         """
         INSERT INTO sensos.networks

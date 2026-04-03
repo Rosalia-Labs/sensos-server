@@ -23,6 +23,26 @@ def test_generate_default_ip_range():
     )
 
 
+def test_allocate_network_ip_range_uses_next_free_range():
+    mock_cur = mock.MagicMock()
+    preferred = core.generate_default_ip_range("network1")
+    next_range = ipaddress.ip_network(
+        f"10.{(int(str(preferred.network_address).split('.')[1]) + 1) % 256}.0.0/16"
+    )
+    mock_cur.fetchall.return_value = [(str(preferred),)]
+
+    allocated = core.allocate_network_ip_range(mock_cur, "network1")
+    assert allocated == next_range
+
+
+def test_allocate_network_ip_range_raises_when_exhausted():
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchall.return_value = [(f"10.{i}.0.0/16",) for i in range(256)]
+
+    with pytest.raises(RuntimeError, match="no available default 10.x.0.0/16 network ranges remain"):
+        core.allocate_network_ip_range(mock_cur, "network1")
+
+
 def test_resolve_hostname_ip_direct():
     assert core.resolve_hostname("8.8.8.8") == "8.8.8.8"
     assert core.resolve_hostname("::1") == "::1"
@@ -175,6 +195,7 @@ def test_create_network_entry_new():
     assert result["id"] == 42
     assert result["wg_public_key"] is None
     assert result["wg_port"] == core.PUBLIC_WG_PORT_START
+    assert result["ip_range"] == str(core.generate_default_ip_range("testnet"))
 
 
 def test_create_network_entry_accepts_hostname_endpoint():

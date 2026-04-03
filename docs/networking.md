@@ -131,7 +131,9 @@ When a new network is created, the server stores:
 - `name`
 - `wg_public_ip` as the client-visible WireGuard endpoint address
 - `wg_port`
-- a generated `10.<hash(name)>.0.0/16` WireGuard address range
+- a generated `10.x.0.0/16` WireGuard address range, chosen by hashing the
+  network name and then probing for the next free `/16` if that preferred range
+  is already in use
 
 Inside that `/16`, `x.y.0.1` is reserved for the API proxy. Client allocation
 then picks the next free host address while scanning the `/16` continuously,
