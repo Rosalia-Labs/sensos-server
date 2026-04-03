@@ -57,8 +57,9 @@ curl -fsSL https://raw.githubusercontent.com/Rosalia-Labs/sensos-server/main/tes
 ```
 
 That script installs the Debian packages needed to host the server, ensures the
-`sensos` user exists with `sudo` and `docker` group membership, and clones the
-repo into that user's home directory. It is intended to be run as `root`.
+`sensos` user exists for the repo checkout and Docker runtime path, and clones
+the repo into that user's home directory. It is intended to be run as `root`.
+Use a separate admin account for `sudo` and other privileged host actions.
 
 Important current packaging note for Debian trixie:
 

@@ -56,23 +56,30 @@ By contrast, the WireGuard endpoint IP and UDP port are not server-global
 settings in this repo. They are chosen per network when you run
 `bin/create-network`.
 
-## API Password
+## API Passwords
 
-The server requires HTTP Basic auth using the configured API password:
+The server supports separate HTTP Basic auth passwords for clients and admins:
 
-- server source of truth: `API_PASSWORD` in `docker/.env`
+- server source of truth: `CLIENT_API_PASSWORD` and `ADMIN_API_PASSWORD` in `docker/.env`
+- backward-compatibility fallback: `API_PASSWORD` still sets both when the split vars are absent
 - client local copy: `/sensos/keys/api_password`
 
-You set the server-side password with:
+You set the server-side passwords with:
+
+```sh
+./bin/configure-server --client-api-password '<client-password>' --admin-api-password '<admin-password>'
+```
+
+Or, for a temporary shared-password setup:
 
 ```sh
 ./bin/configure-server --api-password '<password>'
 ```
 
-During enrollment, the client operator must enter the same password when
+During enrollment, the client operator must enter the client API password when
 `config-network` prompts for it.
 
-If they do not match:
+If the client password does not match:
 
 - enrollment API calls fail
 - later status updates and location sync fail
@@ -81,6 +88,8 @@ Current implementation note:
 
 - the server validates the password and does not currently care about the
   Basic-auth username
+- client routes accept either the client password or the admin password
+- admin routes require the admin password
 - the client commonly uses username `sensos`
 
 ## WireGuard Host Port Exposure

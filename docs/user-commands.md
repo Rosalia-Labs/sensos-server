@@ -43,8 +43,8 @@ sudo /home/sensos/sensos-server/bin/install-service
 
 Behavior:
 
-- can be run by the repo owner if that user has `sudo`
-- can also be run directly by an admin account with `sudo /path/to/repo/bin/install-service`
+- should be run from a separate admin account with `sudo /path/to/repo/bin/install-service`
+- the `sensos` service user is not expected to have `sudo`
 - confirms the target repo path
 - infers the service user from the repo checkout owner unless `SENSOS_SERVICE_USER` is set
 - runs the setup pipeline with a privileged path
@@ -88,14 +88,17 @@ Important flags from the source:
 
 - `--api-port`
 - `--postgres-password`
-- `--api-password`
+- `--admin-api-password`
+- `--client-api-password`
+- `--api-password` as a legacy shortcut to set both the same way
 - `--expose-containers`
 
 Typical use:
 
 ```sh
 ./bin/configure-server
-./bin/configure-server --api-port 8765 --api-password '<password>'
+./bin/configure-server --api-port 8765 --admin-api-password '<admin-password>' --client-api-password '<client-password>'
+./bin/configure-server --api-port 8765 --api-password '<shared-password>'
 ```
 
 Behavior:

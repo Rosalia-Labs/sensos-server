@@ -12,7 +12,8 @@ echo "Working directory: $(pwd)"
 # Define default values
 DEFAULT_API_PORT=8765
 DEFAULT_POSTGRES_PASSWORD="sensos"
-DEFAULT_API_PASSWORD="sensos"
+DEFAULT_ADMIN_API_PASSWORD="sensos-admin"
+DEFAULT_CLIENT_API_PASSWORD="sensos-client"
 DEFAULT_EXPOSE_CONTAINERS="false"
 
 # Print help message
@@ -23,7 +24,9 @@ Usage: $0 [options]
 Options:
   --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
   --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
-  --api-password PWD       Set API password (default: $DEFAULT_API_PASSWORD)
+  --admin-api-password PWD Set admin API password (default: $DEFAULT_ADMIN_API_PASSWORD)
+  --client-api-password PWD Set client API password (default: $DEFAULT_CLIENT_API_PASSWORD)
+  --api-password PWD       Legacy shortcut: set both admin and client API passwords
   --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
   -h, --help               Show this help message
 EOF
@@ -41,8 +44,17 @@ while [[ $# -gt 0 ]]; do
         POSTGRES_PASSWORD="$2"
         shift 2
         ;;
+    --admin-api-password)
+        ADMIN_API_PASSWORD="$2"
+        shift 2
+        ;;
+    --client-api-password)
+        CLIENT_API_PASSWORD="$2"
+        shift 2
+        ;;
     --api-password)
-        API_PASSWORD="$2"
+        ADMIN_API_PASSWORD="$2"
+        CLIENT_API_PASSWORD="$2"
         shift 2
         ;;
     --expose-containers)
@@ -62,7 +74,8 @@ done
 # Set defaults if variables not provided
 API_PORT=${API_PORT:-$DEFAULT_API_PORT}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
-API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
+ADMIN_API_PASSWORD=${ADMIN_API_PASSWORD:-$DEFAULT_ADMIN_API_PASSWORD}
+CLIENT_API_PASSWORD=${CLIENT_API_PASSWORD:-$DEFAULT_CLIENT_API_PASSWORD}
 EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
 
 # Backup existing .env if it exists
@@ -76,7 +89,8 @@ fi
 cat >.env <<EOF
 API_PORT=$API_PORT
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-API_PASSWORD=$API_PASSWORD
+ADMIN_API_PASSWORD=$ADMIN_API_PASSWORD
+CLIENT_API_PASSWORD=$CLIENT_API_PASSWORD
 EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS
 EOF
 

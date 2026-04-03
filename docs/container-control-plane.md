@@ -139,9 +139,9 @@ API-level checks:
 
 ```sh
 source docker/.env
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/get-network-info?network_name=<network>
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/wireguard-status
-curl -u "sensos:$API_PASSWORD" http://127.0.0.1:8765/inspect-database?limit=20
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/get-network-info?network_name=<network>
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/wireguard-status
+curl -u "sensos:$ADMIN_API_PASSWORD" http://127.0.0.1:8765/inspect-database?limit=20
 ```
 
 Container WireGuard checks:
