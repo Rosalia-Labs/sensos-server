@@ -158,6 +158,25 @@ Behavior:
 - starts the DB-backed control-plane stack, where the database coordinates
   container WireGuard reconciliation
 
+### `bin/server-overview`
+
+Prints a compact status summary for the repo, local server config, Docker
+runtime, and database-backed network state.
+
+Typical use:
+
+```sh
+./bin/server-overview
+```
+
+Behavior:
+
+- shows repo version and git state
+- shows whether `docker/.env` exists and the configured API port
+- shows Docker/container status for the main SensOS services
+- if `sensos-database` is running, shows a short database summary including
+  network, peer, key, and runtime-status counts
+
 ### `bin/stop-server`
 
 Stops the Docker Compose stack.

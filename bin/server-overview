@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${REPO_ROOT}/docker"
+ENV_FILE="${DOCKER_DIR}/.env"
+
+print_line() {
+    printf '%s\n' "$*"
+}
+
+require_repo() {
+    [[ -d "${DOCKER_DIR}" ]] || {
+        print_line "ERROR: missing docker directory at ${DOCKER_DIR}" >&2
+        exit 1
+    }
+}
+
+load_env() {
+    if [[ -f "${ENV_FILE}" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${ENV_FILE}"
+        set +a
+        ENV_PRESENT=yes
+    else
+        ENV_PRESENT=no
+    fi
+}
+
+repo_version() {
+    if [[ -f "${REPO_ROOT}/VERSION" ]]; then
+        head -n 1 "${REPO_ROOT}/VERSION" | tr -d '[:space:]'
+    else
+        printf 'unknown'
+    fi
+}
+
+git_summary() {
+    local branch commit dirty
+    branch="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown')"
+    commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+    if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null || true)" ]]; then
+        dirty="dirty"
+    else
+        dirty="clean"
+    fi
+    printf '%s @ %s (%s)\n' "${branch}" "${commit}" "${dirty}"
+}
+
+have_docker() {
+    command -v docker >/dev/null 2>&1
+}
+
+docker_access() {
+    docker info >/dev/null 2>&1
+}
+
+compose_flavor() {
+    if docker compose version >/dev/null 2>&1; then
+        printf 'docker compose'
+        return
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+        printf 'docker-compose'
+        return
+    fi
+    printf 'missing'
+}
+
+container_state() {
+    local name="$1"
+    docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "${name}" 2>/dev/null || printf 'missing n/a'
+}
+
+psql_value() {
+    local sql="$1"
+    docker exec -e PGPASSWORD="${POSTGRES_PASSWORD:-}" sensos-database \
+        psql -U postgres -d postgres -Atqc "${sql}" 2>/dev/null | tr -d '\r'
+}
+
+print_config() {
+    local api_port expose_containers admin_set client_set pg_set
+
+    api_port="${API_PORT:-unset}"
+    expose_containers="${EXPOSE_CONTAINERS:-unset}"
+
+    if [[ -n "${ADMIN_API_PASSWORD:-}" ]]; then admin_set=yes; else admin_set=no; fi
+    if [[ -n "${CLIENT_API_PASSWORD:-}" ]]; then client_set=yes; else client_set=no; fi
+    if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then pg_set=yes; else pg_set=no; fi
+
+    print_line "Config"
+    print_line "  env file: ${ENV_PRESENT}"
+    print_line "  api port: ${api_port}"
+    print_line "  expose containers: ${expose_containers}"
+    print_line "  passwords set: postgres=${pg_set} admin=${admin_set} client=${client_set}"
+}
+
+print_runtime() {
+    local controller_state wireguard_state database_state proxy_state
+
+    controller_state="$(container_state sensos-controller)"
+    wireguard_state="$(container_state sensos-wireguard)"
+    database_state="$(container_state sensos-database)"
+    proxy_state="$(container_state sensos-api-proxy)"
+
+    print_line "Runtime"
+    print_line "  docker access: yes"
+    print_line "  compose: $(compose_flavor)"
+    print_line "  sensos-controller: ${controller_state}"
+    print_line "  sensos-wireguard: ${wireguard_state}"
+    print_line "  sensos-database: ${database_state}"
+    print_line "  sensos-api-proxy: ${proxy_state}"
+}
+
+print_database() {
+    local networks peers active_keys runtime_rows ready_rows error_rows latest_networks
+
+    if ! docker ps --filter "name=^sensos-database$" --format '{{.Names}}' | grep -q '^sensos-database$'; then
+        print_line "Database"
+        print_line "  sensos-database: not running"
+        return
+    fi
+
+    networks="$(psql_value 'select count(*) from sensos.networks;')"
+    peers="$(psql_value 'select count(*) from sensos.wireguard_peers;')"
+    active_keys="$(psql_value 'select count(*) from sensos.wireguard_keys where active;')"
+    runtime_rows="$(psql_value 'select count(*) from sensos.runtime_wireguard_status;')"
+    ready_rows="$(psql_value "select count(*) from sensos.runtime_wireguard_status where status = ''ready'';")"
+    error_rows="$(psql_value "select count(*) from sensos.runtime_wireguard_status where coalesce(last_error, '''') <> '''';")"
+    latest_networks="$(psql_value "select coalesce(string_agg(name, ', ' order by name), 'none') from (select name from sensos.networks order by name limit 5) n;")"
+
+    print_line "Database"
+    print_line "  networks: ${networks:-unknown}"
+    print_line "  peers: ${peers:-unknown}"
+    print_line "  active keys: ${active_keys:-unknown}"
+    print_line "  runtime rows: ${runtime_rows:-unknown} ready=${ready_rows:-unknown} errors=${error_rows:-unknown}"
+    print_line "  sample networks: ${latest_networks:-unknown}"
+}
+
+main() {
+    require_repo
+    load_env
+
+    print_line "SensOS Server Overview"
+    print_line "  repo: ${REPO_ROOT}"
+    print_line "  version: $(repo_version)"
+    print_line "  git: $(git_summary)"
+
+    print_config
+
+    if ! have_docker; then
+        print_line "Runtime"
+        print_line "  docker access: no"
+        print_line "  docker binary: missing"
+        exit 0
+    fi
+
+    if ! docker_access; then
+        print_line "Runtime"
+        print_line "  docker access: no"
+        print_line "  docker binary: present but unusable by current user"
+        print_line "  compose: $(compose_flavor)"
+        exit 0
+    fi
+
+    print_runtime
+    print_database
+}
+
+main "$@"
