@@ -198,7 +198,7 @@ Typical server-guest network creation:
   --config-server 127.0.0.1 \
   --port 8765 \
   --wg-public-ip 10.0.2.2 \
-  --wg-port 15182
+  --wg-port 51281
 ```
 
 Typical client-guest enrollment:

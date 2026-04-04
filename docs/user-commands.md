@@ -144,7 +144,7 @@ Updates the published client-facing WireGuard endpoint for an existing network.
 Typical use:
 
 ```sh
-./bin/update-network-endpoint testing --wg-public-ip 10.0.2.2 --wg-port 15182
+./bin/update-network-endpoint testing --wg-public-ip 10.0.2.2 --wg-port 51281
 ```
 
 Behavior:

@@ -19,8 +19,8 @@ DATA_IMAGE="${SENSOS_QEMU_DATA_IMAGE:-${IMAGE_DIR}/debian-trixie-arm64-data.qcow
 
 SSH_FORWARD_PORT="${SENSOS_QEMU_SSH_PORT:-2223}"
 API_FORWARD_PORT="${SENSOS_QEMU_API_PORT:-18765}"
-WG_FORWARD_PORT="${SENSOS_QEMU_WG_HOST_PORT:-15182}"
-WG_GUEST_PORT="${SENSOS_QEMU_WG_GUEST_PORT:-51281}"
+WG_PORT_START="${SENSOS_QEMU_WG_PORT_START:-51281}"
+WG_PORT_END="${SENSOS_QEMU_WG_PORT_END:-51289}"
 MEMORY_MB="${SENSOS_QEMU_MEMORY_MB:-4096}"
 CPU_COUNT="${SENSOS_QEMU_CPU_COUNT:-4}"
 DISK_SIZE="${SENSOS_QEMU_DISK_SIZE:-32G}"
@@ -58,8 +58,8 @@ Environment overrides:
   SENSOS_QEMU_DATA_IMAGE
   SENSOS_QEMU_SSH_PORT
   SENSOS_QEMU_API_PORT
-  SENSOS_QEMU_WG_HOST_PORT
-  SENSOS_QEMU_WG_GUEST_PORT
+  SENSOS_QEMU_WG_PORT_START
+  SENSOS_QEMU_WG_PORT_END
   SENSOS_QEMU_MEMORY_MB
   SENSOS_QEMU_CPU_COUNT
   SENSOS_QEMU_DISK_SIZE
@@ -138,11 +138,22 @@ Base image:       ${BASE_IMAGE}
 Data image:       ${DATA_IMAGE}
 SSH forward:      ssh -p ${SSH_FORWARD_PORT} <user>@127.0.0.1
 Server API:       http://127.0.0.1:${API_FORWARD_PORT}
-WireGuard UDP:    127.0.0.1:${WG_FORWARD_PORT}/udp -> guest:${WG_GUEST_PORT}/udp
+WireGuard UDP:    127.0.0.1:${WG_PORT_START}-${WG_PORT_END}/udp -> guest:${WG_PORT_START}-${WG_PORT_END}/udp
 Host access:      guest can reach macOS services at 10.0.2.2
 Repo path:        ${REPO_ROOT}
 
 EOF
+}
+
+build_netdev_arg() {
+    local arg
+    local port
+
+    arg="user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765"
+    for ((port = WG_PORT_START; port <= WG_PORT_END; port++)); do
+        arg+=",hostfwd=udp:127.0.0.1:${port}-:${port}"
+    done
+    printf '%s\n' "${arg}"
 }
 
 run_qemu() {
@@ -160,6 +171,9 @@ run_qemu() {
         extra_drives+=(-drive "if=virtio,file=${DATA_IMAGE},format=qcow2")
     fi
 
+    local netdev_arg
+    netdev_arg="$(build_netdev_arg)"
+
     if [[ ${#extra_drives[@]} -gt 0 ]]; then
         qemu-system-aarch64 \
             -machine virt,accel=hvf \
@@ -173,7 +187,7 @@ run_qemu() {
             -device usb-tablet \
             -device virtio-rng-pci \
             -device virtio-net-pci,netdev=net0 \
-            -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765,hostfwd=udp:127.0.0.1:${WG_FORWARD_PORT}-:${WG_GUEST_PORT}" \
+            -netdev "${netdev_arg}" \
             -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
             -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
             "${extra_drives[@]}" \
@@ -191,7 +205,7 @@ run_qemu() {
             -device usb-tablet \
             -device virtio-rng-pci \
             -device virtio-net-pci,netdev=net0 \
-            -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765,hostfwd=udp:127.0.0.1:${WG_FORWARD_PORT}-:${WG_GUEST_PORT}" \
+            -netdev "${netdev_arg}" \
             -drive "if=pflash,format=raw,readonly=on,file=${FIRMWARE_CODE}" \
             -drive "if=pflash,format=raw,file=${FIRMWARE_VARS}" \
             "$@"
