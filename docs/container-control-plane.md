@@ -195,8 +195,8 @@ Typical server-guest network creation:
 
 ```sh
 ./bin/create-network testing \
-  --config-server 127.0.0.1 \
-  --port 8765 \
+  --api-host 127.0.0.1 \
+  --api-port 8765 \
   --wg-public-ip 10.0.2.2 \
   --wg-port 51281
 ```

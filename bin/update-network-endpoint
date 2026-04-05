@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/docker/.env"
 
-CONFIG_SERVER="127.0.0.1"
+API_HOST="127.0.0.1"
 API_PORT=""
 WG_PUBLIC_IP=""
 WG_PORT=""
@@ -33,10 +33,10 @@ Usage: $(basename "$0") [options] <network-name>
 Update the published client-facing WireGuard endpoint for an existing network.
 
 Options:
-  --config-server HOST   API host to contact (default: ${CONFIG_SERVER})
-  --port PORT            API port (default: value from docker/.env or 8765)
-  --wg-public-ip IP      Reachable WireGuard endpoint IP or hostname to publish
-  --wg-port PORT         WireGuard UDP port to publish
+  --api-host HOST        API host to contact now for this request (default: ${API_HOST})
+  --api-port PORT        API port to contact now (default: value from docker/.env or 8765)
+  --wg-public-ip IP      Client-facing WireGuard endpoint IP/hostname to publish
+  --wg-port PORT         Client-facing WireGuard UDP port to publish
   --api-password PASS    Override API password instead of reading docker/.env
   --help                 Show this help and exit
 EOF
@@ -63,13 +63,13 @@ load_env_defaults() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --config-server)
-                [[ $# -ge 2 ]] || die "--config-server requires a value"
-                CONFIG_SERVER="$2"
+            --api-host)
+                [[ $# -ge 2 ]] || die "--api-host requires a value"
+                API_HOST="$2"
                 shift 2
                 ;;
-            --port)
-                [[ $# -ge 2 ]] || die "--port requires a value"
+            --api-port)
+                [[ $# -ge 2 ]] || die "--api-port requires a value"
                 API_PORT="$2"
                 shift 2
                 ;;
@@ -115,11 +115,11 @@ validate_required() {
 print_summary() {
     local response_file="$1"
 
-    python3 - "$response_file" "$CONFIG_SERVER" "$API_PORT" <<'PY'
+    python3 - "$response_file" "$API_HOST" "$API_PORT" <<'PY'
 import json
 import sys
 
-response_path, config_server, api_port = sys.argv[1:4]
+response_path, api_host, api_port = sys.argv[1:4]
 
 with open(response_path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -135,9 +135,9 @@ print(f"CIDR:       {ip_range}")
 print(f"WG endpoint:{wg_public_ip}:{wg_port}")
 print(f"WG pubkey:  {wg_public_key}")
 print()
-print("Client setup example:")
+print("Setup-time API example:")
 print(
-    f"  config-network --config-server {config_server} --port {api_port} --network {name}"
+    f"  config-network --config-server {api_host} --port {api_port} --network {name}"
 )
 
 if wg_public_ip == "10.0.2.2":
@@ -198,12 +198,12 @@ main() {
         -F "wg_port=${WG_PORT}"
     )
 
-    log "updating endpoint for network '${NETWORK_NAME}' via http://${CONFIG_SERVER}:${API_PORT}/update-network-endpoint"
+    log "updating endpoint for network '${NETWORK_NAME}' via http://${API_HOST}:${API_PORT}/update-network-endpoint"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://${CONFIG_SERVER}:${API_PORT}/update-network-endpoint"
+            "http://${API_HOST}:${API_PORT}/update-network-endpoint"
     )"; then
-        die "failed to contact the server API at http://${CONFIG_SERVER}:${API_PORT}/update-network-endpoint"
+        die "failed to contact the server API at http://${API_HOST}:${API_PORT}/update-network-endpoint"
     fi
 
     if [[ "${status_code}" != "200" ]]; then

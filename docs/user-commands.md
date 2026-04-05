@@ -119,17 +119,17 @@ Typical use:
 ./bin/create-network testing
 ./bin/create-network biosense
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
-./bin/create-network testing --config-server 127.0.0.1 --port 8765
+./bin/create-network testing --api-host 127.0.0.1 --api-port 8765
 ```
 
 Behavior:
 
 - requires the server API to already be running
+- `--api-host` and `--api-port` are only the API address used immediately by this command
 - defaults `wg_public_ip` from `docker/.env` or by resolving the host's public IPv4 address at runtime
 - defaults `wg_port` by allocating the next free public WireGuard port in `51281..51289`
 - with the default port range, automatic allocation supports at most 9 networks before manual port exposure/config changes are required
-- `--wg-public-ip` overrides the detected/default endpoint value
-- `--wg-port` overrides the default allocated public port
+- `--wg-public-ip` and `--wg-port` are the client-facing WireGuard endpoint stored on the network for later use by clients
 - defaults the API password from `docker/.env`
 - creates no network automatically at server startup
 - if a named network already exists with a different published endpoint, the
@@ -150,6 +150,7 @@ Typical use:
 Behavior:
 
 - requires the server API to already be running
+- `--api-host` and `--api-port` are only the API address used immediately by this command
 - requires an existing network name
 - updates only the published WireGuard endpoint fields used by clients
 - avoids direct database editing for environment-specific corrections such as QEMU host forwarding
