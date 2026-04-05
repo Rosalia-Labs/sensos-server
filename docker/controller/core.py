@@ -674,6 +674,119 @@ def create_client_status_table(cur):
     )
     cur.execute(
         """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS peer_id INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS last_check_in TIMESTAMPTZ;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS uptime_seconds INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS hostname TEXT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS disk_available_gb REAL;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS memory_used_mb INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS memory_total_mb INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS load_1m REAL;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS load_5m REAL;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS load_15m REAL;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS version TEXT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.client_status
+        ADD COLUMN IF NOT EXISTS status_message TEXT;
+        """
+    )
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'sensos'
+                  AND table_name = 'client_status'
+                  AND column_name = 'wireguard_ip'
+            ) THEN
+                UPDATE sensos.client_status cs
+                SET peer_id = p.id
+                FROM sensos.wireguard_peers p
+                WHERE cs.peer_id IS NULL
+                  AND p.wg_ip = cs.wireguard_ip;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'client_status_peer_id_fkey'
+                  AND conrelid = 'sensos.client_status'::regclass
+            ) THEN
+                ALTER TABLE sensos.client_status
+                ADD CONSTRAINT client_status_peer_id_fkey
+                FOREIGN KEY (peer_id)
+                REFERENCES sensos.wireguard_peers(id)
+                ON DELETE CASCADE;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in
         ON sensos.client_status (peer_id, last_check_in DESC);
         """

@@ -139,6 +139,20 @@ def test_apply_schema_migrations_records_applied_versions():
     assert "UNIQUE (peer_id, ssh_public_key)" in executed
 
 
+def test_create_client_status_table_reconciles_legacy_schema():
+    fake_cur = mock.MagicMock()
+
+    core.create_client_status_table(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "ALTER TABLE sensos.client_status" in executed
+    assert "ADD COLUMN IF NOT EXISTS peer_id INTEGER;" in executed
+    assert "column_name = 'wireguard_ip'" in executed
+    assert "SET peer_id = p.id" in executed
+    assert "ADD CONSTRAINT client_status_peer_id_fkey" in executed
+    assert "CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in" in executed
+
+
 @pytest.mark.asyncio
 @mock.patch("core.get_db")
 async def test_lifespan_runs_schema_setup(mock_get_db):
