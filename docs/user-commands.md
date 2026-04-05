@@ -175,6 +175,25 @@ Behavior:
   location rows, hardware profiles, and runtime status
 - defaults the API password from `docker/.env`
 
+### `bin/delete-client`
+
+Deletes a registered client peer through the running server API.
+
+Typical use:
+
+```sh
+./bin/delete-client 10.23.1.15
+```
+
+Behavior:
+
+- requires the server API to already be running
+- runs against the locally configured server API on `127.0.0.1` and the configured API port
+- prompts for confirmation before making the request
+- deletes the peer row, which cascades to peer keys, client status, location,
+  and hardware-profile rows
+- defaults the API password from `docker/.env`
+
 ### `bin/start-server`
 
 Starts the Docker Compose stack from the repo-owned `docker/` directory.

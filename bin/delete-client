@@ -1,0 +1,168 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${REPO_ROOT}/docker/.env"
+
+API_PORT=""
+API_PASSWORD=""
+WG_IP=""
+RESPONSE_FILE=""
+
+log() {
+    printf '[delete-client] %s\n' "$*"
+}
+
+die() {
+    printf '[delete-client] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] <wireguard-ip>
+
+Delete a registered client peer through the running server API.
+
+Options:
+  --api-password PASS    Override API password instead of reading docker/.env
+  --help                 Show this help and exit
+EOF
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+load_env_defaults() {
+    if [[ -f "${ENV_FILE}" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${ENV_FILE}"
+        set +a
+    fi
+
+    API_PORT="${API_PORT:-8765}"
+    API_PASSWORD="${SENSOS_ADMIN_API_PASSWORD:-${ADMIN_API_PASSWORD:-${SENSOS_API_PASSWORD:-${API_PASSWORD:-}}}}"
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --api-password)
+                [[ $# -ge 2 ]] || die "--api-password requires a value"
+                API_PASSWORD="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            --*)
+                die "unknown option: $1"
+                ;;
+            *)
+                [[ -z "${WG_IP}" ]] || die "unexpected extra argument: $1"
+                WG_IP="$1"
+                shift
+                ;;
+        esac
+    done
+}
+
+validate_required() {
+    [[ -n "${WG_IP}" ]] || die "wireguard ip is required"
+    [[ -n "${API_PORT}" ]] || die "API port is not set"
+    [[ -n "${API_PASSWORD}" ]] || die "admin API password is not set; pass --api-password or configure ADMIN_API_PASSWORD in docker/.env"
+}
+
+confirm_delete() {
+    local confirmation
+
+    printf 'Delete client "%s"? This removes the peer and cascades to keys, client status, location, and hardware profile state. Type the WireGuard IP to continue: ' "${WG_IP}" >&2
+    IFS= read -r confirmation
+    [[ "${confirmation}" == "${WG_IP}" ]] || die "confirmation did not match; aborting"
+}
+
+print_api_error() {
+    local response_file="$1"
+
+    python3 - "$response_file" <<'PY'
+import json
+import sys
+
+response_path = sys.argv[1]
+
+try:
+    with open(response_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    with open(response_path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+    if text:
+        print(text)
+    sys.exit(0)
+
+if isinstance(data, dict) and data.get("error"):
+    print(data["error"])
+else:
+    print(json.dumps(data))
+PY
+}
+
+main() {
+    local status_code payload
+    local -a curl_args
+
+    require_command curl
+    require_command python3
+    load_env_defaults
+    parse_args "$@"
+    validate_required
+    confirm_delete
+
+    RESPONSE_FILE="$(mktemp)"
+    trap 'rm -f "${RESPONSE_FILE}"' EXIT
+    payload="$(python3 - "${WG_IP}" <<'PY'
+import json
+import sys
+
+print(json.dumps({"wg_ip": sys.argv[1]}))
+PY
+)"
+
+    curl_args=(
+        -sS
+        -o "${RESPONSE_FILE}"
+        -w '%{http_code}'
+        -u "sensos:${API_PASSWORD}"
+        -H 'Content-Type: application/json'
+        -X POST
+        -d "${payload}"
+    )
+
+    log "deleting client '${WG_IP}' via http://127.0.0.1:${API_PORT}/delete-peer"
+    if ! status_code="$(
+        curl "${curl_args[@]}" \
+            "http://127.0.0.1:${API_PORT}/delete-peer"
+    )"; then
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/delete-peer"
+    fi
+
+    if [[ "${status_code}" != "200" ]]; then
+        printf '[delete-client] ERROR: API returned HTTP %s\n' "${status_code}" >&2
+        if [[ -s "${RESPONSE_FILE}" ]]; then
+            print_api_error "${RESPONSE_FILE}" >&2
+        fi
+        exit 1
+    fi
+
+    printf 'Deleted client: %s\n' "${WG_IP}"
+}
+
+main "$@"
