@@ -97,6 +97,7 @@ ensure_clean_repo() {
     local status_output
 
     status_output="$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=all)"
+    status_output="$(printf '%s\n' "${status_output}" | grep -vE '^\?\? \.sensos-server(/|$)' || true)"
     if [[ -n "${status_output}" ]]; then
         printf '%s\n' "${status_output}" >&2
         die "repo is not clean. Commit or stash changes, then rerun ${SCRIPT_PATH}"
