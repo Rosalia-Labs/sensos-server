@@ -155,7 +155,7 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None, None]
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.5.0")
+    core.apply_schema_migrations(fake_cur, "0.6.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
@@ -165,6 +165,23 @@ def test_apply_schema_migrations_records_applied_versions():
     assert "peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.ssh_keys" in executed
     assert "UNIQUE (peer_id, ssh_public_key)" in executed
+
+
+def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = [("0.5.0",)]
+
+    core.apply_schema_migrations(fake_cur, "0.6.0")
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
+    assert "ADD COLUMN IF NOT EXISTS peer_id INTEGER;" in executed
+    insert_calls = [
+        call.args[1]
+        for call in fake_cur.execute.call_args_list
+        if "INSERT INTO sensos.schema_migrations" in call.args[0]
+    ]
+    assert ("0.6.0", "reconcile legacy network endpoint and client status schema") in insert_calls
 
 
 def test_create_client_status_table_reconciles_legacy_schema():

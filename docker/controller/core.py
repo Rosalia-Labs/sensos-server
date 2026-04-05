@@ -187,11 +187,23 @@ def create_initial_schema(cur):
     create_runtime_wireguard_status_table(cur)
 
 
+def migrate_0_6_0_schema_updates(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_networks_table(cur)
+    create_client_status_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
         name="initial release schema",
         apply=create_initial_schema,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.6.0"),
+        name="reconcile legacy network endpoint and client status schema",
+        apply=migrate_0_6_0_schema_updates,
     ),
 ]
 
