@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/docker/.env"
 
-API_HOST="127.0.0.1"
 API_PORT=""
 WG_PUBLIC_IP=""
 WG_PORT=""
@@ -33,8 +32,6 @@ Usage: $(basename "$0") [options] <network-name>
 Create or reconcile a named WireGuard network through the running server API.
 
 Options:
-  --api-host HOST        API host to contact now for this request (default: ${API_HOST})
-  --api-port PORT        API port to contact now (default: value from docker/.env or 8765)
   --wg-public-ip IP      Client-facing WireGuard endpoint IP/hostname to store for later use
   --wg-port PORT         Client-facing WireGuard UDP port to store for later use
   --api-password PASS    Override API password instead of reading docker/.env
@@ -83,16 +80,6 @@ resolve_public_ip() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --api-host)
-                [[ $# -ge 2 ]] || die "--api-host requires a value"
-                API_HOST="$2"
-                shift 2
-                ;;
-            --api-port)
-                [[ $# -ge 2 ]] || die "--api-port requires a value"
-                API_PORT="$2"
-                shift 2
-                ;;
             --wg-public-ip)
                 [[ $# -ge 2 ]] || die "--wg-public-ip requires a value"
                 WG_PUBLIC_IP="$2"
@@ -136,11 +123,11 @@ validate_required() {
 print_summary() {
     local response_file="$1"
 
-    python3 - "$response_file" "$API_HOST" "$API_PORT" <<'PY'
+    python3 - "$response_file" "$API_PORT" <<'PY'
 import json
 import sys
 
-response_path, api_host, api_port = sys.argv[1:4]
+response_path, api_port = sys.argv[1:3]
 
 with open(response_path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -158,7 +145,7 @@ print(f"WG pubkey:  {wg_public_key}")
 print()
 print("Setup-time API example:")
 print(
-    f"  config-network --config-server {api_host} --port {api_port} --network {name}"
+    f"  config-network --config-server <server-host-or-ip> --port {api_port} --network {name}"
 )
 
 if wg_public_ip == "10.0.2.2":
@@ -221,12 +208,12 @@ main() {
         curl_args+=(-F "wg_port=${WG_PORT}")
     fi
 
-    log "creating or reconciling network '${NETWORK_NAME}' via http://${API_HOST}:${API_PORT}/create-network"
+    log "creating or reconciling network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/create-network"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://${API_HOST}:${API_PORT}/create-network"
+            "http://127.0.0.1:${API_PORT}/create-network"
     )"; then
-        die "failed to contact the server API at http://${API_HOST}:${API_PORT}/create-network"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/create-network"
     fi
 
     if [[ "${status_code}" != "200" ]]; then

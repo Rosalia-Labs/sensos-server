@@ -530,6 +530,20 @@ def delete_peer(wg_ip: str) -> bool:
             return True
 
 
+def delete_network(name: str) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM sensos.networks WHERE name = %s RETURNING id;",
+                (name,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
 def search_for_next_available_ip(
     network: str,
     network_id: int,

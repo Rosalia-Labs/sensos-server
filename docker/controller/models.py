@@ -26,6 +26,10 @@ class DeletePeerRequest(BaseModel):
     wg_ip: str
 
 
+class DeleteNetworkRequest(BaseModel):
+    network_name: str
+
+
 class RegisterSSHKeyRequest(BaseModel):
     wg_ip: str
     username: str

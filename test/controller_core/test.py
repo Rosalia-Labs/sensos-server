@@ -118,6 +118,34 @@ def test_insert_peer_success(mock_get_db):
     assert core.insert_peer(1, "10.0.0.2", note="test note") == (123, "some-uuid")
 
 
+@mock.patch("core.get_db")
+def test_delete_network_success(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (42,)
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    assert core.delete_network("testing") is True
+    fake_cur.execute.assert_any_call(
+        "DELETE FROM sensos.networks WHERE name = %s RETURNING id;",
+        ("testing",),
+    )
+    mock_conn.commit.assert_called_once()
+
+
+@mock.patch("core.get_db")
+def test_delete_network_not_found(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = None
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    assert core.delete_network("missing") is False
+    mock_conn.commit.assert_not_called()
+
+
 def test_parse_version_key_orders_release_after_prerelease():
     assert core.parse_version_key("1.1.2-dev") < core.parse_version_key("1.1.2")
 

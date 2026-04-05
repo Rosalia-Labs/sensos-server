@@ -36,6 +36,7 @@ from core import (
     lookup_peer_id,
     set_peer_active_state,
     delete_peer,
+    delete_network,
 )
 
 from models import (
@@ -43,6 +44,7 @@ from models import (
     RegisterWireguardKeyRequest,
     SetPeerActiveRequest,
     DeletePeerRequest,
+    DeleteNetworkRequest,
     RegisterSSHKeyRequest,
     LocationUpdateRequest,
     ClientStatusRequest,
@@ -389,6 +391,19 @@ def delete_peer_endpoint(
             content={"error": f"Peer '{request.wg_ip}' not found."},
         )
     return {"wg_ip": request.wg_ip, "deleted": True}
+
+
+@router.post("/delete-network")
+def delete_network_endpoint(
+    request: DeleteNetworkRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate_admin),
+):
+    if not delete_network(request.network_name):
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Network '{request.network_name}' not found."},
+        )
+    return {"network_name": request.network_name, "deleted": True}
 
 
 @router.post("/exchange-ssh-keys")

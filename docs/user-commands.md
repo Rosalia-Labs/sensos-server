@@ -119,13 +119,12 @@ Typical use:
 ./bin/create-network testing
 ./bin/create-network biosense
 ./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
-./bin/create-network testing --api-host 127.0.0.1 --api-port 8765
 ```
 
 Behavior:
 
 - requires the server API to already be running
-- `--api-host` and `--api-port` are only the API address used immediately by this command
+- runs against the locally configured server API on `127.0.0.1` and the configured API port
 - defaults `wg_public_ip` from `docker/.env` or by resolving the host's public IPv4 address at runtime
 - defaults `wg_port` by allocating the next free public WireGuard port in `51281..51289`
 - with the default port range, automatic allocation supports at most 9 networks before manual port exposure/config changes are required
@@ -150,11 +149,31 @@ Typical use:
 Behavior:
 
 - requires the server API to already be running
-- `--api-host` and `--api-port` are only the API address used immediately by this command
+- runs against the locally configured server API on `127.0.0.1` and the configured API port
 - requires an existing network name
 - updates only the published WireGuard endpoint fields used by clients
 - avoids direct database editing for environment-specific corrections such as QEMU host forwarding
 - prints the resulting CIDR, WireGuard endpoint, and a sample client enrollment command
+
+### `bin/delete-network`
+
+Deletes a network through the running server API. This is destructive and
+cascades to the network's registered peers and related state.
+
+Typical use:
+
+```sh
+./bin/delete-network testing
+```
+
+Behavior:
+
+- requires the server API to already be running
+- runs against the locally configured server API on `127.0.0.1` and the configured API port
+- prompts for confirmation before making the request
+- deletes the network row, which cascades to peer records, keys, client status,
+  location rows, hardware profiles, and runtime status
+- defaults the API password from `docker/.env`
 
 ### `bin/start-server`
 

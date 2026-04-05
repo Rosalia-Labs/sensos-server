@@ -336,6 +336,21 @@ def test_delete_peer_returns_not_found(monkeypatch, client):
     assert resp.status_code == 404
 
 
+def test_delete_network_cascades_inventory_entry(monkeypatch, client):
+    monkeypatch.setattr(api, "delete_network", lambda network_name: network_name == "testing")
+
+    resp = client.post("/delete-network", json={"network_name": "testing"})
+    assert resp.status_code == 200
+    assert resp.json() == {"network_name": "testing", "deleted": True}
+
+
+def test_delete_network_returns_not_found(monkeypatch, client):
+    monkeypatch.setattr(api, "delete_network", lambda network_name: False)
+
+    resp = client.post("/delete-network", json={"network_name": "missing"})
+    assert resp.status_code == 404
+
+
 def test_client_status_accepts_wireguard_ip_payload(monkeypatch, client):
     fake_cur = mock.MagicMock()
     mock_conn = mock.MagicMock()

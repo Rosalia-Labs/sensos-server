@@ -10,18 +10,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/docker/.env"
 
 API_PORT=""
-WG_PUBLIC_IP=""
-WG_PORT=""
 API_PASSWORD=""
 NETWORK_NAME=""
 RESPONSE_FILE=""
 
 log() {
-    printf '[update-network-endpoint] %s\n' "$*"
+    printf '[delete-network] %s\n' "$*"
 }
 
 die() {
-    printf '[update-network-endpoint] ERROR: %s\n' "$*" >&2
+    printf '[delete-network] ERROR: %s\n' "$*" >&2
     exit 1
 }
 
@@ -29,11 +27,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] <network-name>
 
-Update the published client-facing WireGuard endpoint for an existing network.
+Delete a network and all client state beneath it through the running server API.
 
 Options:
-  --wg-public-ip IP      Client-facing WireGuard endpoint IP/hostname to publish
-  --wg-port PORT         Client-facing WireGuard UDP port to publish
   --api-password PASS    Override API password instead of reading docker/.env
   --help                 Show this help and exit
 EOF
@@ -52,24 +48,12 @@ load_env_defaults() {
     fi
 
     API_PORT="${API_PORT:-8765}"
-    WG_PUBLIC_IP="${WG_PUBLIC_IP:-}"
-    WG_PORT="${WG_PORT:-}"
     API_PASSWORD="${SENSOS_ADMIN_API_PASSWORD:-${ADMIN_API_PASSWORD:-${SENSOS_API_PASSWORD:-${API_PASSWORD:-}}}}"
 }
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --wg-public-ip)
-                [[ $# -ge 2 ]] || die "--wg-public-ip requires a value"
-                WG_PUBLIC_IP="$2"
-                shift 2
-                ;;
-            --wg-port)
-                [[ $# -ge 2 ]] || die "--wg-port requires a value"
-                WG_PORT="$2"
-                shift 2
-                ;;
             --api-password)
                 [[ $# -ge 2 ]] || die "--api-password requires a value"
                 API_PASSWORD="$2"
@@ -94,46 +78,15 @@ parse_args() {
 validate_required() {
     [[ -n "${NETWORK_NAME}" ]] || die "network name is required"
     [[ -n "${API_PORT}" ]] || die "API port is not set"
-    [[ -n "${WG_PUBLIC_IP}" ]] || die "WireGuard public IP/hostname is required"
-    [[ -n "${WG_PORT}" ]] || die "WireGuard port is required"
     [[ -n "${API_PASSWORD}" ]] || die "admin API password is not set; pass --api-password or configure ADMIN_API_PASSWORD in docker/.env"
 }
 
-print_summary() {
-    local response_file="$1"
+confirm_delete() {
+    local confirmation
 
-    python3 - "$response_file" "$API_PORT" <<'PY'
-import json
-import sys
-
-response_path, api_port = sys.argv[1:3]
-
-with open(response_path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-name = data["name"]
-ip_range = data["ip_range"]
-wg_public_ip = data["wg_public_ip"]
-wg_port = data["wg_port"]
-wg_public_key = data["wg_public_key"]
-
-print(f"Network:    {name}")
-print(f"CIDR:       {ip_range}")
-print(f"WG endpoint:{wg_public_ip}:{wg_port}")
-print(f"WG pubkey:  {wg_public_key}")
-print()
-print("Setup-time API example:")
-print(
-    f"  config-network --config-server <server-host-or-ip> --port {api_port} --network {name}"
-)
-
-if wg_public_ip == "10.0.2.2":
-    print()
-    print("QEMU client VM example:")
-    print(
-        f"  config-network --config-server 10.0.2.2 --port 18765 --network {name}"
-    )
-PY
+    printf 'Delete network "%s"? This destroys the network and cascades to all registered clients, keys, status, location, and runtime state. Type the network name to continue: ' "${NETWORK_NAME}" >&2
+    IFS= read -r confirmation
+    [[ "${confirmation}" == "${NETWORK_NAME}" ]] || die "confirmation did not match; aborting"
 }
 
 print_api_error() {
@@ -163,7 +116,7 @@ PY
 }
 
 main() {
-    local status_code
+    local status_code payload
     local -a curl_args
 
     require_command curl
@@ -171,37 +124,45 @@ main() {
     load_env_defaults
     parse_args "$@"
     validate_required
+    confirm_delete
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
+    payload="$(python3 - "${NETWORK_NAME}" <<'PY'
+import json
+import sys
+
+print(json.dumps({"network_name": sys.argv[1]}))
+PY
+)"
+
     curl_args=(
         -sS
         -o "${RESPONSE_FILE}"
         -w '%{http_code}'
         -u "sensos:${API_PASSWORD}"
+        -H 'Content-Type: application/json'
         -X POST
-        -F "name=${NETWORK_NAME}"
-        -F "wg_public_ip=${WG_PUBLIC_IP}"
-        -F "wg_port=${WG_PORT}"
+        -d "${payload}"
     )
 
-    log "updating endpoint for network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/update-network-endpoint"
+    log "deleting network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/delete-network"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://127.0.0.1:${API_PORT}/update-network-endpoint"
+            "http://127.0.0.1:${API_PORT}/delete-network"
     )"; then
-        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/update-network-endpoint"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/delete-network"
     fi
 
     if [[ "${status_code}" != "200" ]]; then
-        printf '[update-network-endpoint] ERROR: API returned HTTP %s\n' "${status_code}" >&2
+        printf '[delete-network] ERROR: API returned HTTP %s\n' "${status_code}" >&2
         if [[ -s "${RESPONSE_FILE}" ]]; then
             print_api_error "${RESPONSE_FILE}" >&2
         fi
         exit 1
     fi
 
-    print_summary "${RESPONSE_FILE}"
+    printf 'Deleted network: %s\n' "${NETWORK_NAME}"
 }
 
 main "$@"
