@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${REPO_ROOT}/docker"
+ENV_FILE="${DOCKER_DIR}/.env"
+
+MAX_CLIENTS=12
+SELECTED_CLIENT=""
+
+print_line() {
+    printf '%s\n' "$*"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: client-overview [CLIENT_ID] [--clients N]
+
+Print registered clients from the running SensOS server stack. When CLIENT_ID is
+provided, show a detailed record for that client. CLIENT_ID may be a peer id,
+UUID, WireGuard IP, or exact latest hostname.
+EOF
+}
+
+require_repo() {
+    [[ -d "${DOCKER_DIR}" ]] || {
+        print_line "ERROR: missing docker directory at ${DOCKER_DIR}" >&2
+        exit 1
+    }
+}
+
+load_env() {
+    if [[ -f "${ENV_FILE}" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${ENV_FILE}"
+        set +a
+    fi
+}
+
+have_docker() {
+    command -v docker >/dev/null 2>&1
+}
+
+docker_access() {
+    docker info >/dev/null 2>&1
+}
+
+db_running() {
+    docker ps --filter "name=^sensos-database$" --format '{{.Names}}' | grep -q '^sensos-database$'
+}
+
+psql_query() {
+    local sql="$1"
+    docker exec -e PGPASSWORD="${POSTGRES_PASSWORD:-}" sensos-database \
+        psql -U postgres -d postgres -X -A -F $'\t' -P pager=off -qtc "${sql}" 2>/dev/null | tr -d '\r'
+}
+
+sql_quote() {
+    local value="${1//\'/\'\'}"
+    printf "'%s'" "${value}"
+}
+
+format_age() {
+    local seconds="${1:--1}"
+
+    if [[ -z "${seconds}" || "${seconds}" == "-1" ]]; then
+        printf -- "-"
+        return
+    fi
+    if (( seconds < 60 )); then
+        printf '%ss' "${seconds}"
+    elif (( seconds < 3600 )); then
+        printf '%sm' "$((seconds / 60))"
+    elif (( seconds < 86400 )); then
+        printf '%sh' "$((seconds / 3600))"
+    else
+        printf '%sd' "$((seconds / 86400))"
+    fi
+}
+
+truncate_field() {
+    local text="$1"
+    local width="$2"
+
+    if (( ${#text} <= width )); then
+        printf '%s' "${text}"
+    elif (( width <= 1 )); then
+        printf '%s' "${text:0:width}"
+    else
+        printf '%s~' "${text:0:$((width - 1))}"
+    fi
+}
+
+print_list_header() {
+    print_line "SensOS Client Overview"
+    print_line "  repo: ${REPO_ROOT}"
+    print_line "  limit: clients=${MAX_CLIENTS}"
+}
+
+print_clients() {
+    local sql count
+    sql="
+WITH latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in,
+        hostname,
+        version,
+        status_message
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+)
+SELECT
+    p.id,
+    n.name,
+    host(p.wg_ip),
+    CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
+    COALESCE(NULLIF(ls.hostname, ''), '-'),
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
+    COALESCE(NULLIF(ls.version, ''), '-'),
+    CASE
+        WHEN ls.peer_id IS NULL THEN 'registered'
+        ELSE COALESCE(NULLIF(ls.status_message, ''), 'checked-in')
+    END
+FROM sensos.wireguard_peers p
+JOIN sensos.networks n ON n.id = p.network_id
+LEFT JOIN latest_status ls ON ls.peer_id = p.id
+ORDER BY
+    CASE WHEN ls.last_check_in IS NULL THEN 1 ELSE 0 END,
+    ls.last_check_in DESC NULLS LAST,
+    n.name,
+    p.wg_ip
+LIMIT ${MAX_CLIENTS};
+"
+
+    print_line "Clients"
+    printf '%-4s %-14s %-16s %-4s %-18s %6s %-12s %s\n' \
+        "ID" "NETWORK" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
+
+    count=0
+    while IFS=$'\t' read -r peer_id network_name wg_ip is_active hostname age_seconds version status_message; do
+        [[ -n "${peer_id}" ]] || continue
+        printf '%-4s %-14s %-16s %-4s %-18s %6s %-12s %s\n' \
+            "$(truncate_field "${peer_id}" 4)" \
+            "$(truncate_field "${network_name}" 14)" \
+            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${is_active}" 4)" \
+            "$(truncate_field "${hostname}" 18)" \
+            "$(format_age "${age_seconds}")" \
+            "$(truncate_field "${version}" 12)" \
+            "$(truncate_field "${status_message}" 24)"
+        count=$((count + 1))
+    done < <(psql_query "${sql}")
+
+    if (( count == 0 )); then
+        print_line "  no registered clients found"
+    fi
+}
+
+resolve_client() {
+    local selector="$1"
+    local quoted_selector sql match_count
+    quoted_selector="$(sql_quote "${selector}")"
+    sql="
+WITH latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        hostname,
+        last_check_in
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+)
+SELECT
+    p.id,
+    p.uuid::text,
+    host(p.wg_ip),
+    n.name,
+    COALESCE(NULLIF(ls.hostname, ''), '-')
+FROM sensos.wireguard_peers p
+JOIN sensos.networks n ON n.id = p.network_id
+LEFT JOIN latest_status ls ON ls.peer_id = p.id
+WHERE
+    p.id::text = ${quoted_selector}
+    OR p.uuid::text = ${quoted_selector}
+    OR host(p.wg_ip) = ${quoted_selector}
+    OR lower(COALESCE(ls.hostname, '')) = lower(${quoted_selector})
+ORDER BY
+    CASE WHEN p.id::text = ${quoted_selector} THEN 0 ELSE 1 END,
+    CASE WHEN host(p.wg_ip) = ${quoted_selector} THEN 0 ELSE 1 END,
+    p.id;
+"
+
+    mapfile -t CLIENT_MATCHES < <(psql_query "${sql}")
+    match_count="${#CLIENT_MATCHES[@]}"
+
+    if (( match_count == 0 )); then
+        print_line "ERROR: client not found: ${selector}" >&2
+        exit 1
+    fi
+
+    if (( match_count > 1 )); then
+        print_line "ERROR: client selector is ambiguous: ${selector}" >&2
+        print_line "Matches:" >&2
+        local match
+        for match in "${CLIENT_MATCHES[@]}"; do
+            IFS=$'\t' read -r peer_id uuid wg_ip network_name hostname <<< "${match}"
+            print_line "  id=${peer_id} network=${network_name} wg_ip=${wg_ip} hostname=${hostname} uuid=${uuid}" >&2
+        done
+        exit 1
+    fi
+
+    IFS=$'\t' read -r RESOLVED_PEER_ID RESOLVED_UUID RESOLVED_WG_IP RESOLVED_NETWORK RESOLVED_HOSTNAME <<< "${CLIENT_MATCHES[0]}"
+}
+
+print_client_detail() {
+    local selector="$1"
+    resolve_client "${selector}"
+
+    local detail_sql key_sql location_sql hardware_sql
+    detail_sql="
+WITH latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in,
+        uptime_seconds,
+        hostname,
+        disk_available_gb,
+        memory_used_mb,
+        memory_total_mb,
+        load_1m,
+        load_5m,
+        load_15m,
+        version,
+        status_message
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+)
+SELECT
+    p.id,
+    p.uuid::text,
+    n.name,
+    host(p.wg_ip),
+    CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
+    COALESCE(NULLIF(p.note, ''), '-'),
+    COALESCE(to_char(p.registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(to_char(ls.last_check_in AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
+    COALESCE(NULLIF(ls.hostname, ''), '-'),
+    COALESCE(ls.uptime_seconds, -1),
+    COALESCE(ls.disk_available_gb::text, '-'),
+    CASE
+        WHEN ls.memory_total_mb IS NULL OR ls.memory_total_mb = 0 THEN '-'
+        ELSE ls.memory_used_mb::text || '/' || ls.memory_total_mb::text || ' MB'
+    END,
+    CASE
+        WHEN ls.load_1m IS NULL THEN '-'
+        ELSE ls.load_1m::text || ' ' || COALESCE(ls.load_5m::text, '-') || ' ' || COALESCE(ls.load_15m::text, '-')
+    END,
+    COALESCE(NULLIF(ls.version, ''), '-'),
+    CASE
+        WHEN ls.peer_id IS NULL THEN 'registered'
+        ELSE COALESCE(NULLIF(ls.status_message, ''), 'checked-in')
+    END
+FROM sensos.wireguard_peers p
+JOIN sensos.networks n ON n.id = p.network_id
+LEFT JOIN latest_status ls ON ls.peer_id = p.id
+WHERE p.id = ${RESOLVED_PEER_ID}
+LIMIT 1;
+"
+
+    local peer_id uuid network_name wg_ip is_active note registered_at last_check_in age_seconds hostname uptime_seconds disk_available memory_summary load_summary version status_message
+    IFS=$'\t' read -r peer_id uuid network_name wg_ip is_active note registered_at last_check_in age_seconds hostname uptime_seconds disk_available memory_summary load_summary version status_message < <(psql_query "${detail_sql}")
+
+    print_line "SensOS Client Overview"
+    print_line "  repo: ${REPO_ROOT}"
+    print_line "  client: ${peer_id}"
+    print_line "Client"
+    print_line "  id: ${peer_id}"
+    print_line "  uuid: ${uuid}"
+    print_line "  network: ${network_name}"
+    print_line "  wg ip: ${wg_ip}"
+    print_line "  active: ${is_active}"
+    print_line "  hostname: ${hostname}"
+    print_line "  note: ${note}"
+    print_line "  registered: ${registered_at}"
+    print_line "  last check-in: ${last_check_in} ($(format_age "${age_seconds}") ago)"
+    if [[ "${uptime_seconds}" == "-1" ]]; then
+        print_line "  uptime: -"
+    else
+        print_line "  uptime: ${uptime_seconds}s"
+    fi
+    print_line "  disk free: ${disk_available}"
+    print_line "  memory: ${memory_summary}"
+    print_line "  load: ${load_summary}"
+    print_line "  version: ${version}"
+    print_line "  status: ${status_message}"
+
+    key_sql="
+SELECT
+    COALESCE(wk.wg_public_key, '-'),
+    COALESCE(to_char(wk.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(sk.username, '-'),
+    COALESCE(sk.fingerprint, '-'),
+    COALESCE(to_char(sk.last_used AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(sk.key_type, '-'),
+    COALESCE(sk.key_size::text, '-')
+FROM (SELECT 1) seed
+LEFT JOIN LATERAL (
+    SELECT wg_public_key, created_at
+    FROM sensos.wireguard_keys
+    WHERE peer_id = ${RESOLVED_PEER_ID} AND is_active = TRUE
+    ORDER BY created_at DESC
+    LIMIT 1
+) wk ON TRUE
+LEFT JOIN LATERAL (
+    SELECT username, fingerprint, last_used, key_type, key_size
+    FROM sensos.ssh_keys
+    WHERE peer_id = ${RESOLVED_PEER_ID}
+    ORDER BY last_used DESC NULLS LAST, id DESC
+    LIMIT 1
+) sk ON TRUE;
+"
+
+    local wg_public_key wg_key_created ssh_username ssh_fingerprint ssh_last_used ssh_key_type ssh_key_size
+    IFS=$'\t' read -r wg_public_key wg_key_created ssh_username ssh_fingerprint ssh_last_used ssh_key_type ssh_key_size < <(psql_query "${key_sql}")
+    print_line "Keys"
+    print_line "  wireguard: ${wg_public_key}"
+    print_line "  wireguard updated: ${wg_key_created}"
+    print_line "  ssh user: ${ssh_username}"
+    print_line "  ssh fingerprint: ${ssh_fingerprint}"
+    print_line "  ssh key: ${ssh_key_type} ${ssh_key_size}"
+    print_line "  ssh last used: ${ssh_last_used}"
+
+    location_sql="
+SELECT
+    COALESCE(to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(ST_Y(location)::text, '-'),
+    COALESCE(ST_X(location)::text, '-')
+FROM sensos.peer_locations
+WHERE peer_id = ${RESOLVED_PEER_ID}
+ORDER BY recorded_at DESC
+LIMIT 1;
+"
+    local location_recorded latitude longitude
+    IFS=$'\t' read -r location_recorded latitude longitude < <(psql_query "${location_sql}")
+    print_line "Location"
+    if [[ -z "${location_recorded:-}" ]]; then
+        print_line "  latest: -"
+    else
+        print_line "  latest: ${location_recorded}"
+        print_line "  coordinates: ${latitude}, ${longitude}"
+    fi
+
+    hardware_sql="
+SELECT
+    COALESCE(to_char(uploaded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS UTC'), '-'),
+    COALESCE(profile_json->>'model', '-'),
+    COALESCE(profile_json->>'kernel_version', '-'),
+    COALESCE(profile_json->'cpu'->>'model_name', '-')
+FROM sensos.hardware_profiles
+WHERE peer_id = ${RESOLVED_PEER_ID}
+LIMIT 1;
+"
+    local uploaded_at model kernel_version cpu_model
+    IFS=$'\t' read -r uploaded_at model kernel_version cpu_model < <(psql_query "${hardware_sql}")
+    print_line "Hardware"
+    if [[ -z "${uploaded_at:-}" ]]; then
+        print_line "  profile: -"
+    else
+        print_line "  uploaded: ${uploaded_at}"
+        print_line "  model: ${model}"
+        print_line "  kernel: ${kernel_version}"
+        print_line "  cpu: ${cpu_model}"
+    fi
+}
+
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            --clients)
+                shift
+                [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]] || {
+                    print_line "ERROR: --clients requires an integer" >&2
+                    exit 1
+                }
+                MAX_CLIENTS="$1"
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [[ -z "${SELECTED_CLIENT}" ]]; then
+                    SELECTED_CLIENT="$1"
+                else
+                    print_line "ERROR: unknown argument: $1" >&2
+                    usage >&2
+                    exit 1
+                fi
+                ;;
+        esac
+        shift
+    done
+}
+
+main() {
+    parse_args "$@"
+    require_repo
+    load_env
+
+    if ! have_docker; then
+        print_line "SensOS Client Overview"
+        print_line "  repo: ${REPO_ROOT}"
+        print_line "Runtime"
+        print_line "  docker binary: missing"
+        exit 0
+    fi
+
+    if ! docker_access; then
+        print_line "SensOS Client Overview"
+        print_line "  repo: ${REPO_ROOT}"
+        print_line "Runtime"
+        print_line "  docker access: unavailable for current user"
+        exit 0
+    fi
+
+    if ! db_running; then
+        print_line "SensOS Client Overview"
+        print_line "  repo: ${REPO_ROOT}"
+        print_line "Runtime"
+        print_line "  sensos-database: not running"
+        exit 0
+    fi
+
+    if [[ -n "${SELECTED_CLIENT}" ]]; then
+        print_client_detail "${SELECTED_CLIENT}"
+        exit 0
+    fi
+
+    print_list_header
+    print_clients
+}
+
+main "$@"

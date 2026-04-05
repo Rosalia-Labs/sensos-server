@@ -200,13 +200,15 @@ Behavior:
 ### `bin/network-overview`
 
 Prints a denser single-screen summary focused on configured networks and
-registered client state.
+registered client state. When given a network name, it switches to a detail
+view for that one network.
 
 Typical use:
 
 ```sh
 ./bin/network-overview
 ./bin/network-overview --networks 20 --clients 12
+./bin/network-overview testing
 ```
 
 Behavior:
@@ -216,8 +218,34 @@ Behavior:
   readiness, peer counts, and freshest client check-in age
 - shows a short trailing table of registered clients, including peers that have
   never checked in
+- if a network name is provided, prints runtime rows plus the clients attached
+  to that network instead of the global summary
 - defaults to `12` network rows and `8` client rows to keep output within a
   terminal screen, with limits adjustable via flags
+
+### `bin/client-overview`
+
+Prints a client-focused summary. Without arguments it lists recent/registered
+clients; with a client selector it prints one client in detail.
+
+Typical use:
+
+```sh
+./bin/client-overview
+./bin/client-overview 12
+./bin/client-overview 10.23.1.15
+./bin/client-overview client-hostname
+```
+
+Behavior:
+
+- requires Docker access and a running `sensos-database` container
+- list mode shows a compact table including stable peer ids, network, WireGuard
+  IP, latest hostname, version, and status
+- detail mode accepts peer id, peer UUID, WireGuard IP, or exact latest
+  hostname
+- detail mode prints registration/check-in metadata, latest status, key
+  information, location, and hardware-profile summary when present
 
 ### `bin/stop-server`
 

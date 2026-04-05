@@ -11,6 +11,7 @@ ENV_FILE="${DOCKER_DIR}/.env"
 
 MAX_NETWORKS=12
 MAX_CLIENTS=8
+SELECTED_NETWORK=""
 
 print_line() {
     printf '%s\n' "$*"
@@ -18,7 +19,7 @@ print_line() {
 
 usage() {
     cat <<'EOF'
-Usage: network-overview [--networks N] [--clients N]
+Usage: network-overview [NETWORK_NAME] [--networks N] [--clients N]
 
 Print a compact one-screen summary of defined networks and registered clients
 from the running SensOS server stack.
@@ -57,6 +58,11 @@ psql_query() {
     local sql="$1"
     docker exec -e PGPASSWORD="${POSTGRES_PASSWORD:-}" sensos-database \
         psql -U postgres -d postgres -X -A -F $'\t' -P pager=off -qtc "${sql}" 2>/dev/null | tr -d '\r'
+}
+
+sql_quote() {
+    local value="${1//\'/\'\'}"
+    printf "'%s'" "${value}"
 }
 
 format_age() {
@@ -242,6 +248,178 @@ LIMIT ${MAX_CLIENTS};
     fi
 }
 
+print_network_detail() {
+    local network_name="$1"
+    local quoted_network detail_sql row_sql row_count client_sql client_count total_clients
+    quoted_network="$(sql_quote "${network_name}")"
+
+    detail_sql="
+WITH peer_counts AS (
+    SELECT
+        p.network_id,
+        COUNT(*) AS peer_count,
+        COUNT(*) FILTER (WHERE p.is_active) AS active_peer_count
+    FROM sensos.wireguard_peers p
+    GROUP BY p.network_id
+),
+latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+),
+client_counts AS (
+    SELECT
+        p.network_id,
+        COUNT(ls.peer_id) AS reporting_clients,
+        MAX(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint) FILTER (WHERE ls.last_check_in IS NOT NULL) AS oldest_reporting_age_seconds,
+        MIN(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint) FILTER (WHERE ls.last_check_in IS NOT NULL) AS freshest_reporting_age_seconds
+    FROM sensos.wireguard_peers p
+    LEFT JOIN latest_status ls ON ls.peer_id = p.id
+    GROUP BY p.network_id
+),
+runtime_counts AS (
+    SELECT
+        r.network_id,
+        COUNT(*) AS runtime_count,
+        COUNT(*) FILTER (WHERE r.status = 'ready') AS ready_count,
+        COUNT(*) FILTER (WHERE COALESCE(r.last_error, '') <> '') AS error_count
+    FROM sensos.runtime_wireguard_status r
+    GROUP BY r.network_id
+)
+SELECT
+    n.id,
+    n.name,
+    host(n.ip_range) || '/' || masklen(n.ip_range),
+    n.wg_public_ip,
+    n.wg_port,
+    COALESCE(n.wg_public_key, '-'),
+    COALESCE(pc.peer_count, 0),
+    COALESCE(pc.active_peer_count, 0),
+    COALESCE(cc.reporting_clients, 0),
+    COALESCE(cc.freshest_reporting_age_seconds, -1),
+    COALESCE(cc.oldest_reporting_age_seconds, -1),
+    COALESCE(rc.ready_count, 0),
+    COALESCE(rc.runtime_count, 0),
+    COALESCE(rc.error_count, 0)
+FROM sensos.networks n
+LEFT JOIN peer_counts pc ON pc.network_id = n.id
+LEFT JOIN client_counts cc ON cc.network_id = n.id
+LEFT JOIN runtime_counts rc ON rc.network_id = n.id
+WHERE n.name = ${quoted_network}
+LIMIT 1;
+"
+
+    local network_id name cidr endpoint port public_key peer_count active_count client_count freshest_age oldest_age ready_count runtime_count error_count
+    IFS=$'\t' read -r network_id name cidr endpoint port public_key peer_count active_count client_count freshest_age oldest_age ready_count runtime_count error_count < <(psql_query "${detail_sql}")
+
+    if [[ -z "${network_id:-}" ]]; then
+        print_line "ERROR: network not found: ${network_name}" >&2
+        exit 1
+    fi
+
+    print_line "SensOS Network Overview"
+    print_line "  repo: ${REPO_ROOT}"
+    print_line "  network: ${name}"
+    print_line "Network"
+    print_line "  cidr: ${cidr}"
+    print_line "  endpoint: ${endpoint}:${port}"
+    print_line "  public key: ${public_key}"
+    print_line "  runtime: ready=${ready_count}/${runtime_count} errors=${error_count}"
+    print_line "  peers: total=${peer_count} active=${active_count} reporting=${client_count}"
+    print_line "  client ages: freshest=$(format_age "${freshest_age}") oldest=$(format_age "${oldest_age}")"
+
+    row_sql="
+SELECT
+    component,
+    role,
+    interface_name,
+    status,
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - updated_at))::bigint, -1),
+    COALESCE(NULLIF(last_error, ''), '-')
+FROM sensos.runtime_wireguard_status
+WHERE network_id = ${network_id}
+ORDER BY component, role, interface_name;
+"
+
+    print_line "Runtime Rows"
+    printf '%-16s %-10s %-14s %-8s %6s %s\n' \
+        "COMPONENT" "ROLE" "INTERFACE" "STATUS" "AGE" "LAST ERROR"
+    row_count=0
+    while IFS=$'\t' read -r component role interface_name status age_seconds last_error; do
+        [[ -n "${component}" ]] || continue
+        printf '%-16s %-10s %-14s %-8s %6s %s\n' \
+            "$(truncate_field "${component}" 16)" \
+            "$(truncate_field "${role}" 10)" \
+            "$(truncate_field "${interface_name}" 14)" \
+            "$(truncate_field "${status}" 8)" \
+            "$(format_age "${age_seconds}")" \
+            "$(truncate_field "${last_error}" 32)"
+        row_count=$((row_count + 1))
+    done < <(psql_query "${row_sql}")
+
+    if (( row_count == 0 )); then
+        print_line "  no runtime rows found"
+    fi
+
+    total_clients="$(psql_query "SELECT COUNT(*) FROM sensos.wireguard_peers p WHERE p.network_id = ${network_id};")"
+    client_sql="
+WITH latest_status AS (
+    SELECT DISTINCT ON (peer_id)
+        peer_id,
+        last_check_in,
+        hostname,
+        version,
+        status_message
+    FROM sensos.client_status
+    ORDER BY peer_id, last_check_in DESC
+)
+SELECT
+    p.id,
+    host(p.wg_ip),
+    CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
+    COALESCE(NULLIF(ls.hostname, ''), '-'),
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
+    COALESCE(NULLIF(ls.version, ''), '-'),
+    CASE
+        WHEN ls.peer_id IS NULL THEN 'registered'
+        ELSE COALESCE(NULLIF(ls.status_message, ''), 'checked-in')
+    END
+FROM sensos.wireguard_peers p
+LEFT JOIN latest_status ls ON ls.peer_id = p.id
+WHERE p.network_id = ${network_id}
+ORDER BY
+    CASE WHEN ls.last_check_in IS NULL THEN 1 ELSE 0 END,
+    ls.last_check_in DESC NULLS LAST,
+    p.wg_ip
+LIMIT ${MAX_CLIENTS};
+"
+
+    print_line "Clients"
+    printf '%-4s %-16s %-4s %-18s %6s %-12s %s\n' \
+        "ID" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
+    client_count=0
+    while IFS=$'\t' read -r peer_id wg_ip is_active hostname age_seconds version status_message; do
+        [[ -n "${peer_id}" ]] || continue
+        printf '%-4s %-16s %-4s %-18s %6s %-12s %s\n' \
+            "$(truncate_field "${peer_id}" 4)" \
+            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${is_active}" 4)" \
+            "$(truncate_field "${hostname}" 18)" \
+            "$(format_age "${age_seconds}")" \
+            "$(truncate_field "${version}" 12)" \
+            "$(truncate_field "${status_message}" 24)"
+        client_count=$((client_count + 1))
+    done < <(psql_query "${client_sql}")
+
+    if (( client_count == 0 )); then
+        print_line "  no registered clients found"
+    elif [[ -n "${total_clients}" ]] && (( total_clients > MAX_CLIENTS )); then
+        print_line "  showing ${client_count} of ${total_clients} clients; raise with --clients"
+    fi
+}
+
 parse_args() {
     while (($#)); do
         case "$1" in
@@ -266,9 +444,13 @@ parse_args() {
                 exit 0
                 ;;
             *)
-                print_line "ERROR: unknown argument: $1" >&2
-                usage >&2
-                exit 1
+                if [[ -z "${SELECTED_NETWORK}" ]]; then
+                    SELECTED_NETWORK="$1"
+                else
+                    print_line "ERROR: unknown argument: $1" >&2
+                    usage >&2
+                    exit 1
+                fi
                 ;;
         esac
         shift
@@ -296,6 +478,11 @@ main() {
     if ! db_running; then
         print_line "Runtime"
         print_line "  sensos-database: not running"
+        exit 0
+    fi
+
+    if [[ -n "${SELECTED_NETWORK}" ]]; then
+        print_network_detail "${SELECTED_NETWORK}"
         exit 0
     fi
 
