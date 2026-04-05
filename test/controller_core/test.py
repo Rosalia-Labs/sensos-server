@@ -181,6 +181,18 @@ def test_create_client_status_table_reconciles_legacy_schema():
     assert "CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in" in executed
 
 
+def test_create_networks_table_reconciles_legacy_wg_public_ip_type():
+    fake_cur = mock.MagicMock()
+
+    core.create_networks_table(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "wg_public_ip TEXT NOT NULL" in executed
+    assert "column_name = 'wg_public_ip'" in executed
+    assert "data_type = 'inet'" in executed
+    assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
+
+
 @pytest.mark.asyncio
 @mock.patch("core.get_db")
 async def test_lifespan_runs_schema_setup(mock_get_db):

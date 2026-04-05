@@ -603,6 +603,26 @@ def create_networks_table(cur):
     )
     cur.execute(
         """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'sensos'
+                  AND table_name = 'networks'
+                  AND column_name = 'wg_public_ip'
+                  AND data_type = 'inet'
+            ) THEN
+                ALTER TABLE sensos.networks
+                ALTER COLUMN wg_public_ip TYPE TEXT
+                USING wg_public_ip::text;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
         ALTER TABLE sensos.networks
         ALTER COLUMN wg_public_key DROP NOT NULL;
         """
