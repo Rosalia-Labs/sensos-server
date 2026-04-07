@@ -116,7 +116,10 @@ def test_insert_peer_success(mock_get_db):
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     mock_get_db.return_value.__enter__.return_value = mock_conn
 
-    assert core.insert_peer(1, "10.0.0.2", note="test note") == (123, "some-uuid")
+    result = core.insert_peer(1, "10.0.0.2", note="test note")
+    assert result[:2] == (123, "some-uuid")
+    assert isinstance(result[2], str)
+    assert result[2]
 
 
 @mock.patch("core.get_db")
@@ -153,7 +156,7 @@ def test_parse_version_key_orders_release_after_prerelease():
 
 def test_apply_schema_migrations_records_applied_versions():
     fake_cur = mock.MagicMock()
-    fake_cur.fetchone.side_effect = [None, None]
+    fake_cur.fetchone.side_effect = [None] * 20
     fake_cur.fetchall.return_value = []
 
     core.apply_schema_migrations(fake_cur, "0.7.0")
@@ -247,61 +250,77 @@ def test_get_db_retries_and_fails(mock_connect):
 
 def test_authenticate_admin_success(monkeypatch):
     monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
-    credentials = HTTPBasicCredentials(username="any", password="admin-secret")
+    credentials = HTTPBasicCredentials(username="sensos", password="admin-secret")
     assert core.authenticate_admin(credentials) == credentials
 
 
 def test_authenticate_admin_failure(monkeypatch):
     monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
-    credentials = HTTPBasicCredentials(username="any", password="wrongpassword")
+    credentials = HTTPBasicCredentials(username="other", password="admin-secret")
     with pytest.raises(HTTPException) as exc_info:
         core.authenticate_admin(credentials)
     assert exc_info.value.status_code == 401
 
 
 def test_authenticate_client_accepts_client_password(monkeypatch):
-    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
     monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
-    credentials = HTTPBasicCredentials(username="any", password="client-secret")
+    credentials = HTTPBasicCredentials(username="sensos", password="client-secret")
     assert core.authenticate_client(credentials) == credentials
 
 
-def test_authenticate_client_accepts_admin_password(monkeypatch):
-    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+def test_authenticate_client_rejects_other_username(monkeypatch):
     monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
-    credentials = HTTPBasicCredentials(username="any", password="admin-secret")
-    assert core.authenticate_client(credentials) == credentials
-
-
-def test_authenticate_client_rejects_other_password(monkeypatch):
-    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
-    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
-    credentials = HTTPBasicCredentials(username="any", password="wrongpassword")
+    credentials = HTTPBasicCredentials(username="other", password="client-secret")
     with pytest.raises(HTTPException) as exc_info:
         core.authenticate_client(credentials)
     assert exc_info.value.status_code == 401
 
 
-def test_authenticate_sensos_client_requires_fixed_username(monkeypatch):
-    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
-    credentials = HTTPBasicCredentials(username="other", password="client-secret")
-    with pytest.raises(HTTPException) as exc_info:
-        core.authenticate_sensos_client(credentials)
-    assert exc_info.value.status_code == 401
-
-
-def test_authenticate_sensos_client_requires_client_password(monkeypatch):
+def test_authenticate_client_rejects_other_password(monkeypatch):
     monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
     credentials = HTTPBasicCredentials(username="sensos", password="wrongpassword")
     with pytest.raises(HTTPException) as exc_info:
-        core.authenticate_sensos_client(credentials)
+        core.authenticate_client(credentials)
     assert exc_info.value.status_code == 401
 
 
-def test_authenticate_sensos_client_accepts_expected_credentials(monkeypatch):
-    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
-    credentials = HTTPBasicCredentials(username="sensos", password="client-secret")
-    assert core.authenticate_sensos_client(credentials) == credentials
+@mock.patch("core.get_db")
+def test_authenticate_peer_accepts_per_peer_password(mock_get_db):
+    peer_password = "peer-secret"
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (
+        123,
+        "10.0.1.7",
+        core.hash_peer_api_password(peer_password),
+    )
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    credentials = HTTPBasicCredentials(username="peer-123", password=peer_password)
+    assert core.authenticate_peer(credentials) == {
+        "peer_id": 123,
+        "peer_uuid": "peer-123",
+        "wg_ip": "10.0.1.7",
+    }
+
+
+@mock.patch("core.get_db")
+def test_authenticate_peer_rejects_invalid_password(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (
+        123,
+        "10.0.1.7",
+        core.hash_peer_api_password("peer-secret"),
+    )
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    credentials = HTTPBasicCredentials(username="peer-123", password="wrong")
+    with pytest.raises(HTTPException) as exc_info:
+        core.authenticate_peer(credentials)
+    assert exc_info.value.status_code == 401
 
 
 def test_create_network_entry_new():
@@ -333,7 +352,6 @@ def test_store_i2c_readings_upload_inserts_new_batch():
     fake_conn.cursor.return_value.__enter__.return_value = fake_cur
     upload = mock.MagicMock()
     upload.schema_version = 1
-    upload.wireguard_ip = "10.0.1.7"
     upload.hostname = "sensor-node"
     upload.client_version = "1.2.3"
     upload.batch_id = 41
@@ -364,7 +382,6 @@ def test_store_i2c_readings_upload_inserts_new_batch():
     ]
     upload.model_dump.return_value = {
         "schema_version": 1,
-        "wireguard_ip": "10.0.1.7",
         "hostname": "sensor-node",
         "client_version": "1.2.3",
         "batch_id": 41,
@@ -395,7 +412,7 @@ def test_store_i2c_readings_upload_inserts_new_batch():
         ],
     }
 
-    result = core.store_i2c_readings_upload(fake_conn, upload)
+    result = core.store_i2c_readings_upload(fake_conn, upload, "10.0.1.7")
 
     assert result == {
         "status": "ok",
@@ -410,11 +427,10 @@ def test_store_i2c_readings_upload_inserts_new_batch():
 def test_store_i2c_readings_upload_reuses_existing_batch():
     fake_cur = mock.MagicMock()
     upload = mock.MagicMock()
-    upload.wireguard_ip = "10.0.1.7"
     upload.batch_id = 41
     upload.reading_count = 2
-    upload.model_dump.return_value = {"batch_id": 41, "wireguard_ip": "10.0.1.7"}
-    payload_hash = core.sha256(b'{"batch_id":41,"wireguard_ip":"10.0.1.7"}').hexdigest()
+    upload.model_dump.return_value = {"batch_id": 41}
+    payload_hash = core.sha256(b'{"batch_id":41}').hexdigest()
     fake_cur.fetchone.return_value = (
         17,
         "receipt-123",
@@ -425,7 +441,7 @@ def test_store_i2c_readings_upload_reuses_existing_batch():
     fake_conn = mock.MagicMock()
     fake_conn.cursor.return_value.__enter__.return_value = fake_cur
 
-    result = core.store_i2c_readings_upload(fake_conn, upload)
+    result = core.store_i2c_readings_upload(fake_conn, upload, "10.0.1.7")
 
     assert result == {
         "status": "ok",
@@ -440,9 +456,8 @@ def test_store_i2c_readings_upload_reuses_existing_batch():
 def test_store_i2c_readings_upload_rejects_conflicting_retry():
     fake_cur = mock.MagicMock()
     upload = mock.MagicMock()
-    upload.wireguard_ip = "10.0.1.7"
     upload.batch_id = 41
-    upload.model_dump.return_value = {"batch_id": 41, "wireguard_ip": "10.0.1.7"}
+    upload.model_dump.return_value = {"batch_id": 41}
     fake_cur.fetchone.return_value = (
         17,
         "receipt-123",
@@ -454,7 +469,7 @@ def test_store_i2c_readings_upload_rejects_conflicting_retry():
     fake_conn.cursor.return_value.__enter__.return_value = fake_cur
 
     with pytest.raises(RuntimeError, match="payload does not match"):
-        core.store_i2c_readings_upload(fake_conn, upload)
+        core.store_i2c_readings_upload(fake_conn, upload, "10.0.1.7")
 
 
 def test_create_network_entry_accepts_hostname_endpoint():
@@ -532,15 +547,11 @@ def test_update_network_endpoint_updates_existing_row():
     assert result["name"] == "testnet"
     assert result["wg_public_ip"] == "10.0.2.2"
     assert result["wg_port"] == 15182
-    mock_cur.execute.assert_any_call(
-        """
-        UPDATE sensos.networks
-        SET wg_public_ip = %s, wg_port = %s
-        WHERE name = %s
-        RETURNING id, name, ip_range, wg_public_ip, wg_port, wg_public_key;
-                """,
-        ("10.0.2.2", 15182, "testnet"),
-    )
+    sql, params = mock_cur.execute.call_args.args
+    assert "UPDATE sensos.networks" in sql
+    assert "SET wg_public_ip = %s, wg_port = %s" in sql
+    assert "RETURNING id, name, ip_range, wg_public_ip, wg_port, wg_public_key" in sql
+    assert params == ("10.0.2.2", 15182, "testnet")
 
 
 def test_update_network_endpoint_rejects_missing_network():

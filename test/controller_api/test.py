@@ -22,10 +22,10 @@ def client():
         username="admin", password="admin"
     )
     app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
-        username="test", password="test"
+        username="sensos", password="test"
     )
-    app.dependency_overrides[api.authenticate_sensos_client] = (
-        lambda: HTTPBasicCredentials(username="sensos", password="client")
+    app.dependency_overrides[api.authenticate_peer] = (
+        lambda: {"peer_id": 123, "peer_uuid": "peer-123", "wg_ip": "10.0.1.7"}
     )
     return TestClient(app)
 
@@ -248,7 +248,11 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
         "get_network_details",
         lambda name: (1, "10.0.0.0/16", "pubkey", "1.2.3.4", 51820),
     )
-    monkeypatch.setattr(api, "insert_peer", lambda network_id, wg_ip, note=None: (123, "peer-uuid"))
+    monkeypatch.setattr(
+        api,
+        "insert_peer",
+        lambda network_id, wg_ip, note=None: (123, "peer-uuid", "peer-secret"),
+    )
 
     captured = {}
 
@@ -262,13 +266,15 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
     assert resp.status_code == 200
     assert captured["start_third_octet"] == 1
     assert resp.json()["wg_ip"] == "10.0.1.1"
+    assert resp.json()["peer_uuid"] == "peer-uuid"
+    assert resp.json()["peer_api_password"] == "peer-secret"
 
 
 def test_register_wireguard_key_not_found(monkeypatch, client):
     monkeypatch.setattr(api, "register_wireguard_key_in_db", lambda wg_ip, pubkey: None)
     resp = client.post(
         "/register-wireguard-key",
-        json={"wg_ip": "10.0.0.2", "wg_public_key": "dummy"},
+        json={"wg_public_key": "dummy"},
     )
     assert resp.status_code == 404
 
@@ -354,17 +360,15 @@ def test_delete_network_returns_not_found(monkeypatch, client):
     assert resp.status_code == 404
 
 
-def test_client_status_accepts_wireguard_ip_payload(monkeypatch, client):
+def test_client_status_uses_authenticated_peer(monkeypatch, client):
     fake_cur = mock.MagicMock()
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
-    monkeypatch.setattr(api, "lookup_peer_id", lambda conn, wireguard_ip: 123 if wireguard_ip == "10.0.1.7" else None)
 
     resp = client.post(
         "/client-status",
         json={
-            "wireguard_ip": "10.0.1.7",
             "hostname": "test-node",
             "uptime_seconds": 42,
             "disk_available_gb": 10.5,
@@ -391,7 +395,7 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     monkeypatch.setattr(
         api,
         "store_i2c_readings_upload",
-        lambda conn, upload: {
+        lambda conn, upload, wireguard_ip: {
             "status": "ok",
             "receipt_id": "receipt-123",
             "accepted_count": upload.reading_count,
@@ -403,7 +407,6 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
         "/i2c-readings/upload",
         json={
             "schema_version": 1,
-            "wireguard_ip": "10.0.1.7",
             "hostname": "sensor-node",
             "client_version": "1.2.3",
             "batch_id": 41,
@@ -449,7 +452,6 @@ def test_i2c_readings_upload_validates_metadata(client):
         "/i2c-readings/upload",
         json={
             "schema_version": 1,
-            "wireguard_ip": "10.0.1.7",
             "hostname": "sensor-node",
             "client_version": "1.2.3",
             "batch_id": 41,
@@ -489,7 +491,7 @@ def test_i2c_readings_upload_returns_conflict_for_payload_mismatch(monkeypatch, 
     fake_conn = mock.MagicMock()
     monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
 
-    def fail_store(conn, upload):
+    def fail_store(conn, upload, wireguard_ip):
         raise RuntimeError("batch retry payload does not match the previously stored batch")
 
     monkeypatch.setattr(api, "store_i2c_readings_upload", fail_store)
@@ -498,7 +500,6 @@ def test_i2c_readings_upload_returns_conflict_for_payload_mismatch(monkeypatch, 
         "/i2c-readings/upload",
         json={
             "schema_version": 1,
-            "wireguard_ip": "10.0.1.7",
             "hostname": "sensor-node",
             "client_version": "1.2.3",
             "batch_id": 41,
@@ -537,7 +538,7 @@ def test_get_defined_networks_requires_authentication(monkeypatch):
     assert resp.status_code == 401
 
 
-def test_i2c_readings_upload_requires_sensos_basic_auth(monkeypatch):
+def test_i2c_readings_upload_requires_peer_auth(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
@@ -547,7 +548,6 @@ def test_i2c_readings_upload_requires_sensos_basic_auth(monkeypatch):
         "/i2c-readings/upload",
         json={
             "schema_version": 1,
-            "wireguard_ip": "10.0.1.7",
             "hostname": "sensor-node",
             "client_version": "1.2.3",
             "batch_id": 41,

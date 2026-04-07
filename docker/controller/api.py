@@ -27,7 +27,7 @@ from core import (
     insert_peer,
     authenticate_admin,
     authenticate_client,
-    authenticate_sensos_client,
+    authenticate_peer,
     get_network_details,
     search_for_next_available_ip,
     register_wireguard_key_in_db,
@@ -35,7 +35,6 @@ from core import (
     create_network_entry,
     update_network_endpoint,
     wait_for_network_ready,
-    lookup_peer_id,
     set_peer_active_state,
     delete_peer,
     delete_network,
@@ -342,7 +341,9 @@ def register_peer(
             content={"error": f"No available IPs in subnet {request.subnet_offset}."},
         )
 
-    peer_id, peer_uuid = insert_peer(network_id, wg_ip, note=request.note)
+    peer_id, peer_uuid, peer_api_password = insert_peer(
+        network_id, wg_ip, note=request.note
+    )
 
     return {
         "wg_ip": wg_ip,
@@ -350,21 +351,22 @@ def register_peer(
         "wg_public_ip": wg_public_ip,
         "wg_port": wg_port,
         "peer_uuid": peer_uuid,
+        "peer_api_password": peer_api_password,
     }
 
 
 @router.post("/register-wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     """Endpoint that registers a WireGuard key for an existing peer."""
-    result = register_wireguard_key_in_db(request.wg_ip, request.wg_public_key)
+    result = register_wireguard_key_in_db(peer["wg_ip"], request.wg_public_key)
 
     if result is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Peer '{request.wg_ip}' not found."},
+            content={"error": f"Peer '{peer['wg_ip']}' not found."},
         )
 
     return result
@@ -412,7 +414,7 @@ def delete_network_endpoint(
 @router.post("/exchange-ssh-keys")
 def exchange_ssh_keys(
     request: RegisterSSHKeyRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     """Registers an SSH public key for a peer."""
     with get_db() as conn:
@@ -421,14 +423,14 @@ def exchange_ssh_keys(
                 """
                 SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;
                 """,
-                (request.wg_ip,),
+                (peer["wg_ip"],),
             )
             result = cur.fetchone()
 
             if not result:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Peer with WireGuard IP '{request.wg_ip}' not found.",
+                    detail=f"Peer with WireGuard IP '{peer['wg_ip']}' not found.",
                 )
 
             peer_id = result[0]
@@ -631,10 +633,9 @@ def get_peer_info(
 @router.post("/client-status")
 def client_status(
     status: ClientStatusRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     with get_db() as conn:
-        peer_id = lookup_peer_id(conn, status.wireguard_ip)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -647,7 +648,7 @@ def client_status(
                 )
                 """,
                 (
-                    peer_id,
+                    peer["peer_id"],
                     status.hostname,
                     status.uptime_seconds,
                     status.disk_available_gb,
@@ -710,28 +711,11 @@ def get_network_info(
 @router.post("/upload-hardware-profile")
 def upload_hardware_profile(
     profile: HardwareProfile,
-    credentials: HTTPBasicCredentials = Depends(authenticate_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     profile_data = profile.model_dump()
-    wg_ip = profile_data.pop("wg_ip", None)
-    if not wg_ip:
-        raise HTTPException(status_code=400, detail="wg_ip must be provided.")
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Internally fetch peer_id; do not expose it
-            cur.execute(
-                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;", (wg_ip,)
-            )
-            peer = cur.fetchone()
-
-            if not peer:
-                raise HTTPException(
-                    status_code=404, detail=f"Peer with IP '{wg_ip}' not found."
-                )
-
-            peer_id = peer[0]
-
-            # Store hardware profile linked internally via peer_id
             cur.execute(
                 """
                 INSERT INTO sensos.hardware_profiles (peer_id, profile_json)
@@ -739,23 +723,23 @@ def upload_hardware_profile(
                 ON CONFLICT (peer_id) DO UPDATE
                 SET profile_json = EXCLUDED.profile_json, uploaded_at = NOW();
                 """,
-                (peer_id, json.dumps(profile_data)),
+                (peer["peer_id"], json.dumps(profile_data)),
             )
             conn.commit()
 
-    logger.info(f"✅ Hardware profile stored for peer IP '{wg_ip}'.")
+    logger.info("hardware profile stored for peer_uuid '%s'", peer["peer_uuid"])
 
-    return {"status": "success", "wg_ip": wg_ip}
+    return {"status": "success", "wg_ip": peer["wg_ip"]}
 
 
 @router.post("/i2c-readings/upload")
 def upload_i2c_readings(
     upload: I2CReadingsUploadRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate_sensos_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     try:
         with get_db() as conn:
-            return store_i2c_readings_upload(conn, upload)
+            return store_i2c_readings_upload(conn, upload, peer["wg_ip"])
     except RuntimeError as exc:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
@@ -913,14 +897,13 @@ def wireguard_status_dashboard(
 @router.post("/set-peer-location")
 def set_client_location(
     req: LocationUpdateRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate_client),
+    peer: dict = Depends(authenticate_peer),
 ):
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Find peer by IP
             cur.execute(
                 "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
-                (req.wg_ip,),
+                (peer["wg_ip"],),
             )
             row = cur.fetchone()
             if not row:

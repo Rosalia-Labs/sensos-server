@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
+import base64
 import ipaddress
 import json
 import logging
@@ -114,18 +115,15 @@ security = HTTPBasic()
 
 
 def authenticate_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    if not secrets.compare_digest(credentials.username, "sensos"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not secrets.compare_digest(credentials.password, ADMIN_API_PASSWORD):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials
 
 
 def authenticate_client(credentials: HTTPBasicCredentials = Depends(security)):
-    if not (
-        secrets.compare_digest(credentials.password, CLIENT_API_PASSWORD)
-        or secrets.compare_digest(credentials.password, ADMIN_API_PASSWORD)
-    ):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return credentials
+    return authenticate_named_client(credentials, username="sensos")
 
 
 def authenticate_named_client(
@@ -225,6 +223,12 @@ def migrate_0_7_0_i2c_readings_upload(cur):
     create_i2c_readings_table(cur)
 
 
+def migrate_0_8_0_peer_api_credentials(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_wireguard_peers_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -240,6 +244,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.7.0"),
         name="add i2c readings upload schema",
         apply=migrate_0_7_0_i2c_readings_upload,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.8.0"),
+        name="add per-peer api credentials",
+        apply=migrate_0_8_0_peer_api_credentials,
     ),
 ]
 
@@ -284,6 +293,59 @@ def lookup_peer_id(conn, wireguard_ip):
         if row is None:
             raise HTTPException(400, detail=f"Unknown wireguard_ip: {wireguard_ip}")
         return row[0]
+
+
+def lookup_peer_identity(conn, peer_uuid: str) -> tuple[int, str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, wg_ip::text FROM sensos.wireguard_peers WHERE uuid = %s",
+            (peer_uuid,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(400, detail=f"Unknown peer_uuid: {peer_uuid}")
+        return row[0], row[1]
+
+
+def hash_peer_api_password(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = sha256(salt + password.encode("utf-8")).hexdigest()
+    return f"{base64.b64encode(salt).decode('ascii')}:{digest}"
+
+
+def verify_peer_api_password(password: str, encoded_hash: str) -> bool:
+    try:
+        encoded_salt, expected_digest = encoded_hash.split(":", 1)
+        salt = base64.b64decode(encoded_salt.encode("ascii"))
+    except Exception:
+        return False
+    actual_digest = sha256(salt + password.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(actual_digest, expected_digest)
+
+
+def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
+    try:
+        peer_uuid = str(credentials.username)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, wg_ip::text, api_password_hash
+                FROM sensos.wireguard_peers
+                WHERE uuid = %s;
+                """,
+                (peer_uuid,),
+            )
+            row = cur.fetchone()
+
+    if row is None or not row[2]:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not verify_peer_api_password(credentials.password, row[2]):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"peer_id": row[0], "peer_uuid": peer_uuid, "wg_ip": row[1]}
 
 
 def get_network_details(network_name: str):
@@ -375,18 +437,22 @@ def allocate_network_ip_range(cur: Cursor, name: str) -> ipaddress.IPv4Network:
 
 def insert_peer(
     network_id: int, wg_ip: str, note: Optional[str] = None
-) -> Tuple[int, str]:
+) -> Tuple[int, str, str]:
+    peer_api_password = secrets.token_urlsafe(32)
+    password_hash = hash_peer_api_password(peer_api_password)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO sensos.wireguard_peers (network_id, wg_ip, note)
-                VALUES (%s, %s, %s)
+                INSERT INTO sensos.wireguard_peers
+                    (network_id, wg_ip, note, api_password_hash)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id, uuid;
                 """,
-                (network_id, wg_ip, note),
+                (network_id, wg_ip, note, password_hash),
             )
-            return cur.fetchone()
+            peer_id, peer_uuid = cur.fetchone()
+            return peer_id, peer_uuid, peer_api_password
 
 
 def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
@@ -686,6 +752,7 @@ def create_wireguard_peers_table(cur):
             network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
             wg_ip INET UNIQUE NOT NULL,
             note TEXT DEFAULT NULL,
+            api_password_hash TEXT,
             registered_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(uuid)
         );
@@ -695,6 +762,12 @@ def create_wireguard_peers_table(cur):
         """
         ALTER TABLE sensos.wireguard_peers
         ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.wireguard_peers
+        ADD COLUMN IF NOT EXISTS api_password_hash TEXT;
         """
     )
 
@@ -1008,7 +1081,7 @@ def format_rfc3339_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def store_i2c_readings_upload(conn, upload) -> dict:
+def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
     payload = upload.model_dump(mode="json")
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     payload_sha256 = sha256(payload_json.encode("utf-8")).hexdigest()
@@ -1022,7 +1095,7 @@ def store_i2c_readings_upload(conn, upload) -> dict:
                 WHERE wireguard_ip = %s AND batch_id = %s
                 FOR UPDATE;
                 """,
-                (upload.wireguard_ip, upload.batch_id),
+                (wireguard_ip, upload.batch_id),
             )
             existing = cur.fetchone()
             if existing is not None:
@@ -1070,7 +1143,7 @@ def store_i2c_readings_upload(conn, upload) -> dict:
                 """,
                 (
                     upload.schema_version,
-                    upload.wireguard_ip,
+                    wireguard_ip,
                     upload.hostname,
                     upload.client_version,
                     upload.batch_id,

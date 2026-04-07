@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
-import ipaddress
 import math
 
 from datetime import datetime, timedelta
@@ -17,7 +16,6 @@ class RegisterPeerRequest(BaseModel):
 
 
 class RegisterWireguardKeyRequest(BaseModel):
-    wg_ip: str
     wg_public_key: str
 
 
@@ -35,7 +33,6 @@ class DeleteNetworkRequest(BaseModel):
 
 
 class RegisterSSHKeyRequest(BaseModel):
-    wg_ip: str
     username: str
     uid: int
     ssh_public_key: str
@@ -47,7 +44,6 @@ class RegisterSSHKeyRequest(BaseModel):
 
 
 class ClientStatusRequest(BaseModel):
-    wireguard_ip: str
     hostname: str
     uptime_seconds: int
     disk_available_gb: float
@@ -61,7 +57,6 @@ class ClientStatusRequest(BaseModel):
 
 
 class HardwareProfile(BaseModel):
-    wg_ip: str
     hostname: str
     model: str
     kernel_version: str
@@ -74,9 +69,8 @@ class HardwareProfile(BaseModel):
 
 
 class LocationUpdateRequest(BaseModel):
-    wg_ip: str
-    latitude: float
-    longitude: float
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
 
 def _validate_utc_timestamp(value: datetime) -> datetime:
@@ -116,7 +110,6 @@ class I2CReadingUploadEntry(BaseModel):
 
 class I2CReadingsUploadRequest(BaseModel):
     schema_version: Literal[1]
-    wireguard_ip: str
     hostname: str
     client_version: str
     batch_id: int = Field(ge=0)
@@ -128,12 +121,6 @@ class I2CReadingsUploadRequest(BaseModel):
     first_recorded_at: datetime
     last_recorded_at: datetime
     readings: list[I2CReadingUploadEntry] = Field(min_length=1)
-
-    @field_validator("wireguard_ip")
-    @classmethod
-    def validate_wireguard_ip(cls, value: str) -> str:
-        ipaddress.ip_address(value)
-        return value
 
     @field_validator("sent_at", "first_recorded_at", "last_recorded_at")
     @classmethod
