@@ -24,6 +24,9 @@ def client():
     app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="test", password="test"
     )
+    app.dependency_overrides[api.authenticate_sensos_client] = (
+        lambda: HTTPBasicCredentials(username="sensos", password="client")
+    )
     return TestClient(app)
 
 
@@ -382,12 +385,192 @@ def test_client_status_accepts_wireguard_ip_payload(monkeypatch, client):
     assert "peer_id, last_check_in" in executed
 
 
+def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
+    fake_conn = mock.MagicMock()
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(
+        api,
+        "store_i2c_readings_upload",
+        lambda conn, upload: {
+            "status": "ok",
+            "receipt_id": "receipt-123",
+            "accepted_count": upload.reading_count,
+            "server_received_at": "2026-04-07T12:00:00Z",
+        },
+    )
+
+    resp = client.post(
+        "/i2c-readings/upload",
+        json={
+            "schema_version": 1,
+            "wireguard_ip": "10.0.1.7",
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "batch_id": 41,
+            "sent_at": "2026-04-07T11:59:00Z",
+            "ownership_mode": "client-retains",
+            "reading_count": 2,
+            "first_reading_id": 100,
+            "last_reading_id": 101,
+            "first_recorded_at": "2026-04-07T11:58:00Z",
+            "last_recorded_at": "2026-04-07T11:58:05Z",
+            "readings": [
+                {
+                    "id": 100,
+                    "timestamp": "2026-04-07T11:58:00Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "temperature_c",
+                    "value": 23.5,
+                },
+                {
+                    "id": 101,
+                    "timestamp": "2026-04-07T11:58:05Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "humidity_pct",
+                    "value": 51.2,
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "ok",
+        "receipt_id": "receipt-123",
+        "accepted_count": 2,
+        "server_received_at": "2026-04-07T12:00:00Z",
+    }
+
+
+def test_i2c_readings_upload_validates_metadata(client):
+    resp = client.post(
+        "/i2c-readings/upload",
+        json={
+            "schema_version": 1,
+            "wireguard_ip": "10.0.1.7",
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "batch_id": 41,
+            "sent_at": "2026-04-07T11:59:00Z",
+            "ownership_mode": "client-retains",
+            "reading_count": 3,
+            "first_reading_id": 100,
+            "last_reading_id": 101,
+            "first_recorded_at": "2026-04-07T11:58:00Z",
+            "last_recorded_at": "2026-04-07T11:58:05Z",
+            "readings": [
+                {
+                    "id": 100,
+                    "timestamp": "2026-04-07T11:58:00Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "temperature_c",
+                    "value": 23.5,
+                },
+                {
+                    "id": 101,
+                    "timestamp": "2026-04-07T11:58:05Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "humidity_pct",
+                    "value": 51.2,
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "reading_count must equal the number of readings" in resp.text
+
+
+def test_i2c_readings_upload_returns_conflict_for_payload_mismatch(monkeypatch, client):
+    fake_conn = mock.MagicMock()
+    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+
+    def fail_store(conn, upload):
+        raise RuntimeError("batch retry payload does not match the previously stored batch")
+
+    monkeypatch.setattr(api, "store_i2c_readings_upload", fail_store)
+
+    resp = client.post(
+        "/i2c-readings/upload",
+        json={
+            "schema_version": 1,
+            "wireguard_ip": "10.0.1.7",
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "batch_id": 41,
+            "sent_at": "2026-04-07T11:59:00Z",
+            "ownership_mode": "client-retains",
+            "reading_count": 1,
+            "first_reading_id": 100,
+            "last_reading_id": 100,
+            "first_recorded_at": "2026-04-07T11:58:00Z",
+            "last_recorded_at": "2026-04-07T11:58:00Z",
+            "readings": [
+                {
+                    "id": 100,
+                    "timestamp": "2026-04-07T11:58:00Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "temperature_c",
+                    "value": 23.5,
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": "batch retry payload does not match the previously stored batch"
+    }
+
+
 def test_get_defined_networks_requires_authentication(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     unauthenticated_client = TestClient(app)
 
     resp = unauthenticated_client.get("/get-wireguard-network-names")
+    assert resp.status_code == 401
+
+
+def test_i2c_readings_upload_requires_sensos_basic_auth(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = True
+    client = TestClient(app)
+
+    resp = client.post(
+        "/i2c-readings/upload",
+        json={
+            "schema_version": 1,
+            "wireguard_ip": "10.0.1.7",
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "batch_id": 41,
+            "sent_at": "2026-04-07T11:59:00Z",
+            "ownership_mode": "client-retains",
+            "reading_count": 1,
+            "first_reading_id": 100,
+            "last_reading_id": 100,
+            "first_recorded_at": "2026-04-07T11:58:00Z",
+            "last_recorded_at": "2026-04-07T11:58:00Z",
+            "readings": [
+                {
+                    "id": 100,
+                    "timestamp": "2026-04-07T11:58:00Z",
+                    "device_address": "0x76",
+                    "sensor_type": "BME280",
+                    "key": "temperature_c",
+                    "value": 23.5,
+                }
+            ],
+        },
+    )
+
     assert resp.status_code == 401
 
 

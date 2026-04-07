@@ -4,6 +4,7 @@
 import ipaddress
 import socket
 from unittest import mock
+from datetime import datetime, timezone
 
 import psycopg
 import pytest
@@ -155,11 +156,13 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None, None]
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.6.0")
+    core.apply_schema_migrations(fake_cur, "0.7.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.i2c_readings" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
     assert "wg_public_ip TEXT NOT NULL" in executed
     assert "peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
@@ -171,17 +174,19 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     fake_cur = mock.MagicMock()
     fake_cur.fetchall.return_value = [("0.5.0",)]
 
-    core.apply_schema_migrations(fake_cur, "0.6.0")
+    core.apply_schema_migrations(fake_cur, "0.7.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
     assert "ADD COLUMN IF NOT EXISTS peer_id INTEGER;" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
     insert_calls = [
         call.args[1]
         for call in fake_cur.execute.call_args_list
         if "INSERT INTO sensos.schema_migrations" in call.args[0]
     ]
     assert ("0.6.0", "reconcile legacy network endpoint and client status schema") in insert_calls
+    assert ("0.7.0", "add i2c readings upload schema") in insert_calls
 
 
 def test_create_client_status_table_reconciles_legacy_schema():
@@ -229,6 +234,7 @@ async def test_lifespan_runs_schema_setup(mock_get_db):
     assert 'CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA public;' in executed
     assert 'CREATE EXTENSION IF NOT EXISTS "postgis" WITH SCHEMA public;' in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
 
 
 @mock.patch("core.psycopg.connect")
@@ -276,6 +282,28 @@ def test_authenticate_client_rejects_other_password(monkeypatch):
     assert exc_info.value.status_code == 401
 
 
+def test_authenticate_sensos_client_requires_fixed_username(monkeypatch):
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="other", password="client-secret")
+    with pytest.raises(HTTPException) as exc_info:
+        core.authenticate_sensos_client(credentials)
+    assert exc_info.value.status_code == 401
+
+
+def test_authenticate_sensos_client_requires_client_password(monkeypatch):
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="sensos", password="wrongpassword")
+    with pytest.raises(HTTPException) as exc_info:
+        core.authenticate_sensos_client(credentials)
+    assert exc_info.value.status_code == 401
+
+
+def test_authenticate_sensos_client_accepts_expected_credentials(monkeypatch):
+    monkeypatch.setattr(core, "CLIENT_API_PASSWORD", "client-secret")
+    credentials = HTTPBasicCredentials(username="sensos", password="client-secret")
+    assert core.authenticate_sensos_client(credentials) == credentials
+
+
 def test_create_network_entry_new():
     mock_cur = mock.MagicMock()
     mock_cur.fetchone.side_effect = [None, (42,)]
@@ -293,6 +321,140 @@ def test_create_network_entry_new():
     assert result["wg_public_key"] is None
     assert result["wg_port"] == core.PUBLIC_WG_PORT_START
     assert result["ip_range"] == str(core.generate_default_ip_range("testnet"))
+
+
+def test_store_i2c_readings_upload_inserts_new_batch():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [
+        None,
+        (17, "receipt-123", datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)),
+    ]
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    upload = mock.MagicMock()
+    upload.schema_version = 1
+    upload.wireguard_ip = "10.0.1.7"
+    upload.hostname = "sensor-node"
+    upload.client_version = "1.2.3"
+    upload.batch_id = 41
+    upload.sent_at = datetime(2026, 4, 7, 11, 59, tzinfo=timezone.utc)
+    upload.ownership_mode = "client-retains"
+    upload.reading_count = 2
+    upload.first_reading_id = 100
+    upload.last_reading_id = 101
+    upload.first_recorded_at = datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc)
+    upload.last_recorded_at = datetime(2026, 4, 7, 11, 58, 5, tzinfo=timezone.utc)
+    upload.readings = [
+        mock.MagicMock(
+            id=100,
+            timestamp=datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc),
+            device_address="0x76",
+            sensor_type="BME280",
+            key="temperature_c",
+            value=23.5,
+        ),
+        mock.MagicMock(
+            id=101,
+            timestamp=datetime(2026, 4, 7, 11, 58, 5, tzinfo=timezone.utc),
+            device_address="0x76",
+            sensor_type="BME280",
+            key="humidity_pct",
+            value=51.2,
+        ),
+    ]
+    upload.model_dump.return_value = {
+        "schema_version": 1,
+        "wireguard_ip": "10.0.1.7",
+        "hostname": "sensor-node",
+        "client_version": "1.2.3",
+        "batch_id": 41,
+        "sent_at": "2026-04-07T11:59:00Z",
+        "ownership_mode": "client-retains",
+        "reading_count": 2,
+        "first_reading_id": 100,
+        "last_reading_id": 101,
+        "first_recorded_at": "2026-04-07T11:58:00Z",
+        "last_recorded_at": "2026-04-07T11:58:05Z",
+        "readings": [
+            {
+                "id": 100,
+                "timestamp": "2026-04-07T11:58:00Z",
+                "device_address": "0x76",
+                "sensor_type": "BME280",
+                "key": "temperature_c",
+                "value": 23.5,
+            },
+            {
+                "id": 101,
+                "timestamp": "2026-04-07T11:58:05Z",
+                "device_address": "0x76",
+                "sensor_type": "BME280",
+                "key": "humidity_pct",
+                "value": 51.2,
+            },
+        ],
+    }
+
+    result = core.store_i2c_readings_upload(fake_conn, upload)
+
+    assert result == {
+        "status": "ok",
+        "receipt_id": "receipt-123",
+        "accepted_count": 2,
+        "server_received_at": "2026-04-07T12:00:00Z",
+    }
+    fake_cur.executemany.assert_called_once()
+    fake_conn.transaction.assert_called_once()
+
+
+def test_store_i2c_readings_upload_reuses_existing_batch():
+    fake_cur = mock.MagicMock()
+    upload = mock.MagicMock()
+    upload.wireguard_ip = "10.0.1.7"
+    upload.batch_id = 41
+    upload.reading_count = 2
+    upload.model_dump.return_value = {"batch_id": 41, "wireguard_ip": "10.0.1.7"}
+    payload_hash = core.sha256(b'{"batch_id":41,"wireguard_ip":"10.0.1.7"}').hexdigest()
+    fake_cur.fetchone.return_value = (
+        17,
+        "receipt-123",
+        2,
+        payload_hash,
+        datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+    )
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+
+    result = core.store_i2c_readings_upload(fake_conn, upload)
+
+    assert result == {
+        "status": "ok",
+        "receipt_id": "receipt-123",
+        "accepted_count": 2,
+        "server_received_at": "2026-04-07T12:00:00Z",
+    }
+    fake_cur.executemany.assert_not_called()
+    fake_conn.transaction.assert_called_once()
+
+
+def test_store_i2c_readings_upload_rejects_conflicting_retry():
+    fake_cur = mock.MagicMock()
+    upload = mock.MagicMock()
+    upload.wireguard_ip = "10.0.1.7"
+    upload.batch_id = 41
+    upload.model_dump.return_value = {"batch_id": 41, "wireguard_ip": "10.0.1.7"}
+    fake_cur.fetchone.return_value = (
+        17,
+        "receipt-123",
+        2,
+        "different-hash",
+        datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+    )
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+
+    with pytest.raises(RuntimeError, match="payload does not match"):
+        core.store_i2c_readings_upload(fake_conn, upload)
 
 
 def test_create_network_entry_accepts_hostname_endpoint():

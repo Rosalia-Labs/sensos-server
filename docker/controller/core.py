@@ -2,15 +2,19 @@
 # Copyright (c) 2025 Rosalia Labs LLC
 
 import ipaddress
+import json
 import logging
 import os
 import psycopg
 import re
+import secrets
 import socket
 import time
+from hashlib import sha256
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -110,15 +114,33 @@ security = HTTPBasic()
 
 
 def authenticate_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.password != ADMIN_API_PASSWORD:
+    if not secrets.compare_digest(credentials.password, ADMIN_API_PASSWORD):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials
 
 
 def authenticate_client(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.password not in {CLIENT_API_PASSWORD, ADMIN_API_PASSWORD}:
+    if not (
+        secrets.compare_digest(credentials.password, CLIENT_API_PASSWORD)
+        or secrets.compare_digest(credentials.password, ADMIN_API_PASSWORD)
+    ):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials
+
+
+def authenticate_named_client(
+    credentials: HTTPBasicCredentials,
+    username: str,
+):
+    if not secrets.compare_digest(credentials.username, username):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not secrets.compare_digest(credentials.password, CLIENT_API_PASSWORD):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return credentials
+
+
+def authenticate_sensos_client(credentials: HTTPBasicCredentials = Depends(security)):
+    return authenticate_named_client(credentials, username="sensos")
 
 
 def get_db(retries: int = 10, delay: int = 3):
@@ -185,6 +207,8 @@ def create_initial_schema(cur):
     create_hardware_profile_table(cur)
     create_peer_location_table(cur)
     create_runtime_wireguard_status_table(cur)
+    create_i2c_reading_batches_table(cur)
+    create_i2c_readings_table(cur)
 
 
 def migrate_0_6_0_schema_updates(cur):
@@ -192,6 +216,13 @@ def migrate_0_6_0_schema_updates(cur):
     cur.execute("SET search_path TO sensos, public;")
     create_networks_table(cur)
     create_client_status_table(cur)
+
+
+def migrate_0_7_0_i2c_readings_upload(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_i2c_reading_batches_table(cur)
+    create_i2c_readings_table(cur)
 
 
 SCHEMA_MIGRATIONS = [
@@ -204,6 +235,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.6.0"),
         name="reconcile legacy network endpoint and client status schema",
         apply=migrate_0_6_0_schema_updates,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.7.0"),
+        name="add i2c readings upload schema",
+        apply=migrate_0_7_0_i2c_readings_upload,
     ),
 ]
 
@@ -905,3 +941,181 @@ def create_runtime_wireguard_status_table(cur):
         );
         """
     )
+
+
+def create_i2c_reading_batches_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches (
+            id SERIAL PRIMARY KEY,
+            receipt_id UUID NOT NULL DEFAULT gen_random_uuid(),
+            schema_version INTEGER NOT NULL,
+            wireguard_ip INET NOT NULL,
+            hostname TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            batch_id BIGINT NOT NULL,
+            sent_at TIMESTAMPTZ NOT NULL,
+            ownership_mode TEXT NOT NULL CHECK (
+                ownership_mode IN ('client-retains', 'server-owns')
+            ),
+            reading_count INTEGER NOT NULL CHECK (reading_count >= 0),
+            first_reading_id BIGINT NOT NULL,
+            last_reading_id BIGINT NOT NULL,
+            first_recorded_at TIMESTAMPTZ NOT NULL,
+            last_recorded_at TIMESTAMPTZ NOT NULL,
+            accepted_count INTEGER NOT NULL DEFAULT 0 CHECK (accepted_count >= 0),
+            payload_sha256 TEXT NOT NULL,
+            request_json JSONB NOT NULL,
+            server_received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (receipt_id),
+            UNIQUE (wireguard_ip, batch_id)
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_i2c_reading_batches_wireguard_received
+        ON sensos.i2c_reading_batches (wireguard_ip, server_received_at DESC);
+        """
+    )
+
+
+def create_i2c_readings_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
+            id BIGSERIAL PRIMARY KEY,
+            batch_upload_id INTEGER NOT NULL REFERENCES sensos.i2c_reading_batches(id) ON DELETE CASCADE,
+            client_reading_id BIGINT NOT NULL,
+            recorded_at TIMESTAMPTZ NOT NULL,
+            device_address TEXT NOT NULL,
+            sensor_type TEXT NOT NULL,
+            reading_key TEXT NOT NULL,
+            reading_value DOUBLE PRECISION NOT NULL
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_i2c_readings_batch_upload_id
+        ON sensos.i2c_readings (batch_upload_id, client_reading_id);
+        """
+    )
+
+
+def format_rfc3339_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def store_i2c_readings_upload(conn, upload) -> dict:
+    payload = upload.model_dump(mode="json")
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload_sha256 = sha256(payload_json.encode("utf-8")).hexdigest()
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, receipt_id, accepted_count, payload_sha256, server_received_at
+                FROM sensos.i2c_reading_batches
+                WHERE wireguard_ip = %s AND batch_id = %s
+                FOR UPDATE;
+                """,
+                (upload.wireguard_ip, upload.batch_id),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                if existing[3] != payload_sha256:
+                    raise RuntimeError(
+                        "batch retry payload does not match the previously stored batch"
+                    )
+                cur.execute(
+                    """
+                    UPDATE sensos.i2c_reading_batches
+                    SET last_seen_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (existing[0],),
+                )
+                return {
+                    "status": "ok",
+                    "receipt_id": str(existing[1]),
+                    "accepted_count": existing[2],
+                    "server_received_at": format_rfc3339_utc(existing[4]),
+                }
+
+            cur.execute(
+                """
+                INSERT INTO sensos.i2c_reading_batches (
+                    schema_version,
+                    wireguard_ip,
+                    hostname,
+                    client_version,
+                    batch_id,
+                    sent_at,
+                    ownership_mode,
+                    reading_count,
+                    first_reading_id,
+                    last_reading_id,
+                    first_recorded_at,
+                    last_recorded_at,
+                    accepted_count,
+                    payload_sha256,
+                    request_json
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id, receipt_id, server_received_at;
+                """,
+                (
+                    upload.schema_version,
+                    upload.wireguard_ip,
+                    upload.hostname,
+                    upload.client_version,
+                    upload.batch_id,
+                    upload.sent_at,
+                    upload.ownership_mode,
+                    upload.reading_count,
+                    upload.first_reading_id,
+                    upload.last_reading_id,
+                    upload.first_recorded_at,
+                    upload.last_recorded_at,
+                    upload.reading_count,
+                    payload_sha256,
+                    payload_json,
+                ),
+            )
+            batch_row = cur.fetchone()
+            cur.executemany(
+                """
+                INSERT INTO sensos.i2c_readings (
+                    batch_upload_id,
+                    client_reading_id,
+                    recorded_at,
+                    device_address,
+                    sensor_type,
+                    reading_key,
+                    reading_value
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                """,
+                [
+                    (
+                        batch_row[0],
+                        reading.id,
+                        reading.timestamp,
+                        reading.device_address,
+                        reading.sensor_type,
+                        reading.key,
+                        reading.value,
+                    )
+                    for reading in upload.readings
+                ],
+            )
+
+    return {
+        "status": "ok",
+        "receipt_id": str(batch_row[1]),
+        "accepted_count": upload.reading_count,
+        "server_received_at": format_rfc3339_utc(batch_row[2]),
+    }

@@ -27,9 +27,11 @@ from core import (
     insert_peer,
     authenticate_admin,
     authenticate_client,
+    authenticate_sensos_client,
     get_network_details,
     search_for_next_available_ip,
     register_wireguard_key_in_db,
+    store_i2c_readings_upload,
     create_network_entry,
     update_network_endpoint,
     wait_for_network_ready,
@@ -49,6 +51,7 @@ from models import (
     LocationUpdateRequest,
     ClientStatusRequest,
     HardwareProfile,
+    I2CReadingsUploadRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -743,6 +746,27 @@ def upload_hardware_profile(
     logger.info(f"✅ Hardware profile stored for peer IP '{wg_ip}'.")
 
     return {"status": "success", "wg_ip": wg_ip}
+
+
+@router.post("/i2c-readings/upload")
+def upload_i2c_readings(
+    upload: I2CReadingsUploadRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate_sensos_client),
+):
+    try:
+        with get_db() as conn:
+            return store_i2c_readings_upload(conn, upload)
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": str(exc)},
+        )
+    except Exception:
+        logger.error("i2c-readings/upload failed", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "Failed to store I2C readings upload."},
+        )
 
 
 @router.get("/wireguard-status", response_class=HTMLResponse)
