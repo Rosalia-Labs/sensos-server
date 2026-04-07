@@ -195,25 +195,38 @@ main() {
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
+    local payload
+    payload="$(
+        python3 - "${NETWORK_NAME}" "${WG_PUBLIC_IP}" "${WG_PORT:-}" <<'PY'
+import json
+import sys
+
+payload = {
+    "name": sys.argv[1],
+    "wg_public_ip": sys.argv[2],
+}
+if len(sys.argv) > 3 and sys.argv[3]:
+    payload["wg_port"] = int(sys.argv[3])
+print(json.dumps(payload))
+PY
+)"
+
     curl_args=(
         -sS
         -o "${RESPONSE_FILE}"
         -w '%{http_code}'
         -u "sensos:${API_PASSWORD}"
+        -H 'Content-Type: application/json'
         -X POST
-        -F "name=${NETWORK_NAME}"
-        -F "wg_public_ip=${WG_PUBLIC_IP}"
+        -d "${payload}"
     )
-    if [[ -n "${WG_PORT}" ]]; then
-        curl_args+=(-F "wg_port=${WG_PORT}")
-    fi
 
-    log "creating or reconciling network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/create-network"
+    log "creating or reconciling network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/api/v1/admin/networks"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://127.0.0.1:${API_PORT}/create-network"
+            "http://127.0.0.1:${API_PORT}/api/v1/admin/networks"
     )"; then
-        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/create-network"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/api/v1/admin/networks"
     fi
 
     if [[ "${status_code}" != "200" ]]; then

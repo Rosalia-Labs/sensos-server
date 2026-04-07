@@ -128,30 +128,20 @@ main() {
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
-    payload="$(python3 - "${NETWORK_NAME}" <<'PY'
-import json
-import sys
-
-print(json.dumps({"network_name": sys.argv[1]}))
-PY
-)"
-
     curl_args=(
         -sS
         -o "${RESPONSE_FILE}"
         -w '%{http_code}'
         -u "sensos:${API_PASSWORD}"
-        -H 'Content-Type: application/json'
-        -X POST
-        -d "${payload}"
+        -X DELETE
     )
 
-    log "deleting network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/delete-network"
+    log "deleting network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://127.0.0.1:${API_PORT}/delete-network"
+            "http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}"
     )"; then
-        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/delete-network"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}"
     fi
 
     if [[ "${status_code}" != "200" ]]; then

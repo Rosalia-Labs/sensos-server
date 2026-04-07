@@ -174,23 +174,31 @@ main() {
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
+    local payload
+    payload="$(
+        python3 - "${WG_PUBLIC_IP}" "${WG_PORT}" <<'PY'
+import json
+import sys
+print(json.dumps({"wg_public_ip": sys.argv[1], "wg_port": int(sys.argv[2])}))
+PY
+)"
+
     curl_args=(
         -sS
         -o "${RESPONSE_FILE}"
         -w '%{http_code}'
         -u "sensos:${API_PASSWORD}"
-        -X POST
-        -F "name=${NETWORK_NAME}"
-        -F "wg_public_ip=${WG_PUBLIC_IP}"
-        -F "wg_port=${WG_PORT}"
+        -H 'Content-Type: application/json'
+        -X PUT
+        -d "${payload}"
     )
 
-    log "updating endpoint for network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/update-network-endpoint"
+    log "updating endpoint for network '${NETWORK_NAME}' via http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}/endpoint"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://127.0.0.1:${API_PORT}/update-network-endpoint"
+            "http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}/endpoint"
     )"; then
-        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/update-network-endpoint"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/api/v1/admin/networks/${NETWORK_NAME}/endpoint"
     fi
 
     if [[ "${status_code}" != "200" ]]; then

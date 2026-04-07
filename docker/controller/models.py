@@ -32,6 +32,17 @@ class DeleteNetworkRequest(BaseModel):
     network_name: str
 
 
+class CreateNetworkRequest(BaseModel):
+    name: str
+    wg_public_ip: str
+    wg_port: Optional[int] = Field(default=None, ge=1, le=65535)
+
+
+class UpdateNetworkEndpointRequest(BaseModel):
+    wg_public_ip: str
+    wg_port: int = Field(ge=1, le=65535)
+
+
 class RegisterSSHKeyRequest(BaseModel):
     username: str
     uid: int

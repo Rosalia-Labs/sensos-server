@@ -3,7 +3,9 @@
 
 from unittest import mock
 
+import admin_api
 import api
+import client_api
 import pytest
 
 from fastapi import FastAPI
@@ -18,13 +20,13 @@ def client():
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
-    app.dependency_overrides[api.authenticate_admin] = lambda: HTTPBasicCredentials(
+    app.dependency_overrides[admin_api.authenticate_admin] = lambda: HTTPBasicCredentials(
         username="admin", password="admin"
     )
-    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
+    app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="sensos", password="test"
     )
-    app.dependency_overrides[api.authenticate_peer] = (
+    app.dependency_overrides[client_api.authenticate_peer] = (
         lambda: {"peer_id": 123, "peer_uuid": "peer-123", "wg_ip": "10.0.1.7"}
     )
     return TestClient(app)
@@ -52,48 +54,17 @@ def test_healthz_reports_ok_when_schema_ready():
     assert resp.json() == {"status": "ok"}
 
 
-def test_dashboard_success(monkeypatch, client):
-    fake_cur = mock.MagicMock()
-
-    def execute_side_effect(query, *args, **kwargs):
-        if "FROM sensos.version_history" in query:
-            fake_cur.fetchone.return_value = (
-                1,
-                "1",
-                "0",
-                "0",
-                None,
-                "abcdef",
-                "main",
-                "v1.0.0",
-                "false",
-                "2024-01-01T00:00:00Z",
-            )
-        elif "FROM sensos.networks" in query:
-            fake_cur.fetchall.return_value = [("network1", "10.0.0.0/16", "1.2.3.4", 51820)]
-
-    fake_cur.execute.side_effect = execute_side_effect
-    mock_conn = mock.MagicMock()
-    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
-
-    resp = client.get("/")
-    assert resp.status_code == 200
-    assert "Sensor Network Manager" in resp.text
-
-
 def test_create_network_invalid_port(client):
     resp = client.post(
-        "/create-network",
-        data={"name": "test", "wg_public_ip": "1.2.3.4", "wg_port": "99999"},
+        "/api/v1/admin/networks",
+        json={"name": "test", "wg_public_ip": "1.2.3.4", "wg_port": 99999},
     )
-    assert resp.status_code == 400
-    assert "Invalid WireGuard port" in resp.text
+    assert resp.status_code == 422
 
 
 def test_create_network_waits_for_readiness(monkeypatch, client):
     monkeypatch.setattr(
-        api,
+        admin_api,
         "create_network_entry",
         lambda cur, name, wg_public_ip, wg_port: (
             {
@@ -108,16 +79,16 @@ def test_create_network_waits_for_readiness(monkeypatch, client):
         ),
     )
     monkeypatch.setattr(
-        api,
+        admin_api,
         "wait_for_network_ready",
         lambda name: (1, "10.0.0.0/16", "server-pubkey", "1.2.3.4", 51820),
     )
     mock_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
     resp = client.post(
-        "/create-network",
-        data={"name": "test", "wg_public_ip": "1.2.3.4", "wg_port": "51820"},
+        "/api/v1/admin/networks",
+        json={"name": "test", "wg_public_ip": "1.2.3.4", "wg_port": 51820},
     )
     assert resp.status_code == 200
     assert resp.json()["wg_public_key"] == "server-pubkey"
@@ -140,18 +111,18 @@ def test_create_network_without_port_uses_allocator(monkeypatch, client):
             True,
         )
 
-    monkeypatch.setattr(api, "create_network_entry", fake_create_network_entry)
+    monkeypatch.setattr(admin_api, "create_network_entry", fake_create_network_entry)
     monkeypatch.setattr(
-        api,
+        admin_api,
         "wait_for_network_ready",
         lambda name: (1, "10.0.0.0/16", "server-pubkey", "1.2.3.4", 51281),
     )
     mock_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
     resp = client.post(
-        "/create-network",
-        data={"name": "test", "wg_public_ip": "1.2.3.4"},
+        "/api/v1/admin/networks",
+        json={"name": "test", "wg_public_ip": "1.2.3.4"},
     )
     assert resp.status_code == 200
     assert captured["wg_port"] is None
@@ -175,13 +146,13 @@ def test_create_network_accepts_hostname_endpoint(monkeypatch, client):
             False,
         )
 
-    monkeypatch.setattr(api, "create_network_entry", fake_create_network_entry)
+    monkeypatch.setattr(admin_api, "create_network_entry", fake_create_network_entry)
     mock_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
     resp = client.post(
-        "/create-network",
-        data={"name": "test", "wg_public_ip": "server.example.org", "wg_port": "51820"},
+        "/api/v1/admin/networks",
+        json={"name": "test", "wg_public_ip": "server.example.org", "wg_port": 51820},
     )
     assert resp.status_code == 200
     assert captured["wg_public_ip"] == "server.example.org"
@@ -189,12 +160,11 @@ def test_create_network_accepts_hostname_endpoint(monkeypatch, client):
 
 
 def test_update_network_endpoint_invalid_port(client):
-    resp = client.post(
-        "/update-network-endpoint",
-        data={"name": "test", "wg_public_ip": "10.0.2.2", "wg_port": "99999"},
+    resp = client.put(
+        "/api/v1/admin/networks/test/endpoint",
+        json={"wg_public_ip": "10.0.2.2", "wg_port": 99999},
     )
-    assert resp.status_code == 400
-    assert "Invalid WireGuard port" in resp.text
+    assert resp.status_code == 422
 
 
 def test_update_network_endpoint_returns_updated_network(monkeypatch, client):
@@ -213,17 +183,13 @@ def test_update_network_endpoint_returns_updated_network(monkeypatch, client):
             "wg_public_key": "server-pubkey",
         }
 
-    monkeypatch.setattr(api, "update_network_endpoint", fake_update_network_endpoint)
+    monkeypatch.setattr(admin_api, "update_network_endpoint", fake_update_network_endpoint)
     mock_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
-    resp = client.post(
-        "/update-network-endpoint",
-        data={
-            "name": "test",
-            "wg_public_ip": "10.0.2.2",
-            "wg_port": "15182",
-        },
+    resp = client.put(
+        "/api/v1/admin/networks/test/endpoint",
+        json={"wg_public_ip": "10.0.2.2", "wg_port": 15182},
     )
     assert resp.status_code == 200
     assert captured["name"] == "test"
@@ -233,23 +199,23 @@ def test_update_network_endpoint_returns_updated_network(monkeypatch, client):
 
 def test_register_peer_invalid_subnet(monkeypatch, client):
     monkeypatch.setattr(
-        api,
+        client_api,
         "get_network_details",
         lambda name: (1, "10.0.0.0/16", "pubkey", "1.2.3.4", 51820),
     )
 
-    resp = client.post("/register-peer", json={"network_name": "test", "subnet_offset": 9999})
+    resp = client.post("/api/v1/client/peers/enroll", json={"network_name": "test", "subnet_offset": 9999})
     assert resp.status_code == 400
 
 
 def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
     monkeypatch.setattr(
-        api,
+        client_api,
         "get_network_details",
         lambda name: (1, "10.0.0.0/16", "pubkey", "1.2.3.4", 51820),
     )
     monkeypatch.setattr(
-        api,
+        client_api,
         "insert_peer",
         lambda network_id, wg_ip, note=None: (123, "peer-uuid", "peer-secret"),
     )
@@ -260,9 +226,9 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
         captured["start_third_octet"] = start_third_octet
         return "10.0.1.1"
 
-    monkeypatch.setattr(api, "search_for_next_available_ip", fake_search)
+    monkeypatch.setattr(client_api, "search_for_next_available_ip", fake_search)
 
-    resp = client.post("/register-peer", json={"network_name": "test"})
+    resp = client.post("/api/v1/client/peers/enroll", json={"network_name": "test"})
     assert resp.status_code == 200
     assert captured["start_third_octet"] == 1
     assert resp.json()["wg_ip"] == "10.0.1.1"
@@ -271,9 +237,9 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
 
 
 def test_register_wireguard_key_not_found(monkeypatch, client):
-    monkeypatch.setattr(api, "register_wireguard_key_in_db", lambda wg_ip, pubkey: None)
+    monkeypatch.setattr(client_api, "register_wireguard_key_in_db", lambda wg_ip, pubkey: None)
     resp = client.post(
-        "/register-wireguard-key",
+        "/api/v1/client/peer/wireguard-key",
         json={"wg_public_key": "dummy"},
     )
     assert resp.status_code == 404
@@ -283,10 +249,10 @@ def test_get_network_info_accepts_client_auth(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
-    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
+    app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="client", password="client"
     )
-    app.dependency_overrides[api.authenticate_admin] = lambda: (_ for _ in ()).throw(
+    app.dependency_overrides[admin_api.authenticate_admin] = lambda: (_ for _ in ()).throw(
         AssertionError("admin auth should not be required")
     )
     client = TestClient(app)
@@ -301,9 +267,9 @@ def test_get_network_info_accepts_client_auth(monkeypatch):
     )
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
-    resp = client.get("/get-network-info", params={"network_name": "testnet"})
+    resp = client.get("/api/v1/client/networks/testnet")
     assert resp.status_code == 200
     assert resp.json() == {
         "name": "testnet",
@@ -322,41 +288,41 @@ def test_set_peer_active_updates_inventory_state(monkeypatch, client):
         captured["is_active"] = is_active
         return True
 
-    monkeypatch.setattr(api, "set_peer_active_state", fake_set_peer_active_state)
+    monkeypatch.setattr(admin_api, "set_peer_active_state", fake_set_peer_active_state)
 
-    resp = client.post("/set-peer-active", json={"wg_ip": "10.0.1.7", "is_active": False})
+    resp = client.patch("/api/v1/admin/peers/10.0.1.7/active", json={"wg_ip": "10.0.1.7", "is_active": False})
     assert resp.status_code == 200
     assert captured == {"wg_ip": "10.0.1.7", "is_active": False}
     assert resp.json() == {"wg_ip": "10.0.1.7", "is_active": False}
 
 
 def test_delete_peer_purges_inventory_entry(monkeypatch, client):
-    monkeypatch.setattr(api, "delete_peer", lambda wg_ip: wg_ip == "10.0.1.7")
+    monkeypatch.setattr(admin_api, "delete_peer", lambda wg_ip: wg_ip == "10.0.1.7")
 
-    resp = client.post("/delete-peer", json={"wg_ip": "10.0.1.7"})
+    resp = client.delete("/api/v1/admin/peers/10.0.1.7")
     assert resp.status_code == 200
     assert resp.json() == {"wg_ip": "10.0.1.7", "deleted": True}
 
 
 def test_delete_peer_returns_not_found(monkeypatch, client):
-    monkeypatch.setattr(api, "delete_peer", lambda wg_ip: False)
+    monkeypatch.setattr(admin_api, "delete_peer", lambda wg_ip: False)
 
-    resp = client.post("/delete-peer", json={"wg_ip": "10.0.1.99"})
+    resp = client.delete("/api/v1/admin/peers/10.0.1.99")
     assert resp.status_code == 404
 
 
 def test_delete_network_cascades_inventory_entry(monkeypatch, client):
-    monkeypatch.setattr(api, "delete_network", lambda network_name: network_name == "testing")
+    monkeypatch.setattr(admin_api, "delete_network", lambda network_name: network_name == "testing")
 
-    resp = client.post("/delete-network", json={"network_name": "testing"})
+    resp = client.delete("/api/v1/admin/networks/testing")
     assert resp.status_code == 200
     assert resp.json() == {"network_name": "testing", "deleted": True}
 
 
 def test_delete_network_returns_not_found(monkeypatch, client):
-    monkeypatch.setattr(api, "delete_network", lambda network_name: False)
+    monkeypatch.setattr(admin_api, "delete_network", lambda network_name: False)
 
-    resp = client.post("/delete-network", json={"network_name": "missing"})
+    resp = client.delete("/api/v1/admin/networks/missing")
     assert resp.status_code == 404
 
 
@@ -364,10 +330,10 @@ def test_client_status_uses_authenticated_peer(monkeypatch, client):
     fake_cur = mock.MagicMock()
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
     resp = client.post(
-        "/client-status",
+        "/api/v1/client/peer/status",
         json={
             "hostname": "test-node",
             "uptime_seconds": 42,
@@ -391,9 +357,9 @@ def test_client_status_uses_authenticated_peer(monkeypatch, client):
 
 def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     fake_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
     monkeypatch.setattr(
-        api,
+        client_api,
         "store_i2c_readings_upload",
         lambda conn, upload, wireguard_ip: {
             "status": "ok",
@@ -404,7 +370,7 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     )
 
     resp = client.post(
-        "/i2c-readings/upload",
+        "/api/v1/client/peer/i2c-readings/batches",
         json={
             "schema_version": 1,
             "hostname": "sensor-node",
@@ -449,7 +415,7 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
 
 def test_i2c_readings_upload_validates_metadata(client):
     resp = client.post(
-        "/i2c-readings/upload",
+        "/api/v1/client/peer/i2c-readings/batches",
         json={
             "schema_version": 1,
             "hostname": "sensor-node",
@@ -489,15 +455,15 @@ def test_i2c_readings_upload_validates_metadata(client):
 
 def test_i2c_readings_upload_returns_conflict_for_payload_mismatch(monkeypatch, client):
     fake_conn = mock.MagicMock()
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
 
     def fail_store(conn, upload, wireguard_ip):
         raise RuntimeError("batch retry payload does not match the previously stored batch")
 
-    monkeypatch.setattr(api, "store_i2c_readings_upload", fail_store)
+    monkeypatch.setattr(client_api, "store_i2c_readings_upload", fail_store)
 
     resp = client.post(
-        "/i2c-readings/upload",
+        "/api/v1/client/peer/i2c-readings/batches",
         json={
             "schema_version": 1,
             "hostname": "sensor-node",
@@ -534,7 +500,7 @@ def test_get_defined_networks_requires_authentication(monkeypatch):
     app.include_router(router)
     unauthenticated_client = TestClient(app)
 
-    resp = unauthenticated_client.get("/get-wireguard-network-names")
+    resp = unauthenticated_client.get("/api/v1/admin/networks")
     assert resp.status_code == 401
 
 
@@ -545,7 +511,7 @@ def test_i2c_readings_upload_requires_peer_auth(monkeypatch):
     client = TestClient(app)
 
     resp = client.post(
-        "/i2c-readings/upload",
+        "/api/v1/client/peer/i2c-readings/batches",
         json={
             "schema_version": 1,
             "hostname": "sensor-node",
@@ -578,25 +544,33 @@ def test_client_credentials_cannot_access_admin_route(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
-    app.dependency_overrides[api.authenticate_client] = lambda: HTTPBasicCredentials(
+    app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="client", password="client"
     )
     client = TestClient(app)
 
-    resp = client.get("/get-wireguard-network-names")
+    resp = client.get("/api/v1/admin/networks")
     assert resp.status_code == 401
 
 
 def test_get_defined_networks_returns_names(monkeypatch, client):
     fake_cur = mock.MagicMock()
-    fake_cur.fetchall.return_value = [("testing",), ("biosense",)]
+    fake_cur.fetchall.return_value = [
+        ("testing", "10.0.0.0/16", "server.example.org", 51820, "pubkey-1"),
+        ("biosense", "10.1.0.0/16", "server.example.org", 51821, "pubkey-2"),
+    ]
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
-    resp = client.get("/get-wireguard-network-names")
+    resp = client.get("/api/v1/admin/networks")
     assert resp.status_code == 200
-    assert resp.json() == {"networks": ["testing", "biosense"]}
+    assert resp.json() == {
+        "networks": [
+            {"name": "testing", "ip_range": "10.0.0.0/16", "wg_public_ip": "server.example.org", "wg_port": 51820, "wg_public_key": "pubkey-1"},
+            {"name": "biosense", "ip_range": "10.1.0.0/16", "wg_public_ip": "server.example.org", "wg_port": 51821, "wg_public_key": "pubkey-2"},
+        ]
+    }
 
 
 def test_wireguard_status_uses_database_rows(monkeypatch, client):
@@ -621,9 +595,10 @@ def test_wireguard_status_uses_database_rows(monkeypatch, client):
     fake_cur.execute.side_effect = execute_side_effect
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
-    monkeypatch.setattr(api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(admin_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
 
-    resp = client.get("/wireguard-status")
+    resp = client.get("/api/v1/admin/runtime/wireguard")
     assert resp.status_code == 200
-    assert "sensos-wireguard" in resp.text
-    assert "network1" in resp.text
+    body = resp.json()
+    assert body["components"][0]["component"] == "sensos-wireguard"
+    assert body["components"][0]["network_name"] == "network1"

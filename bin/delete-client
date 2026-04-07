@@ -128,30 +128,20 @@ main() {
 
     RESPONSE_FILE="$(mktemp)"
     trap 'rm -f "${RESPONSE_FILE}"' EXIT
-    payload="$(python3 - "${WG_IP}" <<'PY'
-import json
-import sys
-
-print(json.dumps({"wg_ip": sys.argv[1]}))
-PY
-)"
-
     curl_args=(
         -sS
         -o "${RESPONSE_FILE}"
         -w '%{http_code}'
         -u "sensos:${API_PASSWORD}"
-        -H 'Content-Type: application/json'
-        -X POST
-        -d "${payload}"
+        -X DELETE
     )
 
-    log "deleting client '${WG_IP}' via http://127.0.0.1:${API_PORT}/delete-peer"
+    log "deleting client '${WG_IP}' via http://127.0.0.1:${API_PORT}/api/v1/admin/peers/${WG_IP}"
     if ! status_code="$(
         curl "${curl_args[@]}" \
-            "http://127.0.0.1:${API_PORT}/delete-peer"
+            "http://127.0.0.1:${API_PORT}/api/v1/admin/peers/${WG_IP}"
     )"; then
-        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/delete-peer"
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}/api/v1/admin/peers/${WG_IP}"
     fi
 
     if [[ "${status_code}" != "200" ]]; then
