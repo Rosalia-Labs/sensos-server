@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from admin_api import router as admin_router
+from admin_ui import router as admin_ui_router
 from client_api import router as client_router
 
 router = APIRouter()
@@ -19,3 +20,4 @@ def healthz(request: Request):
 
 router.include_router(client_router)
 router.include_router(admin_router)
+router.include_router(admin_ui_router)
