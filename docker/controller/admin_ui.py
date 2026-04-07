@@ -635,7 +635,7 @@ def overview_page(request: Request, flash: str | None = None):
             f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
             f"<td class='mono'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
             for row in networks
-        ) or '<tr><td colspan=\"4\" class=\"dim\">No networks defined.</td></tr>'}
+        ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
   </section>
@@ -650,7 +650,7 @@ def overview_page(request: Request, flash: str | None = None):
             f"<tr><td class='mono'>{html.escape(row['wg_ip'])}</td><td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
-        ) or '<tr><td colspan=\"4\" class=\"dim\">No peers registered.</td></tr>'}
+        ) or '<tr><td colspan="4" class="dim">No peers registered.</td></tr>'}
       </tbody>
     </table>
   </section>
@@ -709,7 +709,7 @@ def networks_page(request: Request, flash: str | None = None):
             f"<td>{row['peer_count']}</td>"
             "</tr>"
             for row in rows
-        ) or '<tr><td colspan=\"5\" class=\"dim\">No networks defined.</td></tr>'}
+        ) or '<tr><td colspan="5" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
   </section>
