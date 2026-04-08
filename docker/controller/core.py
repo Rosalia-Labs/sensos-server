@@ -1288,8 +1288,8 @@ def create_public_sites_view(cur):
             SELECT DISTINCT ON (peer_id)
                 peer_id,
                 recorded_at,
-                sensos.ST_Y(location::sensos.geometry)::float AS latitude,
-                sensos.ST_X(location::sensos.geometry)::float AS longitude
+                public.ST_Y(location::public.geometry)::float AS latitude,
+                public.ST_X(location::public.geometry)::float AS longitude
             FROM sensos.peer_locations
             ORDER BY peer_id, recorded_at DESC
         ),
