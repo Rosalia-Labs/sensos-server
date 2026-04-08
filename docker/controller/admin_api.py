@@ -258,6 +258,102 @@ def get_client_location(wg_ip: str, credentials=Depends(authenticate_admin)):
     return {"latitude": row[1], "longitude": row[2], "recorded_at": row[0]}
 
 
+@router.get("/birdnet/batches")
+def list_birdnet_batches(limit: int = 50, credentials=Depends(authenticate_admin)):
+    bounded_limit = max(1, min(limit, 500))
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.receipt_id::text,
+                       b.wireguard_ip::text,
+                       p.note,
+                       n.name,
+                       b.hostname,
+                       b.client_version,
+                       b.batch_id,
+                       b.ownership_mode,
+                       b.source_count,
+                       b.first_processed_at,
+                       b.last_processed_at,
+                       b.server_received_at
+                FROM sensos.birdnet_result_batches b
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                ORDER BY b.server_received_at DESC
+                LIMIT %s;
+                """,
+                (bounded_limit,),
+            )
+            rows = cur.fetchall()
+    return {
+        "batches": [
+            {
+                "receipt_id": row[0],
+                "wg_ip": row[1],
+                "note": row[2],
+                "network_name": row[3],
+                "hostname": row[4],
+                "client_version": row[5],
+                "batch_id": row[6],
+                "ownership_mode": row[7],
+                "source_count": row[8],
+                "first_processed_at": row[9],
+                "last_processed_at": row[10],
+                "server_received_at": row[11],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/peers/{wg_ip}/birdnet/batches")
+def get_peer_birdnet_batches(
+    wg_ip: str,
+    limit: int = 50,
+    credentials=Depends(authenticate_admin),
+):
+    bounded_limit = max(1, min(limit, 500))
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.receipt_id::text,
+                       b.hostname,
+                       b.client_version,
+                       b.batch_id,
+                       b.ownership_mode,
+                       b.source_count,
+                       b.first_processed_at,
+                       b.last_processed_at,
+                       b.server_received_at
+                FROM sensos.birdnet_result_batches b
+                WHERE b.wireguard_ip = %s
+                ORDER BY b.server_received_at DESC
+                LIMIT %s;
+                """,
+                (wg_ip, bounded_limit),
+            )
+            rows = cur.fetchall()
+    return {
+        "wg_ip": wg_ip,
+        "batches": [
+            {
+                "receipt_id": row[0],
+                "hostname": row[1],
+                "client_version": row[2],
+                "batch_id": row[3],
+                "ownership_mode": row[4],
+                "source_count": row[5],
+                "first_processed_at": row[6],
+                "last_processed_at": row[7],
+                "server_received_at": row[8],
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.get("/runtime/wireguard")
 def wireguard_status(credentials=Depends(authenticate_admin)):
     with get_db() as conn:

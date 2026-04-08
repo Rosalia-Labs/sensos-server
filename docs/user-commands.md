@@ -424,3 +424,13 @@ Behavior:
 - temporarily stops `sensos-arecord.service` on the client for the duration of the listen session
 - prefers local playback through `play` and falls back to `aplay` when available
 - relies on the client helper to restart recording automatically when the session ends
+
+## Admin UI
+
+The built-in admin UI now includes a `BirdNET` view at `/admin/birdnet`.
+
+Behavior:
+
+- shows recent accepted BirdNET upload batches
+- summarizes total uploaded batches and processed-file records stored on the server
+- helps confirm that client-side BirdNET uploads are arriving without needing direct database inspection

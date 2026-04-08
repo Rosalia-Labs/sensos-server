@@ -469,6 +469,62 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     }
 
 
+def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
+    fake_conn = mock.MagicMock()
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(
+        client_api,
+        "store_birdnet_results_upload",
+        lambda conn, upload, wireguard_ip: {
+            "status": "ok",
+            "receipt_id": "receipt-456",
+            "accepted_count": upload.source_count,
+            "server_received_at": "2026-04-07T12:00:00Z",
+        },
+    )
+
+    resp = client.post(
+        "/api/v1/client/peer/birdnet/batches",
+        json={
+            "schema_version": 1,
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "batch_id": 41,
+            "sent_at": "2026-04-07T11:59:00Z",
+            "ownership_mode": "client-retains",
+            "source_count": 1,
+            "first_source_path": "audio_recordings/compressed/a.flac",
+            "last_source_path": "audio_recordings/compressed/a.flac",
+            "first_processed_at": "2026-04-07T11:58:00Z",
+            "last_processed_at": "2026-04-07T11:58:00Z",
+            "processed_files": [
+                {
+                    "source_path": "audio_recordings/compressed/a.flac",
+                    "sample_rate": 48000,
+                    "channels": 1,
+                    "frames": 144000,
+                    "started_at": "2026-04-07T11:57:00Z",
+                    "processed_at": "2026-04-07T11:58:00Z",
+                    "status": "done",
+                    "error": None,
+                    "output_dir": "2026/04/07",
+                    "deleted_source": True,
+                    "detections": [],
+                    "flac_runs": [],
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "ok",
+        "receipt_id": "receipt-456",
+        "accepted_count": 1,
+        "server_received_at": "2026-04-07T12:00:00Z",
+    }
+
+
 def test_i2c_readings_upload_validates_metadata(client):
     resp = client.post(
         "/api/v1/client/peer/i2c-readings/batches",

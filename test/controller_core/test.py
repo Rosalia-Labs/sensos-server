@@ -159,7 +159,7 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None] * 20
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.7.0")
+    core.apply_schema_migrations(fake_cur, "0.10.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
@@ -167,6 +167,7 @@ def test_apply_schema_migrations_records_applied_versions():
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_readings" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_result_batches" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
     assert "wg_public_ip TEXT NOT NULL" in executed
     assert "peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
@@ -178,13 +179,14 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     fake_cur = mock.MagicMock()
     fake_cur.fetchall.return_value = [("0.5.0",)]
 
-    core.apply_schema_migrations(fake_cur, "0.9.0")
+    core.apply_schema_migrations(fake_cur, "0.10.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
     assert "ADD COLUMN IF NOT EXISTS peer_id INTEGER;" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_result_batches" in executed
     insert_calls = [
         call.args[1]
         for call in fake_cur.execute.call_args_list
@@ -194,6 +196,7 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     assert ("0.7.0", "add i2c readings upload schema") in insert_calls
     assert ("0.8.0", "add per-peer api credentials") in insert_calls
     assert ("0.9.0", "add runtime operator key publication") in insert_calls
+    assert ("0.10.0", "add birdnet results upload schema") in insert_calls
 
 
 def test_create_client_status_table_reconciles_legacy_schema():
@@ -243,6 +246,7 @@ async def test_lifespan_runs_schema_setup(mock_get_db):
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_result_batches" in executed
 
 
 @mock.patch("core.get_db")
@@ -486,6 +490,82 @@ def test_store_i2c_readings_upload_rejects_conflicting_retry():
 
     with pytest.raises(RuntimeError, match="payload does not match"):
         core.store_i2c_readings_upload(fake_conn, upload, "10.0.1.7")
+
+
+def test_store_birdnet_results_upload_inserts_new_batch():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [
+        None,
+        (17, "receipt-123", datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)),
+        (101,),
+    ]
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    upload = mock.MagicMock()
+    upload.schema_version = 1
+    upload.hostname = "sensor-node"
+    upload.client_version = "1.2.3"
+    upload.batch_id = 41
+    upload.sent_at = datetime(2026, 4, 7, 11, 59, tzinfo=timezone.utc)
+    upload.ownership_mode = "client-retains"
+    upload.source_count = 1
+    upload.first_source_path = "audio_recordings/compressed/a.flac"
+    upload.last_source_path = "audio_recordings/compressed/a.flac"
+    upload.first_processed_at = datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc)
+    upload.last_processed_at = datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc)
+    processed_file = mock.MagicMock()
+    processed_file.source_path = "audio_recordings/compressed/a.flac"
+    processed_file.sample_rate = 48000
+    processed_file.channels = 1
+    processed_file.frames = 144000
+    processed_file.started_at = datetime(2026, 4, 7, 11, 57, tzinfo=timezone.utc)
+    processed_file.processed_at = datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc)
+    processed_file.status = "done"
+    processed_file.error = None
+    processed_file.output_dir = "2026/04/07"
+    processed_file.deleted_source = True
+    processed_file.detections = [
+        mock.MagicMock(
+            channel_index=0,
+            window_index=0,
+            start_frame=0,
+            end_frame=144000,
+            start_sec=0.0,
+            end_sec=3.0,
+            top_label="Bird",
+            top_score=0.9,
+            top_likely_score=0.7,
+        )
+    ]
+    processed_file.flac_runs = [
+        mock.MagicMock(
+            channel_index=0,
+            run_index=0,
+            label="Bird",
+            label_dir="audio_recordings/processed/bird",
+            start_frame=0,
+            end_frame=144000,
+            start_sec=0.0,
+            end_sec=3.0,
+            peak_score=0.9,
+            peak_likely_score=0.7,
+            flac_path="audio_recordings/processed/bird/clip.flac",
+            deleted_at=None,
+        )
+    ]
+    upload.processed_files = [processed_file]
+    upload.model_dump.return_value = {"batch_id": 41}
+
+    result = core.store_birdnet_results_upload(fake_conn, upload, "10.0.1.7")
+
+    assert result == {
+        "status": "ok",
+        "receipt_id": "receipt-123",
+        "accepted_count": 1,
+        "server_received_at": "2026-04-07T12:00:00Z",
+    }
+    assert fake_cur.executemany.call_count == 2
+    fake_conn.transaction.assert_called_once()
 
 
 def test_create_network_entry_accepts_hostname_endpoint():

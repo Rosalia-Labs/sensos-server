@@ -17,9 +17,11 @@ from core import (
     insert_peer,
     register_wireguard_key_in_db,
     search_for_next_available_ip,
+    store_birdnet_results_upload,
     store_i2c_readings_upload,
 )
 from models import (
+    BirdNETResultsUploadRequest,
     ClientStatusRequest,
     HardwareProfile,
     I2CReadingsUploadRequest,
@@ -235,6 +237,24 @@ def upload_hardware_profile(
             conn.commit()
     logger.info("hardware profile stored for peer_uuid '%s'", peer["peer_uuid"])
     return {"status": "success", "wg_ip": peer["wg_ip"]}
+
+
+@router.post("/peer/birdnet/batches")
+def upload_birdnet_results(
+    upload: BirdNETResultsUploadRequest,
+    peer: dict = Depends(authenticate_peer),
+):
+    try:
+        with get_db() as conn:
+            return store_birdnet_results_upload(conn, upload, peer["wg_ip"])
+    except RuntimeError as exc:
+        return error_response(status.HTTP_409_CONFLICT, str(exc))
+    except Exception:
+        logger.error("birdnet results upload failed", exc_info=True)
+        return error_response(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to store BirdNET results upload.",
+        )
 
 
 @router.post("/peer/i2c-readings/batches")

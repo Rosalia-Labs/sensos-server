@@ -109,6 +109,7 @@ def render_page(
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
         ("/admin/peers", "Peers"),
+        ("/admin/birdnet", "BirdNET"),
         ("/admin/runtime", "Runtime"),
     ]
     nav_links = "".join(
@@ -568,6 +569,67 @@ def fetch_runtime_rows() -> list[dict]:
     ]
 
 
+def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.wireguard_ip::text,
+                       p.note,
+                       n.name,
+                       b.hostname,
+                       b.client_version,
+                       b.batch_id,
+                       b.ownership_mode,
+                       b.source_count,
+                       b.first_processed_at,
+                       b.last_processed_at,
+                       b.server_received_at,
+                       b.receipt_id::text
+                FROM sensos.birdnet_result_batches b
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                ORDER BY b.server_received_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "wg_ip": row[0],
+            "note": row[1],
+            "network_name": row[2] or "—",
+            "hostname": row[3] or "—",
+            "client_version": row[4] or "—",
+            "batch_id": row[5],
+            "ownership_mode": row[6],
+            "source_count": row[7],
+            "first_processed_at": row[8],
+            "last_processed_at": row[9],
+            "server_received_at": row[10],
+            "receipt_id": row[11],
+        }
+        for row in rows
+    ]
+
+
+def fetch_birdnet_overview() -> dict:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM sensos.birdnet_result_batches;")
+            batch_count = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(sum(source_count), 0) FROM sensos.birdnet_result_batches;")
+            source_count = cur.fetchone()[0]
+            cur.execute("SELECT max(server_received_at) FROM sensos.birdnet_result_batches;")
+            latest_upload = cur.fetchone()[0]
+    return {
+        "batch_count": batch_count,
+        "source_count": source_count,
+        "latest_upload": latest_upload,
+    }
+
+
 def stat_card(label: str, value: str, help_text: str) -> str:
     return f"""
 <section class="panel">
@@ -954,5 +1016,51 @@ def runtime_page(request: Request, flash: str | None = None):
         title="Runtime",
         body=body,
         current_path="/admin/runtime",
+        flash=flash,
+    )
+
+
+@router.get("/birdnet", response_class=HTMLResponse)
+def birdnet_page(request: Request, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    overview = fetch_birdnet_overview()
+    rows = fetch_birdnet_rows()
+    body = f"""
+<div class="grid">
+  {stat_card("Upload batches", str(overview["batch_count"]), "Accepted BirdNET upload batches stored on the server.")}
+  {stat_card("Processed files", str(overview["source_count"]), "BirdNET processed-file records received across all batches.")}
+  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent BirdNET batch was accepted.")}
+</div>
+<section class="panel">
+  <h2 class="section-title">Recent BirdNET uploads</h2>
+  <table>
+    <thead>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Batch</th><th>Ownership</th><th>Sources</th><th>Processed window</th><th>Received</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td>{html.escape(row['hostname'])}</td>"
+          f"<td><div>{row['batch_id']}</div><div class='dim mono'>{html.escape(row['receipt_id'])}</div></td>"
+          f"<td>{html.escape(row['ownership_mode'])}</td>"
+          f"<td>{row['source_count']}</td>"
+          f"<td><div>{html.escape(format_timestamp(row['first_processed_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_processed_at']))}</div></td>"
+          f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
+          "</tr>"
+          for row in rows
+      ) or '<tr><td colspan="8" class="dim">No BirdNET uploads stored yet.</td></tr>'}
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="BirdNET",
+        body=body,
+        current_path="/admin/birdnet",
         flash=flash,
     )
