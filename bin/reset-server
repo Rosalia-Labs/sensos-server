@@ -1,0 +1,79 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+STOP_SERVER_SCRIPT="${REPO_ROOT}/bin/stop-server"
+START_SERVER_SCRIPT="${REPO_ROOT}/bin/start-server"
+ASSUME_YES=0
+
+log() {
+    printf '[bin/reset-server] %s\n' "$*"
+}
+
+die() {
+    printf '[bin/reset-server] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+print_usage() {
+    cat <<EOF
+Usage: ${SCRIPT_PATH} [options]
+
+Reset the local server stack in place by removing Docker volumes, which wipes
+the database and other container state, then rebuilding and starting in the
+foreground.
+
+Options:
+  --yes             Skip the confirmation prompt
+  --help            Show this help and exit
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes)
+                ASSUME_YES=1
+                ;;
+            --help|-h)
+                print_usage
+                exit 0
+                ;;
+            *)
+                die "unknown option: $1"
+                ;;
+        esac
+        shift
+    done
+}
+
+confirm_reset() {
+    local reply
+
+    if [[ "${ASSUME_YES}" == "1" ]]; then
+        return
+    fi
+
+    printf 'WARNING: this will remove Docker volumes for %s and wipe the database. Continue? [y/N] ' "${REPO_ROOT}"
+    read -r reply
+    [[ "${reply}" =~ ^[Yy]$ ]] || die "reset cancelled"
+}
+
+main() {
+    parse_args "$@"
+    [[ -x "${STOP_SERVER_SCRIPT}" ]] || die "missing or non-executable stop script: ${STOP_SERVER_SCRIPT}"
+    [[ -x "${START_SERVER_SCRIPT}" ]] || die "missing or non-executable start script: ${START_SERVER_SCRIPT}"
+
+    confirm_reset
+    log "stopping stack and removing Docker volumes"
+    "${STOP_SERVER_SCRIPT}" --remove-volumes --no-backup
+    log "rebuilding and starting from empty state"
+    exec "${START_SERVER_SCRIPT}" --rebuild-containers --no-detach
+}
+
+main "$@"

@@ -756,14 +756,15 @@ def networks_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Create network</h2>
     <form class="block" method="post" action="/admin/networks">
       <label>Network name<input type="text" name="name" placeholder="testing" required></label>
-      <label>Published WireGuard IP or hostname<input type="text" name="wg_public_ip" placeholder="10.0.2.2" required></label>
-      <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51281"></label>
+      <label>Published WireGuard IP or hostname<input type="text" name="wg_public_ip" placeholder="server.example.org" required></label>
+      <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820"></label>
       <button type="submit">Create or reconcile network</button>
     </form>
+    <p class="help">These fields start blank. Placeholder text is only an example, not the current saved endpoint.</p>
     <p class="help">This reuses the same network-creation path as the CLI and waits for the generated WireGuard public key when needed.</p>
   </section>
   <section class="panel">
-    <h2 class="section-title">Defined networks</h2>
+    <h2 class="section-title">Current published endpoints</h2>
     <table>
       <thead>
         <tr><th>Name</th><th>CIDR</th><th>Endpoint</th><th>Key ready</th><th>Peers</th></tr>
@@ -785,10 +786,11 @@ def networks_page(request: Request, flash: str | None = None):
 </div>
 <section class="panel">
   <h2 class="section-title">Update published endpoint</h2>
+  <p class="help">Enter the replacement endpoint explicitly. The fields below do not autofill from the current saved values.</p>
   <form class="inline" method="post" action="/admin/networks/endpoint">
     <label>Network<input type="text" name="name" placeholder="testing" required></label>
-    <label>WireGuard IP<input type="text" name="wg_public_ip" placeholder="10.0.2.2" required></label>
-    <label>WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51281" required></label>
+    <label>WireGuard IP<input type="text" name="wg_public_ip" placeholder="server.example.org" required></label>
+    <label>WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820" required></label>
     <button class="warn" type="submit">Update endpoint</button>
   </form>
 </section>

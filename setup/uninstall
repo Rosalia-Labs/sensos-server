@@ -1,0 +1,60 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="${SENSOS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STATE_DIR="${SENSOS_STATE_DIR:-/var/lib/sensos-server}"
+SYSTEM_INSTALL_STATE_FILE="${SENSOS_INSTALL_STATE_FILE:-${STATE_DIR}/install-state.env}"
+SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
+SERVICE_TARGET="/etc/systemd/system/${SERVICE_NAME}.service"
+LEGACY_SERVICE_TARGET="/etc/systemd/system/senoss-server.service"
+PURGE_STATE="${SENSOS_PURGE_STATE:-0}"
+REMOVE_SERVICE="${SENSOS_REMOVE_SERVICE:-1}"
+
+log() {
+    printf '[setup/uninstall] %s\n' "$*"
+}
+
+die() {
+    printf '[setup/uninstall] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+require_root() {
+    [[ "${EUID}" -eq 0 ]] || die "run as root"
+}
+
+remove_service_unit() {
+    systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    rm -f "${SERVICE_TARGET}"
+
+    systemctl disable --now senoss-server >/dev/null 2>&1 || true
+    rm -f "${LEGACY_SERVICE_TARGET}"
+
+    systemctl daemon-reload
+    log "removed optional systemd unit(s)"
+}
+
+remove_install_state() {
+    rm -f "${SYSTEM_INSTALL_STATE_FILE}"
+    log "removed install state file ${SYSTEM_INSTALL_STATE_FILE}"
+}
+
+purge_state_dir() {
+    rm -rf "${STATE_DIR}"
+    log "removed state directory ${STATE_DIR}"
+}
+
+main() {
+    require_root
+    if [[ "${REMOVE_SERVICE}" == "1" ]]; then
+        remove_service_unit
+    fi
+    remove_install_state
+
+    if [[ "${PURGE_STATE}" == "1" ]]; then
+        purge_state_dir
+    fi
+}
+
+main "$@"

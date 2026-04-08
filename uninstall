@@ -1,0 +1,167 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}"
+STOP_SERVER_SCRIPT="${REPO_ROOT}/bin/stop-server"
+PREFLIGHT_SCRIPT="${REPO_ROOT}/setup/00-preflight"
+UNINSTALL_HELPER="${REPO_ROOT}/setup/uninstall"
+SYSTEM_INSTALL_STATE_FILE="/var/lib/sensos-server/install-state.env"
+LOCAL_INSTALL_STATE_FILE="${REPO_ROOT}/.sensos-server/install-state.env"
+SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
+PURGE_DATA=0
+REMOVE_SERVICE=1
+NO_BACKUP=0
+ASSUME_YES=0
+
+log() {
+    printf '[uninstall] %s\n' "$*"
+}
+
+die() {
+    printf '[uninstall] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+print_usage() {
+    cat <<EOF
+Usage: ${SCRIPT_PATH} [options]
+
+Stop the local SensOS server stack and remove optional host integration for this
+repo checkout.
+
+Options:
+  --purge-data      Remove Docker volumes and host state for a fresh reinstall
+  --keep-service    Leave the optional ${SERVICE_NAME} systemd unit installed
+  --no-backup       Skip backups when removing Docker volumes
+  --yes             Skip the confirmation prompt
+  --help            Show this help and exit
+EOF
+}
+
+repo_owner() {
+    if command -v stat >/dev/null 2>&1; then
+        stat -c '%U' "${REPO_ROOT}" 2>/dev/null && return 0
+        stat -f '%Su' "${REPO_ROOT}" 2>/dev/null && return 0
+    fi
+
+    die "unable to determine repo owner for ${REPO_ROOT}"
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --purge-data)
+                PURGE_DATA=1
+                ;;
+            --keep-service)
+                REMOVE_SERVICE=0
+                ;;
+            --no-backup)
+                NO_BACKUP=1
+                ;;
+            --yes)
+                ASSUME_YES=1
+                ;;
+            --help|-h)
+                print_usage
+                exit 0
+                ;;
+            *)
+                die "unknown option: $1"
+                ;;
+        esac
+        shift
+    done
+}
+
+confirm_uninstall() {
+    local reply
+    local action_summary="stop the Docker stack"
+
+    if [[ "${REMOVE_SERVICE}" == "1" ]]; then
+        action_summary="${action_summary}, remove the optional ${SERVICE_NAME} systemd unit"
+    fi
+    if [[ "${PURGE_DATA}" == "1" ]]; then
+        action_summary="${action_summary}, remove Docker volumes, and delete host install state"
+    else
+        action_summary="${action_summary}, and remove install-state markers"
+    fi
+
+    if [[ "${ASSUME_YES}" == "1" ]]; then
+        return
+    fi
+
+    printf 'WARNING: this will %s for %s. Continue? [y/N] ' "${action_summary}" "${REPO_ROOT}"
+    read -r reply
+    [[ "${reply}" =~ ^[Yy]$ ]] || die "uninstall cancelled"
+}
+
+remove_local_install_state() {
+    rm -f "${LOCAL_INSTALL_STATE_FILE}"
+    rm -f "${SYSTEM_INSTALL_STATE_FILE}" 2>/dev/null || true
+    log "removed repo-local install state markers"
+}
+
+stop_stack() {
+    local -a stop_args=()
+
+    [[ -x "${STOP_SERVER_SCRIPT}" ]] || die "missing or non-executable stop script: ${STOP_SERVER_SCRIPT}"
+
+    if [[ "${PURGE_DATA}" == "1" ]]; then
+        stop_args+=(--remove-volumes)
+        if [[ "${NO_BACKUP}" == "1" ]]; then
+            stop_args+=(--no-backup)
+        fi
+    fi
+
+    log "stopping server stack"
+    "${STOP_SERVER_SCRIPT}" "${stop_args[@]}"
+}
+
+sudo_run() {
+    sudo env \
+        "SENSOS_REPO_ROOT=${REPO_ROOT}" \
+        "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
+        "SENSOS_SERVICE_USER=${SENSOS_SERVICE_USER:-$(repo_owner)}" \
+        "SENSOS_PURGE_STATE=${PURGE_DATA}" \
+        "SENSOS_REMOVE_SERVICE=${REMOVE_SERVICE}" \
+        "${UNINSTALL_HELPER}"
+}
+
+remove_host_integration() {
+    [[ -x "${UNINSTALL_HELPER}" ]] || die "missing or non-executable uninstall helper: ${UNINSTALL_HELPER}"
+
+    if [[ "${REMOVE_SERVICE}" != "1" && "${PURGE_DATA}" != "1" ]]; then
+        remove_local_install_state
+        return
+    fi
+
+    if [[ "${EUID}" -eq 0 ]]; then
+        env \
+            "SENSOS_REPO_ROOT=${REPO_ROOT}" \
+            "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
+            "SENSOS_PURGE_STATE=${PURGE_DATA}" \
+            "SENSOS_REMOVE_SERVICE=${REMOVE_SERVICE}" \
+            "${UNINSTALL_HELPER}"
+    else
+        sudo_run
+    fi
+
+    remove_local_install_state
+}
+
+main() {
+    parse_args "$@"
+    [[ -x "${PREFLIGHT_SCRIPT}" ]] || die "missing or non-executable preflight script: ${PREFLIGHT_SCRIPT}"
+    env "SENSOS_REPO_ROOT=${REPO_ROOT}" "${PREFLIGHT_SCRIPT}" >/dev/null
+
+    confirm_uninstall
+    stop_stack
+    remove_host_integration
+    log "uninstall complete"
+}
+
+main "$@"

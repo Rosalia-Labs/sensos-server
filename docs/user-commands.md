@@ -79,7 +79,51 @@ Behavior:
 - `--refresh-service` reinstalls the optional `sensos-server` unit after pull and should be run from an admin account with `sudo`
 - `--restart-service` restarts `sensos-server`, requires `--refresh-service`, and should be run from an admin account with `sudo`
 
+### `./uninstall`
+
+Stops the local server stack and removes optional host integration for this repo
+checkout.
+
+Typical use:
+
+```sh
+./uninstall
+./uninstall --purge-data
+./uninstall --purge-data --no-backup
+./uninstall --keep-service
+```
+
+Behavior:
+
+- stops the Docker stack through `bin/stop-server`
+- removes the optional `sensos-server` systemd unit by default
+- removes install-state markers used by `./upgrade`
+- `--purge-data` also removes Docker volumes and `/var/lib/sensos-server` for a fresh reinstall
+- `--purge-data` keeps the normal backup behavior unless `--no-backup` is passed
+- preserves the repo checkout, `docker/.env`, and repo backups
+- prompts for confirmation unless `--yes` is passed
+
 ## Core Server Commands
+
+### `bin/reset-server`
+
+Resets the local server stack in place by deleting Docker volumes, then
+rebuilding and starting the stack in the foreground.
+
+Typical use:
+
+```sh
+./bin/reset-server
+./bin/reset-server --yes
+```
+
+Behavior:
+
+- stops the Docker stack through `bin/stop-server --remove-volumes --no-backup`
+- wipes the database and other Docker volume-backed runtime state
+- rebuilds containers and starts them in the foreground for live debugging
+- preserves the repo checkout, `docker/.env`, and host integration
+- prompts for confirmation unless `--yes` is passed
 
 ### `bin/configure-server`
 
