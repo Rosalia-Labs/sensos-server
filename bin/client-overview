@@ -283,11 +283,6 @@ LIMIT 1;
     print_line "  id: ${peer_id}"
     print_line "  uuid: ${uuid}"
     print_line "  network: ${network_name}"
-    if [[ "${note}" == "-" ]]; then
-        print_line "  label: ${wg_ip}"
-    else
-        print_line "  label: ${note}"
-    fi
     print_line "  wg ip: ${wg_ip}"
     print_line "  active: ${is_active}"
     print_line "  hostname: ${hostname}"

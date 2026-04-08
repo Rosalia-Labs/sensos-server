@@ -826,8 +826,8 @@ def peers_page(request: Request, flash: str | None = None):
         action_value = "false" if row["is_active"] else "true"
         body_rows.append(
             "<tr>"
-            f"<td><div>{html.escape(peer_display_label(row))}</div>"
-            f"<div class='dim mono'>{html.escape(row['wg_ip'])}</div></td>"
+            f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
+            f"<div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
