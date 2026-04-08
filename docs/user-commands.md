@@ -88,9 +88,11 @@ Writes the Docker environment file used by the server stack.
 Important flags from the source:
 
 - `--api-port`
+- `--public-ui-port`
 - `--postgres-password`
 - `--admin-api-password`
 - `--client-api-password`
+- `--public-db-password`
 - `--api-password` as a legacy shortcut to set both the same way
 - `--expose-containers`
 
@@ -99,6 +101,7 @@ Typical use:
 ```sh
 ./bin/configure-server
 ./bin/configure-server --api-port 8765 --admin-api-password '<admin-password>' --client-api-password '<client-password>'
+./bin/configure-server --public-ui-port 8780 --public-db-password '<public-db-password>'
 ./bin/configure-server --api-port 8765 --api-password '<shared-password>'
 ```
 
@@ -108,6 +111,7 @@ Behavior:
 - backs up an existing file to `docker/.env.bak`
 - does not start containers by itself
 - does not require `sudo`
+- configures the published public dashboard port and the read-only public dashboard DB credential
 
 ### `bin/create-network`
 
@@ -434,3 +438,15 @@ Behavior:
 - shows recent accepted BirdNET upload batches
 - summarizes total uploaded batches and processed-file records stored on the server
 - helps confirm that client-side BirdNET uploads are arriving without needing direct database inspection
+
+## Public Dashboard
+
+The public dashboard runs as a separate `sensos-public-ui` service in the same
+Docker stack and is published on the configured `PUBLIC_UI_PORT`, which
+defaults to `8780`.
+
+Behavior:
+
+- serves a standalone public map-first dashboard
+- reads only curated public SQL views through a dedicated read-only database role
+- stays separate from the admin/controller process even though it shares the same repo and compose stack

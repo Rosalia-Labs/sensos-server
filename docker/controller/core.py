@@ -36,6 +36,7 @@ DATABASE_URL = (
 LEGACY_API_PASSWORD = os.getenv("API_PASSWORD")
 ADMIN_API_PASSWORD = os.getenv("ADMIN_API_PASSWORD", LEGACY_API_PASSWORD or "")
 CLIENT_API_PASSWORD = os.getenv("CLIENT_API_PASSWORD", LEGACY_API_PASSWORD or "")
+PUBLIC_DB_PASSWORD = os.getenv("PUBLIC_DB_PASSWORD", "sensos-public")
 if not ADMIN_API_PASSWORD:
     raise ValueError("ADMIN_API_PASSWORD or API_PASSWORD must be set. Exiting.")
 if not CLIENT_API_PASSWORD:
@@ -58,6 +59,7 @@ RUNTIME_ROLE_API_PROXY = "api-proxy"
 RUNTIME_ROLE_OPS = "ops"
 PUBLIC_WG_PORT_START = 51281
 PUBLIC_WG_PORT_END = 51289
+PUBLIC_DB_ROLE = "sensos_public"
 
 
 @dataclass(frozen=True, order=True)
@@ -247,6 +249,14 @@ def migrate_0_10_0_birdnet_upload_schema(cur):
     create_birdnet_flac_runs_table(cur)
 
 
+def migrate_0_11_0_public_dashboard_views(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_public_sites_view(cur)
+    create_public_site_birdnet_recent_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -277,6 +287,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.10.0"),
         name="add birdnet results upload schema",
         apply=migrate_0_10_0_birdnet_upload_schema,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.11.0"),
+        name="add public dashboard views and read-only role",
+        apply=migrate_0_11_0_public_dashboard_views,
     ),
 ]
 
@@ -1252,6 +1267,109 @@ def create_birdnet_flac_runs_table(cur):
         CREATE INDEX IF NOT EXISTS idx_birdnet_flac_runs_processed_file_id
         ON sensos.birdnet_flac_runs (processed_file_id, channel_index, run_index);
         """
+    )
+
+
+def create_public_sites_view(cur):
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_sites AS
+        WITH latest_status AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                last_check_in,
+                hostname,
+                version,
+                status_message
+            FROM sensos.client_status
+            ORDER BY peer_id, last_check_in DESC
+        ),
+        latest_location AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                recorded_at,
+                sensos.ST_Y(location::sensos.geometry)::float AS latitude,
+                sensos.ST_X(location::sensos.geometry)::float AS longitude
+            FROM sensos.peer_locations
+            ORDER BY peer_id, recorded_at DESC
+        ),
+        birdnet_summary AS (
+            SELECT wireguard_ip,
+                   count(*)::integer AS birdnet_batch_count,
+                   coalesce(sum(source_count), 0)::integer AS birdnet_source_count,
+                   max(server_received_at) AS latest_birdnet_upload_at
+            FROM sensos.birdnet_result_batches
+            GROUP BY wireguard_ip
+        )
+        SELECT p.uuid::text AS peer_uuid,
+               host(p.wg_ip)::text AS wg_ip,
+               n.name AS network_name,
+               p.note,
+               coalesce(nullif(p.note, ''), host(p.wg_ip)::text) AS site_label,
+               p.is_active,
+               p.registered_at,
+               ll.recorded_at AS location_recorded_at,
+               ll.latitude,
+               ll.longitude,
+               ls.last_check_in,
+               ls.hostname,
+               ls.version,
+               ls.status_message,
+               coalesce(bs.birdnet_batch_count, 0) AS birdnet_batch_count,
+               coalesce(bs.birdnet_source_count, 0) AS birdnet_source_count,
+               bs.latest_birdnet_upload_at
+        FROM sensos.wireguard_peers p
+        JOIN sensos.networks n ON n.id = p.network_id
+        LEFT JOIN latest_status ls ON ls.peer_id = p.id
+        LEFT JOIN latest_location ll ON ll.peer_id = p.id
+        LEFT JOIN birdnet_summary bs ON bs.wireguard_ip = p.wg_ip;
+        """
+    )
+
+
+def create_public_site_birdnet_recent_view(cur):
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_site_birdnet_recent AS
+        SELECT b.wireguard_ip::text AS wg_ip,
+               b.receipt_id::text AS receipt_id,
+               b.hostname,
+               b.client_version,
+               b.batch_id,
+               b.ownership_mode,
+               b.source_count,
+               b.first_processed_at,
+               b.last_processed_at,
+               b.server_received_at,
+               row_number() OVER (
+                   PARTITION BY b.wireguard_ip
+                   ORDER BY b.server_received_at DESC, b.id DESC
+               ) AS batch_rank
+        FROM sensos.birdnet_result_batches b;
+        """
+    )
+
+
+def ensure_public_dashboard_role(cur):
+    cur.execute(
+        "SELECT 1 FROM pg_roles WHERE rolname = %s;",
+        (PUBLIC_DB_ROLE,),
+    )
+    if cur.fetchone() is None:
+        cur.execute(
+            f"CREATE ROLE {PUBLIC_DB_ROLE} WITH LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;",
+            (PUBLIC_DB_PASSWORD,),
+        )
+    else:
+        cur.execute(
+            f"ALTER ROLE {PUBLIC_DB_ROLE} WITH LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;",
+            (PUBLIC_DB_PASSWORD,),
+        )
+
+    cur.execute(f"GRANT CONNECT ON DATABASE postgres TO {PUBLIC_DB_ROLE};")
+    cur.execute(f"GRANT USAGE ON SCHEMA sensos TO {PUBLIC_DB_ROLE};")
+    cur.execute(
+        f"GRANT SELECT ON sensos.public_sites, sensos.public_site_birdnet_recent TO {PUBLIC_DB_ROLE};"
     )
 
 

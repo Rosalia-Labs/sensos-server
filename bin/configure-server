@@ -11,9 +11,11 @@ echo "Working directory: $(pwd)"
 
 # Define default values
 DEFAULT_API_PORT=8765
+DEFAULT_PUBLIC_UI_PORT=8780
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_ADMIN_API_PASSWORD="sensos-admin"
 DEFAULT_CLIENT_API_PASSWORD="sensos-client"
+DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
 DEFAULT_EXPOSE_CONTAINERS="false"
 
 # Print help message
@@ -23,9 +25,11 @@ Usage: $0 [options]
 
 Options:
   --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
+  --public-ui-port PORT    Set public dashboard port (default: $DEFAULT_PUBLIC_UI_PORT)
   --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
   --admin-api-password PWD Set admin API password (default: $DEFAULT_ADMIN_API_PASSWORD)
   --client-api-password PWD Set client API password (default: $DEFAULT_CLIENT_API_PASSWORD)
+  --public-db-password PWD Set read-only public dashboard DB password (default: $DEFAULT_PUBLIC_DB_PASSWORD)
   --api-password PWD       Legacy shortcut: set both admin and client API passwords
   --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
   -h, --help               Show this help message
@@ -40,6 +44,10 @@ while [[ $# -gt 0 ]]; do
         API_PORT="$2"
         shift 2
         ;;
+    --public-ui-port)
+        PUBLIC_UI_PORT="$2"
+        shift 2
+        ;;
     --postgres-password)
         POSTGRES_PASSWORD="$2"
         shift 2
@@ -50,6 +58,10 @@ while [[ $# -gt 0 ]]; do
         ;;
     --client-api-password)
         CLIENT_API_PASSWORD="$2"
+        shift 2
+        ;;
+    --public-db-password)
+        PUBLIC_DB_PASSWORD="$2"
         shift 2
         ;;
     --api-password)
@@ -73,9 +85,11 @@ done
 
 # Set defaults if variables not provided
 API_PORT=${API_PORT:-$DEFAULT_API_PORT}
+PUBLIC_UI_PORT=${PUBLIC_UI_PORT:-$DEFAULT_PUBLIC_UI_PORT}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
 ADMIN_API_PASSWORD=${ADMIN_API_PASSWORD:-$DEFAULT_ADMIN_API_PASSWORD}
 CLIENT_API_PASSWORD=${CLIENT_API_PASSWORD:-$DEFAULT_CLIENT_API_PASSWORD}
+PUBLIC_DB_PASSWORD=${PUBLIC_DB_PASSWORD:-$DEFAULT_PUBLIC_DB_PASSWORD}
 EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
 
 # Backup existing .env if it exists
@@ -88,9 +102,11 @@ fi
 # Write configuration to .env
 cat >.env <<EOF
 API_PORT=$API_PORT
+PUBLIC_UI_PORT=$PUBLIC_UI_PORT
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 ADMIN_API_PASSWORD=$ADMIN_API_PASSWORD
 CLIENT_API_PASSWORD=$CLIENT_API_PASSWORD
+PUBLIC_DB_PASSWORD=$PUBLIC_DB_PASSWORD
 EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS
 EOF
 

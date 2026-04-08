@@ -14,13 +14,14 @@ client-server schema that clients depend on.
 
 ## Container Roles
 
-The Compose stack currently runs five main containers:
+The Compose stack currently runs six main containers:
 
 - `sensos-database`: PostgreSQL state store and control plane
 - `sensos-controller`: FastAPI control service and schema bootstrap
 - `sensos-wireguard`: server-side WireGuard reconciler
 - `sensos-api-proxy`: nginx API proxy plus proxy-side WireGuard reconciler
 - `sensos-ops`: operator-access WireGuard peer for SSH/debug access to clients
+- `sensos-public-ui`: standalone public dashboard service backed by read-only DB views
 
 ## Design Summary
 
@@ -34,6 +35,7 @@ Instead:
 - `sensos-wireguard` reads desired network/peer state from the database
 - `sensos-api-proxy` reads desired network state from the database
 - `sensos-ops` reads desired network state from the database
+- `sensos-public-ui` reads curated public dashboard views through a dedicated read-only role
 - each reconciler renders its own local config from database state
 - each reconciler stores its own private key in its own private state volume
 - each reconciler publishes only its public key and runtime status back into the database
@@ -154,6 +156,7 @@ docker logs --tail=100 sensos-controller
 docker logs --tail=100 sensos-wireguard
 docker logs --tail=100 sensos-api-proxy
 docker logs --tail=100 sensos-ops
+docker logs --tail=100 sensos-public-ui
 ```
 
 API-level checks:

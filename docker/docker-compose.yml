@@ -28,6 +28,7 @@ services:
       GIT_TAG: ${GIT_TAG}
       GIT_DIRTY: ${GIT_DIRTY}
       EXPOSE_CONTAINERS: ${EXPOSE_CONTAINERS}
+      PUBLIC_DB_PASSWORD: ${PUBLIC_DB_PASSWORD}
     expose:
       - "8765"
     healthcheck:
@@ -130,6 +131,46 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - sensos_ops_state:/var/lib/sensos-ops
+    networks:
+      - sensos_network
+
+  sensos-public-ui:
+    build:
+      context: ./public-ui
+      args:
+        VERSION_MAJOR: ${VERSION_MAJOR}
+        VERSION_MINOR: ${VERSION_MINOR}
+        VERSION_PATCH: ${VERSION_PATCH}
+        VERSION_SUFFIX: ${VERSION_SUFFIX}
+        GIT_COMMIT: ${GIT_COMMIT}
+        GIT_BRANCH: ${GIT_BRANCH}
+        GIT_TAG: ${GIT_TAG}
+        GIT_DIRTY: ${GIT_DIRTY}
+    container_name: sensos-public-ui
+    restart: always
+    depends_on:
+      sensos-controller:
+        condition: service_healthy
+      sensos-database:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PUBLIC_DB_PASSWORD: ${PUBLIC_DB_PASSWORD}
+      VERSION_MAJOR: ${VERSION_MAJOR}
+      VERSION_MINOR: ${VERSION_MINOR}
+      VERSION_PATCH: ${VERSION_PATCH}
+      VERSION_SUFFIX: ${VERSION_SUFFIX}
+      GIT_COMMIT: ${GIT_COMMIT}
+      GIT_BRANCH: ${GIT_BRANCH}
+      GIT_TAG: ${GIT_TAG}
+      GIT_DIRTY: ${GIT_DIRTY}
+    ports:
+      - "${PUBLIC_UI_PORT:-8780}:8780"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8780/healthz"]
+      interval: 5s
+      retries: 12
+      start_period: 5s
     networks:
       - sensos_network
 
