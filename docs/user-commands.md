@@ -256,7 +256,8 @@ Behavior:
 - shows one compact row per network with CIDR, WireGuard endpoint, runtime
   readiness, peer counts, and freshest client check-in age
 - shows a short trailing table of registered clients, including peers that have
-  never checked in
+  never checked in; the client label prefers the peer note and falls back to
+  the WireGuard IP
 - if a network name is provided, prints runtime rows plus the clients attached
   to that network instead of the global summary
 - defaults to `12` network rows and `8` client rows to keep output within a
@@ -279,12 +280,17 @@ Typical use:
 Behavior:
 
 - requires Docker access and a running `sensos-database` container
-- list mode shows a compact table including stable peer ids, network, WireGuard
-  IP, latest hostname, version, and status
+- list mode shows a compact table including stable peer ids, network, a client
+  label that prefers the peer note and falls back to the WireGuard IP, latest
+  hostname, version, and status
 - detail mode accepts peer id, peer UUID, WireGuard IP, or exact latest
   hostname
 - detail mode prints registration/check-in metadata, latest status, key
   information, location, and hardware-profile summary when present
+- when enrolling devices, use a unique note for each client so the overview
+  tables show meaningful names instead of only IP addresses
+- if a client later gets a new WireGuard IP, keep the same note so operators
+  still recognize it as the same device in overview output
 
 ### `bin/stop-server`
 

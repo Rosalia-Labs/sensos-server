@@ -205,7 +205,7 @@ WITH latest_status AS (
 )
 SELECT
     n.name,
-    host(p.wg_ip),
+    COALESCE(NULLIF(p.note, ''), host(p.wg_ip)),
     CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
     COALESCE(NULLIF(ls.hostname, ''), '-'),
     COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
@@ -227,14 +227,14 @@ LIMIT ${MAX_CLIENTS};
 
     print_line "Registered Clients"
     printf '%-16s %-16s %-4s %-18s %6s %-12s %s\n' \
-        "NETWORK" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
+        "NETWORK" "CLIENT" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
 
     count=0
-    while IFS=$'\t' read -r network_name wg_ip is_active hostname age_seconds version status_message; do
+    while IFS=$'\t' read -r network_name client_label is_active hostname age_seconds version status_message; do
         [[ -n "${network_name}" ]] || continue
         printf '%-16s %-16s %-4s %-18s %6s %-12s %s\n' \
             "$(truncate_field "${network_name}" 16)" \
-            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${client_label}" 16)" \
             "$(truncate_field "${is_active}" 4)" \
             "$(truncate_field "${hostname}" 18)" \
             "$(format_age "${age_seconds}")" \
@@ -377,7 +377,7 @@ WITH latest_status AS (
 )
 SELECT
     p.id,
-    host(p.wg_ip),
+    COALESCE(NULLIF(p.note, ''), host(p.wg_ip)),
     CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
     COALESCE(NULLIF(ls.hostname, ''), '-'),
     COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
@@ -398,13 +398,13 @@ LIMIT ${MAX_CLIENTS};
 
     print_line "Clients"
     printf '%-4s %-16s %-4s %-18s %6s %-12s %s\n' \
-        "ID" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
+        "ID" "CLIENT" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
     client_count=0
-    while IFS=$'\t' read -r peer_id wg_ip is_active hostname age_seconds version status_message; do
+    while IFS=$'\t' read -r peer_id client_label is_active hostname age_seconds version status_message; do
         [[ -n "${peer_id}" ]] || continue
         printf '%-4s %-16s %-4s %-18s %6s %-12s %s\n' \
             "$(truncate_field "${peer_id}" 4)" \
-            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${client_label}" 16)" \
             "$(truncate_field "${is_active}" 4)" \
             "$(truncate_field "${hostname}" 18)" \
             "$(format_age "${age_seconds}")" \

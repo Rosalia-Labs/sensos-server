@@ -346,6 +346,13 @@ def summarize_age(value) -> str:
     return f"{total_seconds // 86400}d ago"
 
 
+def peer_display_label(row: dict) -> str:
+    note = str(row.get("note") or "").strip()
+    if note:
+        return note
+    return str(row.get("wg_ip") or "Unknown")
+
+
 def parse_wireguard_peers(output: str) -> list[dict[str, str]]:
     lines = output.strip().splitlines()
     peers: list[dict[str, str]] = []
@@ -643,11 +650,11 @@ def overview_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Recent peers</h2>
     <table>
       <thead>
-        <tr><th>WG IP</th><th>Network</th><th>Client</th><th>Last check-in</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Host</th><th>Last check-in</th></tr>
       </thead>
       <tbody>
         {''.join(
-            f"<tr><td class='mono'>{html.escape(row['wg_ip'])}</td><td>{html.escape(row['network_name'])}</td>"
+            f"<tr><td>{html.escape(peer_display_label(row))}</td><td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
         ) or '<tr><td colspan="4" class="dim">No peers registered.</td></tr>'}
@@ -819,7 +826,8 @@ def peers_page(request: Request, flash: str | None = None):
         action_value = "false" if row["is_active"] else "true"
         body_rows.append(
             "<tr>"
-            f"<td class='mono'>{html.escape(row['wg_ip'])}</td>"
+            f"<td><div>{html.escape(peer_display_label(row))}</div>"
+            f"<div class='dim mono'>{html.escape(row['wg_ip'])}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
@@ -845,7 +853,7 @@ def peers_page(request: Request, flash: str | None = None):
   <h2 class="section-title">Registered peers</h2>
   <table>
     <thead>
-      <tr><th>WG IP</th><th>Network</th><th>Host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {''.join(body_rows) or '<tr><td colspan="7" class="dim">No peers registered.</td></tr>'}

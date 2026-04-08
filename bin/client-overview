@@ -118,7 +118,7 @@ WITH latest_status AS (
 SELECT
     p.id,
     n.name,
-    host(p.wg_ip),
+    COALESCE(NULLIF(p.note, ''), host(p.wg_ip)),
     CASE WHEN p.is_active THEN 'yes' ELSE 'no' END,
     COALESCE(NULLIF(ls.hostname, ''), '-'),
     COALESCE(EXTRACT(EPOCH FROM (NOW() - ls.last_check_in))::bigint, -1),
@@ -140,15 +140,15 @@ LIMIT ${MAX_CLIENTS};
 
     print_line "Clients"
     printf '%-4s %-14s %-16s %-4s %-18s %6s %-12s %s\n' \
-        "ID" "NETWORK" "WG IP" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
+        "ID" "NETWORK" "CLIENT" "ON" "HOSTNAME" "AGE" "VERSION" "STATUS"
 
     count=0
-    while IFS=$'\t' read -r peer_id network_name wg_ip is_active hostname age_seconds version status_message; do
+    while IFS=$'\t' read -r peer_id network_name client_label is_active hostname age_seconds version status_message; do
         [[ -n "${peer_id}" ]] || continue
         printf '%-4s %-14s %-16s %-4s %-18s %6s %-12s %s\n' \
             "$(truncate_field "${peer_id}" 4)" \
             "$(truncate_field "${network_name}" 14)" \
-            "$(truncate_field "${wg_ip}" 16)" \
+            "$(truncate_field "${client_label}" 16)" \
             "$(truncate_field "${is_active}" 4)" \
             "$(truncate_field "${hostname}" 18)" \
             "$(format_age "${age_seconds}")" \
@@ -283,6 +283,11 @@ LIMIT 1;
     print_line "  id: ${peer_id}"
     print_line "  uuid: ${uuid}"
     print_line "  network: ${network_name}"
+    if [[ "${note}" == "-" ]]; then
+        print_line "  label: ${wg_ip}"
+    else
+        print_line "  label: ${note}"
+    fi
     print_line "  wg ip: ${wg_ip}"
     print_line "  active: ${is_active}"
     print_line "  hostname: ${hostname}"
