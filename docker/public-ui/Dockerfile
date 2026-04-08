@@ -11,7 +11,7 @@ RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 RUN pip install --upgrade pip && \
-    pip install fastapi uvicorn psycopg
+    pip install fastapi uvicorn psycopg[binary]
 
 ARG VERSION_MAJOR
 ARG VERSION_MINOR
