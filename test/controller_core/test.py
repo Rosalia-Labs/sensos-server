@@ -164,6 +164,7 @@ def test_apply_schema_migrations_records_applied_versions():
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_readings" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
@@ -177,11 +178,12 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     fake_cur = mock.MagicMock()
     fake_cur.fetchall.return_value = [("0.5.0",)]
 
-    core.apply_schema_migrations(fake_cur, "0.7.0")
+    core.apply_schema_migrations(fake_cur, "0.9.0")
 
     executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
     assert "ADD COLUMN IF NOT EXISTS peer_id INTEGER;" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
     insert_calls = [
         call.args[1]
@@ -190,6 +192,8 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     ]
     assert ("0.6.0", "reconcile legacy network endpoint and client status schema") in insert_calls
     assert ("0.7.0", "add i2c readings upload schema") in insert_calls
+    assert ("0.8.0", "add per-peer api credentials") in insert_calls
+    assert ("0.9.0", "add runtime operator key publication") in insert_calls
 
 
 def test_create_client_status_table_reconciles_legacy_schema():
@@ -237,7 +241,19 @@ async def test_lifespan_runs_schema_setup(mock_get_db):
     assert 'CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA public;' in executed
     assert 'CREATE EXTENSION IF NOT EXISTS "postgis" WITH SCHEMA public;' in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_wireguard_status" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_reading_batches" in executed
+
+
+@mock.patch("core.get_db")
+def test_get_runtime_operator_ssh_key_found(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = ("ssh-ed25519 AAAATEST sensos-ops",)
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    assert core.get_runtime_operator_ssh_key() == "ssh-ed25519 AAAATEST sensos-ops"
 
 
 @mock.patch("core.psycopg.connect")

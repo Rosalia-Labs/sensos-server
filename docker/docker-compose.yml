@@ -111,6 +111,28 @@ services:
     networks:
       - sensos_network
 
+  sensos-ops:
+    build:
+      context: ./ops
+    container_name: sensos-ops
+    depends_on:
+      sensos-controller:
+        condition: service_healthy
+      sensos-database:
+        condition: service_healthy
+      sensos-wireguard:
+        condition: service_healthy
+    restart: always
+    env_file: .env
+    cap_add:
+      - NET_ADMIN
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - sensos_ops_state:/var/lib/sensos-ops
+    networks:
+      - sensos_network
+
 volumes:
   sensos_database:
     name: sensos_database
@@ -118,6 +140,8 @@ volumes:
     name: sensos_wireguard_state
   sensos_api_proxy_state:
     name: sensos_api_proxy_state
+  sensos_ops_state:
+    name: sensos_ops_state
 
 networks:
   sensos_network:

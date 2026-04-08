@@ -13,6 +13,7 @@ from core import (
     authenticate_peer,
     get_db,
     get_network_details,
+    get_runtime_operator_ssh_key,
     insert_peer,
     register_wireguard_key_in_db,
     search_for_next_available_ip,
@@ -170,15 +171,11 @@ def exchange_ssh_keys(
                 )
         conn.commit()
 
-    ssh_public_key_path = "/home/sensos/.ssh/id_ed25519.pub"
-    try:
-        with open(ssh_public_key_path, "r") as key_file:
-            ssh_public_key = key_file.read().strip()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="SSH public key not found.")
-    except Exception as exc:
+    ssh_public_key = get_runtime_operator_ssh_key()
+    if not ssh_public_key:
         raise HTTPException(
-            status_code=500, detail=f"Error reading SSH public key: {str(exc)}"
+            status_code=503,
+            detail="Operator SSH public key not published yet.",
         )
 
     return {"ssh_public_key": ssh_public_key}

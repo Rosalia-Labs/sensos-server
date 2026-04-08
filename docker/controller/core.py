@@ -52,8 +52,10 @@ GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
 RUNTIME_COMPONENT_WIREGUARD = "sensos-wireguard"
 RUNTIME_COMPONENT_API_PROXY = "sensos-api-proxy"
+RUNTIME_COMPONENT_OPS = "sensos-ops"
 RUNTIME_ROLE_SERVER = "server"
 RUNTIME_ROLE_API_PROXY = "api-proxy"
+RUNTIME_ROLE_OPS = "ops"
 PUBLIC_WG_PORT_START = 51281
 PUBLIC_WG_PORT_END = 51289
 
@@ -205,6 +207,7 @@ def create_initial_schema(cur):
     create_hardware_profile_table(cur)
     create_peer_location_table(cur)
     create_runtime_wireguard_status_table(cur)
+    create_runtime_operator_keys_table(cur)
     create_i2c_reading_batches_table(cur)
     create_i2c_readings_table(cur)
 
@@ -229,6 +232,12 @@ def migrate_0_8_0_peer_api_credentials(cur):
     create_wireguard_peers_table(cur)
 
 
+def migrate_0_9_0_runtime_operator_keys(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_runtime_operator_keys_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -249,6 +258,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.8.0"),
         name="add per-peer api credentials",
         apply=migrate_0_8_0_peer_api_credentials,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.9.0"),
+        name="add runtime operator key publication",
+        apply=migrate_0_9_0_runtime_operator_keys,
     ),
 ]
 
@@ -1016,6 +1030,18 @@ def create_runtime_wireguard_status_table(cur):
     )
 
 
+def create_runtime_operator_keys_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys (
+            component TEXT PRIMARY KEY,
+            ssh_public_key TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+
+
 def create_i2c_reading_batches_table(cur):
     cur.execute(
         """
@@ -1046,6 +1072,23 @@ def create_i2c_reading_batches_table(cur):
         );
         """
     )
+
+
+def get_runtime_operator_ssh_key(
+    component: str = RUNTIME_COMPONENT_OPS,
+) -> str | None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ssh_public_key
+                FROM sensos.runtime_operator_keys
+                WHERE component = %s;
+                """,
+                (component,),
+            )
+            row = cur.fetchone()
+    return row[0] if row else None
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_i2c_reading_batches_wireguard_received

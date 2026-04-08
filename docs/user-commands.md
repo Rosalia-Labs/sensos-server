@@ -381,7 +381,7 @@ Behavior:
 
 ### `bin/ssh-client`
 
-SSH into a remote client through the controller container using either a direct
+SSH into a remote client through the ops container using either a direct
 IP or the network token form used by the project.
 
 Typical use:

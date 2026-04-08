@@ -14,12 +14,13 @@ client-server schema that clients depend on.
 
 ## Container Roles
 
-The Compose stack currently runs four main containers:
+The Compose stack currently runs five main containers:
 
 - `sensos-database`: PostgreSQL state store and control plane
 - `sensos-controller`: FastAPI control service and schema bootstrap
 - `sensos-wireguard`: server-side WireGuard reconciler
 - `sensos-api-proxy`: nginx API proxy plus proxy-side WireGuard reconciler
+- `sensos-ops`: operator-access WireGuard peer for SSH/debug access to clients
 
 ## Design Summary
 
@@ -32,9 +33,11 @@ Instead:
 - the controller creates and updates the database schema
 - `sensos-wireguard` reads desired network/peer state from the database
 - `sensos-api-proxy` reads desired network state from the database
+- `sensos-ops` reads desired network state from the database
 - each reconciler renders its own local config from database state
 - each reconciler stores its own private key in its own private state volume
 - each reconciler publishes only its public key and runtime status back into the database
+- `sensos-ops` also publishes its SSH public key so clients can trust the operator-access container during enrollment
 
 ## Data Ownership
 
@@ -65,6 +68,7 @@ Private key handling now follows strict local ownership:
 Current reserved addresses inside each network:
 
 - `.1`: API proxy WireGuard address
+- `.2`: ops container WireGuard address
 - the rest of `x.y.0.*` is available for infrastructure-style assignments if you
   manage them explicitly
 - automatic client peer allocation reserves `.1` and then assigns the next free
@@ -80,13 +84,13 @@ The current reconciliation flow is:
 
 1. the controller starts and ensures the `sensos` schema exists
 2. the controller reports healthy on `GET /healthz` only after schema/bootstrap work completes
-3. Compose waits for that controller health check before starting `sensos-wireguard` and `sensos-api-proxy`
+3. Compose waits for that controller health check before starting `sensos-wireguard`, `sensos-api-proxy`, and `sensos-ops`
 4. `bin/create-network` creates a row in `sensos.networks`
 5. `sensos-wireguard` sees the new network in the database
 6. `sensos-wireguard` generates or reuses its private key, derives a public key, and updates `sensos.networks.wg_public_key`
 7. `sensos-api-proxy` sees the network public key and reconciles its own local WireGuard interface
 8. `sensos-api-proxy` ensures its peer row and active public key exist in `sensos.wireguard_peers` and `sensos.wireguard_keys`
-9. both reconcilers publish status rows into `sensos.runtime_wireguard_status`
+9. all peer-capable reconcilers publish status rows into `sensos.runtime_wireguard_status`
 
 Peer registration is separate:
 
@@ -111,6 +115,7 @@ The remaining state is local to the owning container:
 - `sensos_database`: PostgreSQL data
 - `sensos_wireguard_state`: server reconciler private/rendered WireGuard state
 - `sensos_api_proxy_state`: proxy reconciler private/rendered WireGuard state
+- `sensos_ops_state`: ops reconciler WireGuard state and SSH identity
 
 This keeps secret material local to the container that owns it.
 
@@ -121,6 +126,7 @@ The current privilege split is:
 - `sensos-controller`: no WireGuard capability, no Docker socket, no privileged mode
 - `sensos-wireguard`: `NET_ADMIN` only
 - `sensos-api-proxy`: `NET_ADMIN` only
+- `sensos-ops`: `NET_ADMIN` only
 - `sensos-database`: normal database container privileges
 
 This is a deliberate step toward reducing host-level privilege usage and
@@ -147,6 +153,7 @@ docker ps
 docker logs --tail=100 sensos-controller
 docker logs --tail=100 sensos-wireguard
 docker logs --tail=100 sensos-api-proxy
+docker logs --tail=100 sensos-ops
 ```
 
 API-level checks:
@@ -163,6 +170,7 @@ Container WireGuard checks:
 ```sh
 docker exec sensos-wireguard wg show
 docker exec sensos-api-proxy wg show
+docker exec sensos-ops wg show
 ```
 
 Database runtime-status check:
@@ -181,8 +189,8 @@ Expected healthy result:
 
 - network exists in `sensos.networks`
 - `sensos.networks.wg_public_key` is populated
-- runtime rows exist for `sensos-wireguard` and `sensos-api-proxy`
-- both runtime rows report `status = ready`
+- runtime rows exist for `sensos-wireguard`, `sensos-api-proxy`, and `sensos-ops`
+- all runtime rows report `status = ready`
 
 ## QEMU Notes
 

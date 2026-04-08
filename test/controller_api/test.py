@@ -355,6 +355,62 @@ def test_client_status_uses_authenticated_peer(monkeypatch, client):
     assert "peer_id, last_check_in" in executed
 
 
+def test_exchange_ssh_keys_returns_ops_public_key(monkeypatch, client):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [(321,), ("inserted",)]
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(
+        client_api,
+        "get_runtime_operator_ssh_key",
+        lambda: "ssh-ed25519 AAAATEST sensos-ops",
+    )
+
+    resp = client.post(
+        "/api/v1/client/peer/ssh-key",
+        json={
+            "username": "sensos-admin",
+            "uid": 1000,
+            "ssh_public_key": "ssh-ed25519 AAAACLIENT client",
+            "key_type": "ssh-ed25519",
+            "key_size": 256,
+            "key_comment": "client",
+            "fingerprint": "SHA256:test",
+            "expires_at": None,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ssh_public_key": "ssh-ed25519 AAAATEST sensos-ops"}
+
+
+def test_exchange_ssh_keys_returns_503_when_ops_key_missing(monkeypatch, client):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [(321,), ("inserted",)]
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: mock_conn))
+    monkeypatch.setattr(client_api, "get_runtime_operator_ssh_key", lambda: None)
+
+    resp = client.post(
+        "/api/v1/client/peer/ssh-key",
+        json={
+            "username": "sensos-admin",
+            "uid": 1000,
+            "ssh_public_key": "ssh-ed25519 AAAACLIENT client",
+            "key_type": "ssh-ed25519",
+            "key_size": 256,
+            "key_comment": "client",
+            "fingerprint": "SHA256:test",
+            "expires_at": None,
+        },
+    )
+
+    assert resp.status_code == 503
+    assert "Operator SSH public key not published yet" in resp.text
+
+
 def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     fake_conn = mock.MagicMock()
     monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))

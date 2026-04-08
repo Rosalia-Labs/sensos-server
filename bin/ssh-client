@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 #
-# SSH into a remote Pi from the controller container using either:
+# SSH into a remote Pi from the ops container using either:
 #   - explicit IP: 10.x.y.z
 #   - token: <net>_<a>_<b>  or <net>-<a>-<b>
 #     e.g., testing_1_15  or  testing-1-15  → 10.<hash(net)>.1.15
@@ -14,7 +14,9 @@
 #   sensos-ssh-client <ip-or-token> [-- <remote command...>]
 
 set -euo pipefail
-: "${CONTROLLER_CONTAINER:=sensos-controller}"
+: "${OPS_CONTAINER:=sensos-ops}"
+: "${OPS_SSH_KEY:=/var/lib/sensos-ops/ssh/id_ed25519}"
+: "${OPS_KNOWN_HOSTS:=/var/lib/sensos-ops/ssh/known_hosts}"
 
 usage() {
   echo "Usage: $(basename "$0") <ip-or-<net>_<a>_<b>|<net>-<a>-<b>> [-- <remote command...>]" >&2
@@ -65,22 +67,25 @@ main() {
     while [[ $# -gt 0 ]]; do remote_cmd+=("$1"); shift; done
   fi
 
-  require_container_running "$CONTROLLER_CONTAINER"
+  require_container_running "$OPS_CONTAINER"
 
   local DOCKER_TTY=()
   [[ -t 0 && -t 1 ]] && DOCKER_TTY=(-it)
 
-  local SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+  local SSH_OPTS=(
+    -i "$OPS_SSH_KEY"
+    -o UserKnownHostsFile="$OPS_KNOWN_HOSTS"
+    -o StrictHostKeyChecking=accept-new
+    -o Compression=yes
+    -o ObscureKeystrokeTiming=no
+    -o TCPKeepAlive=no
+    -o ServerAliveInterval=60
+    -o ServerAliveCountMax=3
+  )
   local SSH_CMD=(ssh "${SSH_OPTS[@]}" "sensos-admin@${ip}")
   [[ ${#remote_cmd[@]} -gt 0 ]] && SSH_CMD+=("${remote_cmd[@]}")
 
-  if docker exec "$CONTROLLER_CONTAINER" which sudo >/dev/null 2>&1; then
-    exec docker exec "${DOCKER_TTY[@]}" "$CONTROLLER_CONTAINER" sudo -u sensos -- "${SSH_CMD[@]}"
-  else
-    local Q; Q="$(printf '%q ' "${SSH_CMD[@]}")"
-    exec docker exec "${DOCKER_TTY[@]}" "$CONTROLLER_CONTAINER" su -s /bin/bash sensos -c "$Q"
-  fi
+  exec docker exec "${DOCKER_TTY[@]}" "$OPS_CONTAINER" "${SSH_CMD[@]}"
 }
 
 main "$@"
-
