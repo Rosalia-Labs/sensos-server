@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SSH_CLIENT_CMD="${SCRIPT_DIR}/ssh-client"
+
+usage() {
+    cat <<'EOF' >&2
+Usage: listen-client-audio <ip-or-token> [--duration SECONDS]
+
+Stream temporary live audio from a client and play it locally. This command
+uses ssh-client plus the client's debug-audio-monitor helper.
+EOF
+    exit 2
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        printf 'ERROR: missing required command: %s\n' "$1" >&2
+        exit 127
+    }
+}
+
+TARGET=""
+DURATION="0"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --duration)
+            [[ $# -ge 2 ]] || usage
+            DURATION="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            if [[ -n "${TARGET}" ]]; then
+                usage
+            fi
+            TARGET="$1"
+            shift
+            ;;
+    esac
+done
+
+[[ -n "${TARGET}" ]] || usage
+[[ -x "${SSH_CLIENT_CMD}" ]] || {
+    printf 'ERROR: missing ssh-client helper at %s\n' "${SSH_CLIENT_CMD}" >&2
+    exit 1
+}
+
+if command -v play >/dev/null 2>&1; then
+    PLAYER=(play -q -t wav -)
+elif command -v aplay >/dev/null 2>&1; then
+    PLAYER=(aplay -q)
+else
+    printf 'ERROR: need a local playback command: install sox (play) or alsa-utils (aplay)\n' >&2
+    exit 1
+fi
+
+"${SSH_CLIENT_CMD}" "${TARGET}" -- debug-audio-monitor --duration "${DURATION}" | "${PLAYER[@]}"

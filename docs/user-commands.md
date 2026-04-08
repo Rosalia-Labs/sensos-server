@@ -391,3 +391,36 @@ Typical use:
 ./bin/ssh-client testing_1_15
 ./bin/ssh-client testing_1_15 -- hostname
 ```
+
+Behavior:
+
+- runs SSH from the dedicated `sensos-ops` container rather than from `sensos-controller`
+- uses lower-overhead SSH defaults suitable for metered links where supported by the bundled SSH client
+
+### `bin/listen-client-audio`
+
+Streams temporary live audio from a client and plays it on the operator
+machine. This uses `bin/ssh-client` plus the client's `debug-audio-monitor`
+helper.
+
+Typical use:
+
+```sh
+./bin/listen-client-audio testing-0-1
+./bin/listen-client-audio testing-0-1 --duration 30
+```
+
+Local playback dependencies:
+
+- `listen-client-audio` prefers `play` from `sox`
+- on macOS, install it with Homebrew: `brew install sox`
+- on macOS, install it with MacPorts: `sudo port install sox`
+- on Debian-family systems, `play` is usually provided by the `sox` package
+- if `play` is unavailable, the wrapper falls back to `aplay` when present
+
+Behavior:
+
+- requires the client helper `debug-audio-monitor` to be installed on the device
+- temporarily stops `sensos-arecord.service` on the client for the duration of the listen session
+- prefers local playback through `play` and falls back to `aplay` when available
+- relies on the client helper to restart recording automatically when the session ends
