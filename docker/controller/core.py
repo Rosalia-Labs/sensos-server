@@ -21,6 +21,7 @@ from typing import Callable, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from psycopg import Cursor
+from psycopg import sql
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1357,13 +1358,21 @@ def ensure_public_dashboard_role(cur):
     )
     if cur.fetchone() is None:
         cur.execute(
-            f"CREATE ROLE {PUBLIC_DB_ROLE} WITH LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;",
-            (PUBLIC_DB_PASSWORD,),
+            sql.SQL(
+                "CREATE ROLE {} WITH LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;"
+            ).format(
+                sql.Identifier(PUBLIC_DB_ROLE),
+                sql.Literal(PUBLIC_DB_PASSWORD),
+            )
         )
     else:
         cur.execute(
-            f"ALTER ROLE {PUBLIC_DB_ROLE} WITH LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;",
-            (PUBLIC_DB_PASSWORD,),
+            sql.SQL(
+                "ALTER ROLE {} WITH LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;"
+            ).format(
+                sql.Identifier(PUBLIC_DB_ROLE),
+                sql.Literal(PUBLIC_DB_PASSWORD),
+            )
         )
 
     cur.execute(f"GRANT CONNECT ON DATABASE postgres TO {PUBLIC_DB_ROLE};")
