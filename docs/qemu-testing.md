@@ -92,8 +92,19 @@ become part of the persistent base image. If you also clone the repo during the
 `install` boot and then shut the guest down cleanly, that checkout is part of
 the persistent base image too.
 
-4. Once the base image is set up the way you want, shut down the guest cleanly,
-   exit QEMU, and use disposable run boots when you want a non-sticky test session:
+4. Once the base image is set up the way you want, shut down the guest cleanly
+   and exit QEMU. After that, use `update` when you want to make persistent VM
+   changes without reinstalling:
+
+```bash
+test/qemu/run-debian-trixie-arm64 update
+```
+
+The `update` command boots the installed base image read/write, so package
+installs and repo changes persist. Shut the guest down cleanly from inside the
+VM before exiting QEMU or writes may be lost.
+
+5. Use disposable run boots when you want a non-sticky test session:
 
 ```bash
 test/qemu/run-debian-trixie-arm64 run
@@ -102,7 +113,7 @@ test/qemu/run-debian-trixie-arm64 run
 The `run` command uses `-snapshot`, so guest disk changes are discarded when
 QEMU exits.
 
-5. In each disposable `run` boot, either reuse the repo checkout already baked
+6. In each disposable `run` boot, either reuse the repo checkout already baked
    into the base image or clone a fresh checkout for that session. Then
    configure the server and start it:
 
