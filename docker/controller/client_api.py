@@ -292,7 +292,7 @@ def set_client_location(
             cur.execute(
                 """
                 INSERT INTO sensos.peer_locations (peer_id, location)
-                VALUES (%s, sensos.ST_SetSRID(sensos.ST_MakePoint(%s, %s), 4326));
+                VALUES (%s, public.ST_SetSRID(public.ST_MakePoint(%s, %s), 4326));
                 """,
                 (row[0], req.longitude, req.latitude),
             )

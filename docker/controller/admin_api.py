@@ -242,8 +242,8 @@ def get_client_location(wg_ip: str, credentials=Depends(authenticate_admin)):
             cur.execute(
                 """
                 SELECT l.recorded_at,
-                       sensos.ST_Y(l.location::sensos.geometry)::float AS latitude,
-                       sensos.ST_X(l.location::sensos.geometry)::float AS longitude
+                       public.ST_Y(l.location::public.geometry)::float AS latitude,
+                       public.ST_X(l.location::public.geometry)::float AS longitude
                 FROM sensos.peer_locations l
                 JOIN sensos.wireguard_peers p ON l.peer_id = p.id
                 WHERE p.wg_ip = %s
