@@ -124,14 +124,14 @@ print(f"WG pubkey:  {wg_public_key}")
 print()
 print("Setup-time API example:")
 print(
-    f"  config-network --config-server <server-host-or-ip> --port {api_port} --network {name}"
+    f"  config-network --setup-server <server-host-or-ip> --setup-port {api_port} --network {name}"
 )
 
 if wg_public_ip == "10.0.2.2":
     print()
     print("QEMU client VM example:")
     print(
-        f"  config-network --config-server 10.0.2.2 --port 18765 --network {name}"
+        f"  config-network --setup-server 10.0.2.2 --setup-port 18765 --network {name}"
     )
 PY
 }

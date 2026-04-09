@@ -213,7 +213,7 @@ Typical server-guest network creation:
 Typical client-guest enrollment:
 
 ```sh
-config-network --config-server 10.0.2.2 --port 18765 --network testing
+config-network --setup-server 10.0.2.2 --setup-port 18765 --network testing
 ```
 
 ## Transition Items Still Open

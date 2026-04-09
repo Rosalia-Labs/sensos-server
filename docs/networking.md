@@ -37,10 +37,10 @@ During client enrollment, `sensos-client` must be pointed at the same host and
 port:
 
 ```sh
-config-network --config-server <server-host-or-ip> --port 8765 --network <network>
+config-network --setup-server <server-host-or-ip> --setup-port 8765 --network <network>
 ```
 
-`--config-server` is only the address the client can reach during setup. It can
+`--setup-server` is only the address the client can reach during setup. It can
 be a LAN IP, hostname, forwarded port target, or QEMU host address.
 
 Operational note:
@@ -199,7 +199,7 @@ These are not all the same thing.
 `SERVER_PORT`:
 
 - the API port used by the client
-- initially comes from `config-network --port`
+- initially comes from `config-network --setup-port`
 - later used for steady-state API calls
 
 `WG_ENDPOINT_IP` and `WG_ENDPOINT_PORT`:
@@ -232,8 +232,8 @@ Likely causes:
 
 Likely causes:
 
-- wrong `--config-server`
-- wrong `--port`
+- wrong `--setup-server`
+- wrong `--setup-port`
 - API container not running
 - host firewall blocking the API port
 
@@ -256,7 +256,7 @@ For two-VM testing on one host:
 So from the client VM, a common enrollment target is:
 
 ```sh
-config-network --config-server 10.0.2.2 --port 18765 --network <network>
+config-network --setup-server 10.0.2.2 --setup-port 18765 --network <network>
 ```
 
 That setup-time path is separate from the WireGuard endpoint that the server

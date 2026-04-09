@@ -215,7 +215,7 @@ Healthy result:
 Inside a separate client guest:
 
 ```bash
-config-network --config-server 10.0.2.2 --port 18765 --network testing
+config-network --setup-server 10.0.2.2 --setup-port 18765 --network testing
 ```
 
 This is the correct split for the client guest:
@@ -265,7 +265,7 @@ This makes two-VM testing practical:
 1. Run the server VM with this helper.
 2. Run the client VM with the client helper.
 3. In the server VM, create the test network with `wg_public_ip=10.0.2.2` and `wg_port=51281` so the client sees the macOS host as the forwarded WireGuard endpoint.
-4. In the client VM, point `config-network` at `10.0.2.2 --port 18765`.
+4. In the client VM, point `config-network` at `10.0.2.2 --setup-port 18765`.
 
 With QEMU user networking, each guest can usually reach macOS-hosted services at:
 
