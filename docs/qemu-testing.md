@@ -129,11 +129,12 @@ If you want the checkout itself to persist across boots, clone it during the
 `install` boot and then shut the guest down cleanly before exiting QEMU.
 
 If you also want reboot persistence inside the guest, have a privileged user
-install the optional systemd unit:
+install the optional systemd unit. Do not run this from the service-user
+session:
 
 ```bash
-./bin/install-service
-su -c 'systemctl start sensos-server'
+sudo /home/sensos/sensos-server/bin/install-service
+sudo systemctl start sensos-server
 ```
 
 ## Validated Test Procedure
@@ -179,7 +180,7 @@ This is the correct split for the server guest:
 From the macOS host, the QEMU helper forwards these guest services by default:
 
 - server API: `http://127.0.0.1:18765`
-- public dashboard: `http://127.0.0.1:17880`
+- public dashboard: `http://127.0.0.1:18780`
 - SSH: `ssh -p 2223 <user>@127.0.0.1`
 
 If needed, override the public dashboard host port with

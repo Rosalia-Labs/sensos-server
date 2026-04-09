@@ -38,7 +38,6 @@ from the current repo checkout.
 Typical use:
 
 ```sh
-./bin/install-service
 sudo /home/sensos/sensos-server/bin/install-service
 ```
 

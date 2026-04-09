@@ -143,10 +143,10 @@ Then inside the guest:
   ./bin/start-server
 
 If you want the optional systemd unit, install and start it from a privileged
-session:
-  cd ${repo_path_value}
-  ./bin/install-service
-  su -c 'systemctl start sensos-server'
+session. Do not do this as ${TARGET_USER}; that account is intentionally
+unprivileged:
+  sudo ${repo_path_value}/bin/install-service
+  sudo systemctl start sensos-server
 
 EOF
 }
