@@ -81,6 +81,10 @@ read_repo_version() {
     printf '%s\n' "${version}"
 }
 
+read_repo_head() {
+    git -C "${REPO_ROOT}" rev-parse HEAD
+}
+
 version_lt() {
     [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$1" ]]
 }
@@ -181,6 +185,8 @@ main() {
     local old_version
     local source_version
     local new_version
+    local old_head
+    local new_head
 
     parse_args "$@"
     ensure_not_root
@@ -207,8 +213,14 @@ main() {
     if [[ "${OFFLINE}" == "1" ]]; then
         log "offline mode enabled; skipping git pull"
     else
+        old_head="$(read_repo_head)"
         log "pulling the latest changes"
         git -C "${REPO_ROOT}" pull --ff-only
+        new_head="$(read_repo_head)"
+        if [[ "${new_head}" == "${old_head}" ]]; then
+            log "git pull did not change HEAD; nothing to upgrade. Rerun with --offline to force a local upgrade."
+            exit 0
+        fi
     fi
 
     new_version="$(read_repo_version)"

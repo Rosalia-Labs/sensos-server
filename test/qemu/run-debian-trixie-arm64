@@ -19,6 +19,7 @@ DATA_IMAGE="${SENSOS_QEMU_DATA_IMAGE:-${IMAGE_DIR}/debian-trixie-arm64-data.qcow
 
 SSH_FORWARD_PORT="${SENSOS_QEMU_SSH_PORT:-2223}"
 API_FORWARD_PORT="${SENSOS_QEMU_API_PORT:-18765}"
+PUBLIC_UI_FORWARD_PORT="${SENSOS_QEMU_PUBLIC_UI_PORT:-17880}"
 WG_PORT_START="${SENSOS_QEMU_WG_PORT_START:-51281}"
 WG_PORT_END="${SENSOS_QEMU_WG_PORT_END:-51289}"
 MEMORY_MB="${SENSOS_QEMU_MEMORY_MB:-4096}"
@@ -61,6 +62,7 @@ Environment overrides:
   SENSOS_QEMU_DATA_IMAGE
   SENSOS_QEMU_SSH_PORT
   SENSOS_QEMU_API_PORT
+  SENSOS_QEMU_PUBLIC_UI_PORT
   SENSOS_QEMU_WG_PORT_START
   SENSOS_QEMU_WG_PORT_END
   SENSOS_QEMU_MEMORY_MB
@@ -141,6 +143,7 @@ Base image:       ${BASE_IMAGE}
 Data image:       ${DATA_IMAGE}
 SSH forward:      ssh -p ${SSH_FORWARD_PORT} <user>@127.0.0.1
 Server API:       http://127.0.0.1:${API_FORWARD_PORT}
+Public UI:        http://127.0.0.1:${PUBLIC_UI_FORWARD_PORT}
 WireGuard UDP:    127.0.0.1:${WG_PORT_START}-${WG_PORT_END}/udp -> guest:${WG_PORT_START}-${WG_PORT_END}/udp
 Host access:      guest can reach macOS services at 10.0.2.2
 Repo path:        ${REPO_ROOT}
@@ -152,7 +155,7 @@ build_netdev_arg() {
     local arg
     local port
 
-    arg="user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765"
+    arg="user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:127.0.0.1:${API_FORWARD_PORT}-:8765,hostfwd=tcp:127.0.0.1:${PUBLIC_UI_FORWARD_PORT}-:8780"
     for ((port = WG_PORT_START; port <= WG_PORT_END; port++)); do
         arg+=",hostfwd=udp:127.0.0.1:${port}-:${port}"
     done

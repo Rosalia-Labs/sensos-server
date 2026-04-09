@@ -112,7 +112,7 @@ optional systemd unit separately.
 the repo-root runtime model:
 
 - verify the checkout and current server config
-- optionally `git pull --ff-only`
+- optionally `git pull --ff-only`, exiting early when it does not move `HEAD`
 - run version-aware migrations
 - record installed version state without requiring root
 - rebuild and restart the running Docker stack when the server is already up

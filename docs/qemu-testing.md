@@ -173,7 +173,17 @@ explicitly instead of editing the database by hand:
 This is the correct split for the server guest:
 
 - use `127.0.0.1:8765` for the local API call inside the guest
+- use `127.0.0.1:8780` for the local public dashboard inside the guest
 - publish `10.0.2.2:51281` as the WireGuard endpoint that client guests can reach via the macOS host
+
+From the macOS host, the QEMU helper forwards these guest services by default:
+
+- server API: `http://127.0.0.1:18765`
+- public dashboard: `http://127.0.0.1:17880`
+- SSH: `ssh -p 2223 <user>@127.0.0.1`
+
+If needed, override the public dashboard host port with
+`SENSOS_QEMU_PUBLIC_UI_PORT`.
 
 ### Server verification
 

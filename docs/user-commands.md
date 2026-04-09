@@ -71,11 +71,12 @@ Behavior:
 
 - in normal mode, it must be run from a clean git worktree
 - in normal mode, the current branch must have an upstream
+- in normal mode, it exits early when `git pull --ff-only` does not change `HEAD`
 - runs migrations between installed and repo versions
 - records the upgraded version in a writable install-state file
 - if the server stack is already running, it rebuilds and restarts the containers so the new repo contents take effect
 - does not require `sudo` for the normal repo-owned Docker runtime path
-- `--offline` skips `git pull` and upgrades from the repo contents already on disk
+- `--offline` skips `git pull` and upgrades from the repo contents already on disk, including force-running an upgrade when the checkout has not changed
 - `--refresh-service` reinstalls the optional `sensos-server` unit after pull and should be run from an admin account with `sudo`
 - `--restart-service` restarts `sensos-server`, requires `--refresh-service`, and should be run from an admin account with `sudo`
 
