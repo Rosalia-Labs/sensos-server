@@ -134,6 +134,26 @@ def fetch_site_detail(site_id: str) -> dict:
                 raise HTTPException(status_code=404, detail="Site not found.")
             cur.execute(
                 """
+                SELECT count(*)::integer,
+                       max(processed_at)
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s;
+                """,
+                (site_id,),
+            )
+            birdnet_summary = cur.fetchone()
+            cur.execute(
+                """
+                SELECT count(*)::integer,
+                       max(recorded_at)
+                FROM sensos.public_site_i2c_recent
+                WHERE wg_ip = %s;
+                """,
+                (site_id,),
+            )
+            i2c_summary = cur.fetchone()
+            cur.execute(
+                """
                 SELECT receipt_id,
                        hostname,
                        client_version,
@@ -151,6 +171,48 @@ def fetch_site_detail(site_id: str) -> dict:
                 (site_id,),
             )
             batches = cur.fetchall()
+            cur.execute(
+                """
+                SELECT receipt_id,
+                       hostname,
+                       client_version,
+                       batch_id,
+                       source_path,
+                       processed_at,
+                       channel_index,
+                       start_sec,
+                       end_sec,
+                       top_label,
+                       top_score,
+                       top_likely_score
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                  AND detection_rank <= 12
+                ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
+                """,
+                (site_id,),
+            )
+            detections = cur.fetchall()
+            cur.execute(
+                """
+                SELECT receipt_id,
+                       hostname,
+                       client_version,
+                       batch_id,
+                       recorded_at,
+                       device_address,
+                       sensor_type,
+                       reading_key,
+                       reading_value,
+                       server_received_at
+                FROM sensos.public_site_i2c_recent
+                WHERE wg_ip = %s
+                  AND reading_rank <= 12
+                ORDER BY recorded_at DESC, server_received_at DESC;
+                """,
+                (site_id,),
+            )
+            readings = cur.fetchall()
     return {
         "peer_uuid": row[0],
         "site_id": row[1],
@@ -170,6 +232,12 @@ def fetch_site_detail(site_id: str) -> dict:
         "birdnet_batch_count": int(row[14]),
         "birdnet_source_count": int(row[15]),
         "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
+        "birdnet_detection_count": int((birdnet_summary[0] or 0) if birdnet_summary else 0),
+        "latest_birdnet_result_at": format_rfc3339_utc(
+            birdnet_summary[1] if birdnet_summary else None
+        ),
+        "i2c_reading_count": int((i2c_summary[0] or 0) if i2c_summary else 0),
+        "latest_i2c_reading_at": format_rfc3339_utc(i2c_summary[1] if i2c_summary else None),
         "recent_birdnet_batches": [
             {
                 "receipt_id": batch[0],
@@ -183,6 +251,38 @@ def fetch_site_detail(site_id: str) -> dict:
                 "server_received_at": format_rfc3339_utc(batch[8]),
             }
             for batch in batches
+        ],
+        "recent_birdnet_detections": [
+            {
+                "receipt_id": detection[0],
+                "hostname": detection[1],
+                "client_version": detection[2],
+                "batch_id": detection[3],
+                "source_path": detection[4],
+                "processed_at": format_rfc3339_utc(detection[5]),
+                "channel_index": detection[6],
+                "start_sec": float(detection[7]),
+                "end_sec": float(detection[8]),
+                "top_label": detection[9],
+                "top_score": float(detection[10]),
+                "top_likely_score": float(detection[11]) if detection[11] is not None else None,
+            }
+            for detection in detections
+        ],
+        "recent_i2c_readings": [
+            {
+                "receipt_id": reading[0],
+                "hostname": reading[1],
+                "client_version": reading[2],
+                "batch_id": reading[3],
+                "recorded_at": format_rfc3339_utc(reading[4]),
+                "device_address": reading[5],
+                "sensor_type": reading[6],
+                "reading_key": reading[7],
+                "reading_value": float(reading[8]),
+                "server_received_at": format_rfc3339_utc(reading[9]),
+            }
+            for reading in readings
         ],
     }
 
@@ -366,13 +466,13 @@ def render_index_html() -> str:
       font: inherit;
       color: var(--ink);
     }}
-    .batch-list {{
+    .record-list {{
       display: grid;
       gap: 0.65rem;
       max-height: 20rem;
       overflow: auto;
     }}
-    .batch-card {{
+    .record-card {{
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 0.8rem 0.9rem;
@@ -421,8 +521,12 @@ def render_index_html() -> str:
           <div id="chooserBlock" class="dim">When multiple nearby points are clicked together, the map will zoom to their local bounds. If they still overlap at max zoom, they appear here as an explicit list.</div>
         </section>
         <section>
-          <div class="section-title">Recent BirdNET Uploads</div>
-          <div id="batchList" class="batch-list"><div class="dim">Select a site to inspect recent BirdNET uploads.</div></div>
+          <div class="section-title">Recent BirdNET Results</div>
+          <div id="birdnetList" class="record-list"><div class="dim">Select a site to inspect recent BirdNET detections.</div></div>
+        </section>
+        <section>
+          <div class="section-title">Recent I2C Results</div>
+          <div id="i2cList" class="record-list"><div class="dim">Select a site to inspect recent I2C readings.</div></div>
         </section>
       </aside>
     </div>
@@ -445,7 +549,8 @@ def render_index_html() -> str:
     const siteSubtitle = document.getElementById("siteSubtitle");
     const metricGrid = document.getElementById("metricGrid");
     const chooserBlock = document.getElementById("chooserBlock");
-    const batchList = document.getElementById("batchList");
+    const birdnetList = document.getElementById("birdnetList");
+    const i2cList = document.getElementById("i2cList");
 
     function clampView(view) {{
       const lonSpan = Math.max(view.lonMax - view.lonMin, minLonSpan);
@@ -591,6 +696,17 @@ def render_index_html() -> str:
       return String(text ?? "").replace(/[&<>"']/g, (ch) => replacements[ch]);
     }}
 
+    function formatNumber(value, digits = 2) {{
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "n/a";
+      return Number(value).toFixed(digits).replace(/\\.0+$/, "").replace(/(\\.\\d*?)0+$/, "$1");
+    }}
+
+    function basename(path) {{
+      const text = String(path ?? "");
+      const parts = text.split("/");
+      return parts[parts.length - 1] || text;
+    }}
+
     async function loadSiteDetail(siteId) {{
       const response = await fetch(`/api/sites/${{encodeURIComponent(siteId)}}`);
       if (!response.ok) return;
@@ -601,23 +717,41 @@ def render_index_html() -> str:
       siteSubtitle.innerHTML = `<span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
       metricGrid.innerHTML = `
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
+        <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
+        <div class="metric"><div class="section-title">I2C Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Batches</div><div class="metric-value">${{site.birdnet_batch_count}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Sources</div><div class="metric-value">${{site.birdnet_source_count}}</div></div>
         <div class="metric"><div class="section-title">Coordinates</div><div class="metric-value mono">${{site.latitude.toFixed(4)}}, ${{site.longitude.toFixed(4)}}</div></div>
       `;
-      batchList.innerHTML = "";
-      if (!site.recent_birdnet_batches.length) {{
-        batchList.innerHTML = '<div class="dim">No BirdNET uploads are visible yet for this site.</div>';
+      birdnetList.innerHTML = "";
+      if (!site.recent_birdnet_detections.length) {{
+        birdnetList.innerHTML = '<div class="dim">No BirdNET detections are visible yet for this site.</div>';
       }} else {{
-        for (const batch of site.recent_birdnet_batches) {{
+        for (const detection of site.recent_birdnet_detections) {{
           const card = document.createElement("div");
-          card.className = "batch-card";
+          card.className = "record-card";
           card.innerHTML = `
-            <div><strong>Batch ${{batch.batch_id}}</strong> <span class="dim">· ${{escapeHtml(batch.ownership_mode)}}</span></div>
-            <div class="dim">${{batch.source_count}} processed files · received ${{escapeHtml(relativeTime(batch.server_received_at))}}</div>
-            <div class="mono">${{escapeHtml(batch.receipt_id)}}</div>
+            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}}</span></div>
+            <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
+            <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s · batch ${{detection.batch_id}}</div>
+            <div class="mono">${{escapeHtml(detection.source_path)}}</div>
           `;
-          batchList.appendChild(card);
+          birdnetList.appendChild(card);
+        }}
+      }}
+      i2cList.innerHTML = "";
+      if (!site.recent_i2c_readings.length) {{
+        i2cList.innerHTML = '<div class="dim">No I2C readings are visible yet for this site.</div>';
+      }} else {{
+        for (const reading of site.recent_i2c_readings) {{
+          const card = document.createElement("div");
+          card.className = "record-card";
+          card.innerHTML = `
+            <div><strong>${{escapeHtml(reading.sensor_type)}}</strong> <span class="dim">· ${{escapeHtml(reading.reading_key)}}</span></div>
+            <div class="dim">value ${{escapeHtml(formatNumber(reading.reading_value, 3))}} · recorded ${{escapeHtml(relativeTime(reading.recorded_at))}}</div>
+            <div class="dim">device ${{escapeHtml(reading.device_address)}} · batch ${{reading.batch_id}}</div>
+          `;
+          i2cList.appendChild(card);
         }}
       }}
       const selected = sites.find((site) => site.site_id === siteId);
@@ -685,7 +819,8 @@ def render_index_html() -> str:
       siteTitle.textContent = "Choose a site";
       siteSubtitle.textContent = "Click a mapped point to open site details.";
       metricGrid.innerHTML = "";
-      batchList.innerHTML = '<div class="dim">Select a site to inspect recent BirdNET uploads.</div>';
+      birdnetList.innerHTML = '<div class="dim">Select a site to inspect recent BirdNET detections.</div>';
+      i2cList.innerHTML = '<div class="dim">Select a site to inspect recent I2C readings.</div>';
       render();
       if (sites.length) fitSites(sites);
     }});

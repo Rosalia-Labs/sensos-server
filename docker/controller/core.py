@@ -258,6 +258,16 @@ def migrate_0_11_0_public_dashboard_views(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_12_0_public_site_detail_views(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_public_sites_view(cur)
+    create_public_site_birdnet_recent_view(cur)
+    create_public_site_birdnet_detections_view(cur)
+    create_public_site_i2c_recent_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -293,6 +303,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.11.0"),
         name="add public dashboard views and read-only role",
         apply=migrate_0_11_0_public_dashboard_views,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.12.0"),
+        name="add public site detail result views",
+        apply=migrate_0_12_0_public_site_detail_views,
     ),
 ]
 
@@ -1351,6 +1366,67 @@ def create_public_site_birdnet_recent_view(cur):
     )
 
 
+def create_public_site_birdnet_detections_view(cur):
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_site_birdnet_detections AS
+        SELECT b.wireguard_ip::text AS wg_ip,
+               b.receipt_id::text AS receipt_id,
+               b.hostname,
+               b.client_version,
+               b.batch_id,
+               pf.source_path,
+               pf.processed_at,
+               d.channel_index,
+               d.window_index,
+               d.start_sec,
+               d.end_sec,
+               d.top_label,
+               d.top_score,
+               d.top_likely_score,
+               row_number() OVER (
+                   PARTITION BY b.wireguard_ip
+                   ORDER BY pf.processed_at DESC,
+                            b.server_received_at DESC,
+                            pf.id DESC,
+                            d.channel_index,
+                            d.window_index
+               ) AS detection_rank
+        FROM sensos.birdnet_result_batches b
+        JOIN sensos.birdnet_processed_files pf ON pf.batch_upload_id = b.id
+        JOIN sensos.birdnet_detections d ON d.processed_file_id = pf.id
+        WHERE pf.status = 'ok';
+        """
+    )
+
+
+def create_public_site_i2c_recent_view(cur):
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_site_i2c_recent AS
+        SELECT b.wireguard_ip::text AS wg_ip,
+               b.receipt_id::text AS receipt_id,
+               b.hostname,
+               b.client_version,
+               b.batch_id,
+               r.recorded_at,
+               r.device_address,
+               r.sensor_type,
+               r.reading_key,
+               r.reading_value,
+               b.server_received_at,
+               row_number() OVER (
+                   PARTITION BY b.wireguard_ip
+                   ORDER BY r.recorded_at DESC,
+                            b.server_received_at DESC,
+                            r.id DESC
+               ) AS reading_rank
+        FROM sensos.i2c_reading_batches b
+        JOIN sensos.i2c_readings r ON r.batch_upload_id = b.id;
+        """
+    )
+
+
 def ensure_public_dashboard_role(cur):
     cur.execute(
         "SELECT 1 FROM pg_roles WHERE rolname = %s;",
@@ -1378,7 +1454,9 @@ def ensure_public_dashboard_role(cur):
     cur.execute(f"GRANT CONNECT ON DATABASE postgres TO {PUBLIC_DB_ROLE};")
     cur.execute(f"GRANT USAGE ON SCHEMA sensos TO {PUBLIC_DB_ROLE};")
     cur.execute(
-        f"GRANT SELECT ON sensos.public_sites, sensos.public_site_birdnet_recent TO {PUBLIC_DB_ROLE};"
+        f"GRANT SELECT ON sensos.public_sites, sensos.public_site_birdnet_recent, "
+        f"sensos.public_site_birdnet_detections, sensos.public_site_i2c_recent "
+        f"TO {PUBLIC_DB_ROLE};"
     )
 
 
