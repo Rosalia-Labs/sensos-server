@@ -4,6 +4,32 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Create compressed WireGuard config backups from running sensos-* containers
+that expose /etc/wireguard/*.conf, storing them under ./backups.
+
+Options:
+  -h, --help  Show this help and exit
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WORK_DIR"
 

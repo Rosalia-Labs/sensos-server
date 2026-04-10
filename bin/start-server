@@ -8,9 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORK_DIR="$REPO_ROOT/docker"
 
-cd "$WORK_DIR"
-echo "Working directory: $(pwd)"
-
 compose_cmd() {
     if docker compose version >/dev/null 2>&1; then
         printf 'docker compose\n'
@@ -24,13 +21,50 @@ compose_cmd() {
     exit 1
 }
 
-read -r -a COMPOSE_CMD <<< "$(compose_cmd)"
-
 # Default options
 REBUILD=false
 NO_CACHE=false
 DETACH=true
 RESTART=false
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Start the Docker Compose server stack from this repo checkout.
+
+Options:
+  --rebuild-containers  Rebuild images before startup
+  --no-cache            Rebuild without using the Docker build cache
+  --no-detach           Keep compose attached in the foreground
+  --restart             Stop an already running stack first, then start again
+  -h, --help            Show this help and exit
+EOF
+}
+
+# Parse CLI arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --rebuild-containers) REBUILD=true ;;
+    --no-cache) NO_CACHE=true ;;
+    --no-detach) DETACH=false ;;
+    --restart) RESTART=true ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+    shift
+done
+
+cd "$WORK_DIR"
+echo "Working directory: $(pwd)"
+
+read -r -a COMPOSE_CMD <<< "$(compose_cmd)"
 
 # Load environment variables from .env if available
 ENV_FILE="$WORK_DIR/.env"
@@ -85,25 +119,6 @@ GIT_DIRTY="${GIT_DIRTY:-false}"
 
 export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
 export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
-
-# Parse CLI arguments
-while [ $# -gt 0 ]; do
-    case "$1" in
-    --rebuild-containers) REBUILD=true ;;
-    --no-cache) NO_CACHE=true ;;
-    --no-detach) DETACH=false ;;
-    --restart) RESTART=true ;;
-    --help)
-        echo "Usage: $0 [--rebuild-containers] [--no-cache] [--no-detach] [--restart]"
-        exit 0
-        ;;
-    *)
-        echo "Unknown option: $1" >&2
-        exit 1
-        ;;
-    esac
-    shift
-done
 
 # If containers are already running, handle --restart or exit
 if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then

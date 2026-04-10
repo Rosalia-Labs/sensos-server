@@ -13,6 +13,18 @@ print_line() {
     printf '%s\n' "$*"
 }
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Print a compact overview of server repo state, local configuration, Docker
+runtime access, and database/runtime status when available.
+
+Options:
+  -h, --help  Show this help and exit
+EOF
+}
+
 require_repo() {
     [[ -d "${DOCKER_DIR}" ]] || {
         print_line "ERROR: missing docker directory at ${DOCKER_DIR}" >&2
@@ -143,6 +155,20 @@ print_database() {
 }
 
 main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                print_line "ERROR: unknown option: $1" >&2
+                usage >&2
+                exit 1
+                ;;
+        esac
+    done
+
     require_repo
     load_env
 

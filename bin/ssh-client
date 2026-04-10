@@ -19,7 +19,20 @@ set -euo pipefail
 : "${OPS_KNOWN_HOSTS:=/var/lib/sensos-ops/ssh/known_hosts}"
 
 usage() {
-  echo "Usage: $(basename "$0") <ip-or-<net>_<a>_<b>|<net>-<a>-<b>> [-- <remote command...>]" >&2
+  cat <<EOF >&2
+Usage: $(basename "$0") <ip-or-token> [-- <remote command...>]
+
+SSH to a client through the running ops container.
+
+Accepted target forms:
+  10.x.y.z
+  <net>_<a>_<b>
+  <net>-<a>-<b>
+EOF
+}
+
+die_usage() {
+  usage
   exit 2
 }
 
@@ -63,7 +76,11 @@ build_ip_from_token() {
 
 main() {
   require_cmd docker; require_cmd od; require_cmd awk
-  [[ $# -ge 1 ]] || usage
+  if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+    usage
+    exit 0
+  fi
+  [[ $# -ge 1 ]] || die_usage
   local target="$1"; shift
   local ip
   if is_ip "$target"; then ip="$target"; else ip="$(build_ip_from_token "$target")"; fi

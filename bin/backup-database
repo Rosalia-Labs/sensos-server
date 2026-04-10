@@ -4,6 +4,32 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Create a compressed PostgreSQL backup from the running sensos-database
+container and store it under ./backups.
+
+Options:
+  -h, --help  Show this help and exit
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
 # Determine the project root (assumes the script is in ./bin)
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WORK_DIR"
@@ -30,5 +56,6 @@ if [ $? -eq 0 ] && [ -s "$BACKUP_FILE" ]; then
     echo "✅ Database backup completed successfully: $BACKUP_FILE"
 else
     echo "❌ Database backup failed or produced an empty backup."
+    rm -f "$BACKUP_FILE"
     exit 1
 fi

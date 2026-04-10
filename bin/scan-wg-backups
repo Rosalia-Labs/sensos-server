@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
+import argparse
 import re
 import tarfile
 import subprocess
@@ -54,7 +55,21 @@ def generate_public_key(private_key: str) -> str:
 
 
 def main():
-    backup_dir = Path(".")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Scan wg_*.tgz backup archives and print the first/last sighting for "
+            "each WireGuard private/public key pair."
+        )
+    )
+    parser.add_argument(
+        "backup_dir",
+        nargs="?",
+        default=".",
+        help="Directory containing wg_*.tgz backup archives (default: current directory)",
+    )
+    args = parser.parse_args()
+
+    backup_dir = Path(args.backup_dir)
     files = sorted(backup_dir.glob("wg_*.tgz"))
 
     key_info = defaultdict(list)  # (private_key, network_name) → list of dates
