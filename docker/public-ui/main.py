@@ -3,6 +3,7 @@
 
 import json
 import os
+import html
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -47,6 +48,49 @@ def format_rfc3339_utc(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def escape_html(value) -> str:
+    return html.escape(str(value or ""))
+
+
+def render_line_chart_svg(
+    points: list[dict],
+    value_key: str,
+    stroke: str,
+    width: int = 760,
+    height: int = 180,
+) -> str:
+    if not points:
+        return ""
+    values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
+    if not values:
+        return ""
+    min_value = min(values)
+    max_value = max(values)
+    span = max(max_value - min_value, 1e-9)
+    step_x = width / max(1, len(points) - 1)
+    coords = []
+    for index, point in enumerate(points):
+        value = float(point[value_key])
+        x = index * step_x
+        y = height - ((value - min_value) / span) * (height - 20) - 10
+        coords.append((x, y))
+    path = " ".join(
+        ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
+        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
+    )
+    area = " ".join(
+        ["M {:.2f} {:.2f}".format(coords[0][0], height - 8)]
+        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords]
+        + ["L {:.2f} {:.2f} Z".format(coords[-1][0], height - 8)]
+    )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
+        f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
+        f"</svg>"
+    )
 
 
 def fetch_sites() -> list[dict]:
@@ -366,6 +410,112 @@ def fetch_site_detail(site_id: str) -> dict:
     }
 
 
+def fetch_site_synoptic(site_id: str) -> dict:
+    site = fetch_site_detail(site_id)
+    lookup_wg_ip = site["wg_ip"]
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT recorded_at,
+                       sensor_type,
+                       reading_key,
+                       reading_value
+                FROM sensos.public_site_i2c_recent
+                WHERE wg_ip = %s
+                ORDER BY recorded_at DESC
+                LIMIT 320;
+                """,
+                (lookup_wg_ip,),
+            )
+            sensor_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT processed_at,
+                       top_label,
+                       top_score,
+                       top_likely_score
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                ORDER BY processed_at DESC
+                LIMIT 320;
+                """,
+                (lookup_wg_ip,),
+            )
+            birdnet_rows = cur.fetchall()
+
+    sensor_series_map: dict[str, list[dict]] = {}
+    for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_rows):
+        series_key = f"{sensor_type} · {reading_key}"
+        sensor_series_map.setdefault(series_key, []).append(
+            {
+                "recorded_at": format_rfc3339_utc(recorded_at),
+                "value": float(reading_value),
+            }
+        )
+    sensor_series = sorted(
+        (
+            {
+                "label": label,
+                "points": points[-96:],
+                "latest_value": points[-1]["value"],
+                "latest_at": points[-1]["recorded_at"],
+            }
+            for label, points in sensor_series_map.items()
+            if points
+        ),
+        key=lambda item: len(item["points"]),
+        reverse=True,
+    )[:6]
+
+    birdnet_score_map: dict[str, list[dict]] = {}
+    birdnet_occupancy_map: dict[str, list[dict]] = {}
+    for processed_at, top_label, top_score, top_likely_score in reversed(birdnet_rows):
+        processed = format_rfc3339_utc(processed_at)
+        birdnet_score_map.setdefault(top_label, []).append(
+            {"processed_at": processed, "value": float(top_score)}
+        )
+        if top_likely_score is not None:
+            birdnet_occupancy_map.setdefault(top_label, []).append(
+                {"processed_at": processed, "value": float(top_likely_score)}
+            )
+
+    birdnet_score_series = sorted(
+        (
+            {
+                "label": label,
+                "points": points[-72:],
+                "latest_value": points[-1]["value"],
+                "peak_value": max(point["value"] for point in points),
+            }
+            for label, points in birdnet_score_map.items()
+            if points
+        ),
+        key=lambda item: (item["peak_value"], len(item["points"])),
+        reverse=True,
+    )[:10]
+    birdnet_occupancy_series = sorted(
+        (
+            {
+                "label": label,
+                "points": points[-72:],
+                "latest_value": points[-1]["value"],
+                "peak_value": max(point["value"] for point in points),
+            }
+            for label, points in birdnet_occupancy_map.items()
+            if points
+        ),
+        key=lambda item: (item["peak_value"], len(item["points"])),
+        reverse=True,
+    )[:10]
+
+    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
+    site["sensor_series"] = sensor_series
+    site["birdnet_score_series"] = birdnet_score_series
+    site["birdnet_occupancy_series"] = birdnet_occupancy_series
+    return site
+
+
 def render_site_detail_html(site: dict) -> str:
     birdnet_cards = "".join(
         f"""
@@ -434,6 +584,7 @@ def render_site_detail_html(site: dict) -> str:
     note_html = (
         f"<p class='lede'>{site['note']}</p>" if (site.get("note") or "").strip() else ""
     )
+    synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -599,6 +750,7 @@ def render_site_detail_html(site: dict) -> str:
       </div>
       <div class="meta">
         <div><a href="/">Back to all field sites</a></div>
+        <div><a href="{synoptic_url}">Open synoptic time series</a></div>
         <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
         <div>{site['last_check_in'] or 'No check-in yet'}</div>
       </div>
@@ -656,6 +808,185 @@ def render_site_detail_html(site: dict) -> str:
         return;
       }}
       window.location.assign("/");
+    }}
+  </script>
+</body>
+</html>"""
+
+
+def render_synoptic_html(site: dict) -> str:
+    sensor_sections = "".join(
+        f"""
+        <section class="chart-card">
+          <div class="chart-head">
+            <div>
+              <strong>{escape_html(series['label'])}</strong>
+              <div class="dim">latest {series['latest_value']:.3f} at {escape_html(series['latest_at'])}</div>
+            </div>
+          </div>
+          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62')}</div>
+        </section>
+        """
+        for series in site["sensor_series"]
+    ) or '<div class="empty">No sensor time series are visible yet for this site.</div>'
+
+    detection_sections = "".join(
+        f"""
+        <section class="chart-card">
+          <div class="chart-head">
+            <div>
+              <strong>{escape_html(series['label'])}</strong>
+              <div class="dim">peak score {series['peak_value']:.2f} · latest {series['latest_value']:.2f}</div>
+            </div>
+          </div>
+          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#b45309')}</div>
+        </section>
+        """
+        for series in site["birdnet_score_series"]
+    ) or '<div class="empty">No BirdNET detection-score series are visible yet for this site.</div>'
+
+    occupancy_sections = "".join(
+        f"""
+        <section class="chart-card">
+          <div class="chart-head">
+            <div>
+              <strong>{escape_html(series['label'])}</strong>
+              <div class="dim">peak occupancy {series['peak_value']:.2f} · latest {series['latest_value']:.2f}</div>
+            </div>
+          </div>
+          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#2563eb')}</div>
+        </section>
+        """
+        for series in site["birdnet_occupancy_series"]
+    ) or '<div class="empty">No BirdNET occupancy-score series are visible yet for this site.</div>'
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(site['site_label'])} · Synoptic Time Series</title>
+  <style>
+    :root {{
+      --bg: #eff3ea;
+      --ink: #17201d;
+      --muted: #61706a;
+      --panel: rgba(255,255,255,0.9);
+      --border: rgba(23,32,29,0.12);
+      --shadow: 0 20px 54px rgba(23,32,29,0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      background:
+        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
+        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
+        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
+    }}
+    a {{ color: #0c6d62; }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 1.25rem; }}
+    .masthead {{
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }}
+    .back-button {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.55rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.78);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(27,36,32,0.08);
+    }}
+    h1 {{ margin: 0.55rem 0 0; font-size: clamp(2.2rem, 4vw, 4rem); letter-spacing: -0.05em; }}
+    .lede {{ color: var(--muted); max-width: 50rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .stack {{ display: grid; gap: 1rem; }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      padding: 1rem;
+    }}
+    .section-title {{
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .chart-grid {{ display: grid; gap: 0.85rem; }}
+    .chart-card {{
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.72);
+    }}
+    .chart-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.6rem; }}
+    .chart {{
+      height: 180px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(247,244,237,0.9), rgba(239,243,234,0.7));
+      border: 1px solid rgba(23,32,29,0.08);
+      overflow: hidden;
+    }}
+    .chart svg {{ width: 100%; height: 100%; display: block; }}
+    .empty {{
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 1rem;
+      color: var(--muted);
+      background: rgba(255,255,255,0.45);
+    }}
+    .dim {{ color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="masthead">
+      <div>
+        <button class="back-button" type="button" onclick="goBack()">← Return to previous view</button>
+        <h1>{escape_html(site['site_label'])}</h1>
+        <div class="lede">Synoptic time series highlighting environmental sensor readings, BirdNET detection scores, and occupancy-style BirdNET scores for this site.</div>
+      </div>
+      <div class="meta">
+        <div><a href="{escape_html(site['public_url'])}">Back to client dashboard</a></div>
+        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
+      </div>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <h2 class="section-title">Environmental Sensor Time Series</h2>
+        <div class="chart-grid">{sensor_sections}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">BirdNET Detection Score Time Series</h2>
+        <div class="chart-grid">{detection_sections}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">BirdNET Occupancy Score Time Series</h2>
+        <div class="chart-grid">{occupancy_sections}</div>
+      </section>
+    </div>
+  </div>
+  <script>
+    function goBack() {{
+      if (window.history.length > 1) {{
+        window.history.back();
+        return;
+      }}
+      window.location.assign("{escape_html(site['public_url'])}");
     }}
   </script>
 </body>
@@ -1350,6 +1681,11 @@ def api_site(site_id: str):
 @app.get("/sites/{site_id}", response_class=HTMLResponse)
 def site_page(site_id: str):
     return HTMLResponse(render_site_detail_html(fetch_site_detail(site_id)))
+
+
+@app.get("/sites/{site_id}/synoptic", response_class=HTMLResponse)
+def synoptic_site_page(site_id: str):
+    return HTMLResponse(render_synoptic_html(fetch_site_synoptic(site_id)))
 
 
 @app.get("/", response_class=HTMLResponse)
