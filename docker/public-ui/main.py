@@ -312,7 +312,7 @@ def render_site_detail_html(site: dict) -> str:
         </article>
         """
         for reading in site["recent_i2c_readings"]
-    ) or '<div class="empty">No I2C readings are visible yet for this site.</div>'
+    ) or '<div class="empty">No sensor readings are visible yet for this site.</div>'
 
     batch_cards = "".join(
         f"""
@@ -508,7 +508,7 @@ def render_site_detail_html(site: dict) -> str:
           <div class="metric-grid">
             <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{site['last_check_in'] or 'Never'}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
-            <div class="metric"><div class="metric-label">I2C Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
+            <div class="metric"><div class="metric-label">Sensor Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Batches</div><div class="metric-value">{site['birdnet_batch_count']}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
             <div class="metric"><div class="metric-label">Status</div><div class="metric-value">{site['status_message'] or ('Active' if site['is_active'] else 'Inactive')}</div></div>
@@ -519,7 +519,7 @@ def render_site_detail_html(site: dict) -> str:
           <div class="record-list">{birdnet_cards}</div>
         </section>
         <section class="panel">
-          <h2 class="section-title">Recent I2C Readings</h2>
+          <h2 class="section-title">Recent Sensor Readings</h2>
           <div class="record-list">{i2c_cards}</div>
         </section>
       </main>
@@ -782,8 +782,8 @@ def render_index_html() -> str:
           <div id="birdnetList" class="record-list"><div class="dim">Select a site to inspect recent BirdNET detections.</div></div>
         </section>
         <section>
-          <div class="section-title">Recent I2C Results</div>
-          <div id="i2cList" class="record-list"><div class="dim">Select a site to inspect recent I2C readings.</div></div>
+          <div class="section-title">Recent Sensor Data</div>
+          <div id="i2cList" class="record-list"><div class="dim">Select a site to inspect recent sensor readings.</div></div>
         </section>
       </aside>
     </div>
@@ -792,10 +792,14 @@ def render_index_html() -> str:
     const worldBounds = {{ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }};
     const minLonSpan = 1.4;
     const minLatSpan = 1.0;
+    const tileSize = 256;
+    const maxTileZoom = 17;
+    const satelliteTileTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
     let currentView = {{ ...worldBounds }};
     let sites = [];
     let activeSiteId = null;
     let chooserSites = [];
+    const tileCache = new Map();
 
     const mapStage = document.getElementById("mapStage");
     const canvas = document.getElementById("mapCanvas");
@@ -857,12 +861,7 @@ def render_index_html() -> str:
       const rect = mapStage.getBoundingClientRect();
       ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
-
-      const grad = ctx.createLinearGradient(0, 0, 0, rect.height);
-      grad.addColorStop(0, "#deebe7");
-      grad.addColorStop(1, "#cad8d1");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, rect.width, rect.height);
+      drawSatelliteBasemap(ctx, rect);
 
       ctx.strokeStyle = "rgba(23,32,29,0.12)";
       ctx.lineWidth = 1;
@@ -889,6 +888,108 @@ def render_index_html() -> str:
       ctx.strokeStyle = "rgba(23,32,29,0.35)";
       ctx.lineWidth = 1.5;
       ctx.strokeRect(0.75, 0.75, rect.width - 1.5, rect.height - 1.5);
+    }}
+
+    function clampLatitude(lat) {{
+      return Math.max(-85.05112878, Math.min(85.05112878, lat));
+    }}
+
+    function mercatorWorldPoint(lon, lat, zoom) {{
+      const scale = tileSize * (2 ** zoom);
+      const clampedLat = clampLatitude(lat);
+      const sinLat = Math.sin((clampedLat * Math.PI) / 180);
+      const x = ((lon + 180) / 360) * scale;
+      const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+      return {{ x, y }};
+    }}
+
+    function chooseBasemapZoom(rect) {{
+      const lonSpan = Math.max(0.0001, currentView.lonMax - currentView.lonMin);
+      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
+      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
+      const mercatorWidth = Math.max(1, bottomRight.x - topLeft.x);
+      const mercatorHeight = Math.max(1, bottomRight.y - topLeft.y);
+      const zoomFromWidth = Math.log2(rect.width / mercatorWidth);
+      const zoomFromHeight = Math.log2(rect.height / mercatorHeight);
+      const zoom = Math.floor(Math.min(zoomFromWidth, zoomFromHeight));
+      if (!Number.isFinite(zoom)) return 1;
+      return Math.max(1, Math.min(maxTileZoom, zoom));
+    }}
+
+    function tileUrl(z, x, y) {{
+      return satelliteTileTemplate
+        .replace("{{z}}", String(z))
+        .replace("{{x}}", String(x))
+        .replace("{{y}}", String(y));
+    }}
+
+    function requestTile(z, x, y) {{
+      const maxIndex = 2 ** z;
+      if (y < 0 || y >= maxIndex) return null;
+      const wrappedX = ((x % maxIndex) + maxIndex) % maxIndex;
+      const key = `${{z}}/${{wrappedX}}/${{y}}`;
+      let entry = tileCache.get(key);
+      if (entry) return entry;
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      entry = {{ status: "loading", image }};
+      image.onload = () => {{
+        entry.status = "ready";
+        render();
+      }};
+      image.onerror = () => {{
+        entry.status = "error";
+        render();
+      }};
+      image.src = tileUrl(z, wrappedX, y);
+      tileCache.set(key, entry);
+      return entry;
+    }}
+
+    function drawSatelliteBasemap(ctx, rect) {{
+      const bg = ctx.createLinearGradient(0, 0, 0, rect.height);
+      bg.addColorStop(0, "#16332f");
+      bg.addColorStop(1, "#6d8376");
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, rect.width, rect.height);
+
+      const zoom = chooseBasemapZoom(rect);
+      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
+      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
+      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
+      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
+      const scaleX = rect.width / worldWidth;
+      const scaleY = rect.height / worldHeight;
+
+      const xStart = Math.floor(topLeft.x / tileSize);
+      const xEnd = Math.floor(bottomRight.x / tileSize);
+      const yStart = Math.floor(topLeft.y / tileSize);
+      const yEnd = Math.floor(bottomRight.y / tileSize);
+
+      for (let tileX = xStart; tileX <= xEnd; tileX += 1) {{
+        for (let tileY = yStart; tileY <= yEnd; tileY += 1) {{
+          const screenX = (tileX * tileSize - topLeft.x) * scaleX;
+          const screenY = (tileY * tileSize - topLeft.y) * scaleY;
+          const screenW = tileSize * scaleX;
+          const screenH = tileSize * scaleY;
+          const tile = requestTile(zoom, tileX, tileY);
+
+          if (tile && tile.status === "ready") {{
+            ctx.drawImage(tile.image, screenX, screenY, screenW, screenH);
+            continue;
+          }}
+
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(screenX, screenY, screenW, screenH);
+        }}
+      }}
+
+      const haze = ctx.createLinearGradient(0, 0, rect.width, rect.height);
+      haze.addColorStop(0, "rgba(12,109,98,0.12)");
+      haze.addColorStop(0.55, "rgba(255,255,255,0.02)");
+      haze.addColorStop(1, "rgba(17,24,39,0.16)");
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, 0, rect.width, rect.height);
     }}
 
     function renderMarkers() {{
@@ -980,7 +1081,7 @@ def render_index_html() -> str:
       metricGrid.innerHTML = `
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
-        <div class="metric"><div class="section-title">I2C Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
+        <div class="metric"><div class="section-title">Sensor Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Batches</div><div class="metric-value">${{site.birdnet_batch_count}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Sources</div><div class="metric-value">${{site.birdnet_source_count}}</div></div>
         <div class="metric"><div class="section-title">Coordinates</div><div class="metric-value mono">${{site.latitude.toFixed(4)}}, ${{site.longitude.toFixed(4)}}</div></div>
@@ -1003,7 +1104,7 @@ def render_index_html() -> str:
       }}
       i2cList.innerHTML = "";
       if (!site.recent_i2c_readings.length) {{
-        i2cList.innerHTML = '<div class="dim">No I2C readings are visible yet for this site.</div>';
+        i2cList.innerHTML = '<div class="dim">No sensor readings are visible yet for this site.</div>';
       }} else {{
         for (const reading of site.recent_i2c_readings) {{
           const card = document.createElement("div");
@@ -1082,7 +1183,7 @@ def render_index_html() -> str:
       siteSubtitle.textContent = "Click a mapped point to open site details.";
       metricGrid.innerHTML = "";
       birdnetList.innerHTML = '<div class="dim">Select a site to inspect recent BirdNET detections.</div>';
-      i2cList.innerHTML = '<div class="dim">Select a site to inspect recent I2C readings.</div>';
+      i2cList.innerHTML = '<div class="dim">Select a site to inspect recent sensor readings.</div>';
       render();
       if (sites.length) fitSites(sites);
     }});
