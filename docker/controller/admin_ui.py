@@ -205,11 +205,11 @@ def render_page(
     button.warn {{ background: var(--accent-2); border-color: var(--accent-2); }}
     button.danger {{ background: var(--danger); border-color: var(--danger); }}
     .stack {{ display: grid; gap: 1rem; }}
-    .split {
+    .split {{
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
       gap: 1rem;
-    }
+    }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.92rem; }}
     ul.clean {{ margin: 0; padding-left: 1.1rem; }}
     @media (max-width: 900px) {{
