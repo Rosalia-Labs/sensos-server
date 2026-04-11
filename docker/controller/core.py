@@ -1347,7 +1347,7 @@ def create_public_site_birdnet_recent_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_recent AS
-        SELECT b.wireguard_ip::text AS wg_ip,
+        SELECT host(b.wireguard_ip)::text AS wg_ip,
                b.receipt_id::text AS receipt_id,
                b.hostname,
                b.client_version,
@@ -1370,7 +1370,7 @@ def create_public_site_birdnet_detections_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_detections AS
-        SELECT b.wireguard_ip::text AS wg_ip,
+        SELECT host(b.wireguard_ip)::text AS wg_ip,
                b.receipt_id::text AS receipt_id,
                b.hostname,
                b.client_version,
@@ -1395,7 +1395,7 @@ def create_public_site_birdnet_detections_view(cur):
         FROM sensos.birdnet_result_batches b
         JOIN sensos.birdnet_processed_files pf ON pf.batch_upload_id = b.id
         JOIN sensos.birdnet_detections d ON d.processed_file_id = pf.id
-        WHERE pf.status = 'ok';
+        WHERE pf.status = 'done';
         """
     )
 
@@ -1404,7 +1404,7 @@ def create_public_site_i2c_recent_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_i2c_recent AS
-        SELECT b.wireguard_ip::text AS wg_ip,
+        SELECT host(b.wireguard_ip)::text AS wg_ip,
                b.receipt_id::text AS receipt_id,
                b.hostname,
                b.client_version,
