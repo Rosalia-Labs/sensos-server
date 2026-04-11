@@ -93,6 +93,75 @@ def render_line_chart_svg(
     )
 
 
+def render_bar_chart_svg(
+    points: list[dict],
+    value_key: str,
+    fill: str,
+    width: int = 760,
+    height: int = 180,
+) -> str:
+    if not points:
+        return ""
+    values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
+    if not values:
+        return ""
+    max_value = max(values)
+    if max_value <= 0:
+        max_value = 1.0
+    bar_width = max(6, width / max(1, len(points)) - 2)
+    step_x = width / max(1, len(points))
+    rects = []
+    for index, point in enumerate(points):
+        value = float(point[value_key])
+        bar_height = (value / max_value) * (height - 24)
+        x = index * step_x + max(1, (step_x - bar_width) / 2)
+        y = height - bar_height - 8
+        rects.append(
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fill}" opacity="0.82"></rect>'
+        )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + "".join(rects)
+        + "</svg>"
+    )
+
+
+def render_event_timeline_svg(
+    points: list[dict],
+    value_key: str,
+    stroke: str,
+    width: int = 760,
+    height: int = 120,
+) -> str:
+    if not points:
+        return ""
+    timestamps = [datetime.fromisoformat(point["processed_at"].replace("Z", "+00:00")) for point in points]
+    values = [float(point[value_key]) for point in points]
+    if not timestamps or not values:
+        return ""
+    min_ts = min(timestamps)
+    max_ts = max(timestamps)
+    total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
+    circles = []
+    guides = [
+        f'<line x1="0" y1="{height - 20}" x2="{width}" y2="{height - 20}" stroke="rgba(23,32,29,0.18)" stroke-width="1"></line>',
+        f'<line x1="0" y1="20" x2="{width}" y2="20" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>',
+    ]
+    for ts, value, point in zip(timestamps, values, points):
+        x = ((ts - min_ts).total_seconds() / total_seconds) * width
+        y = height - 20 - value * (height - 40)
+        radius = 3.5 + value * 4.5
+        circles.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="{stroke}" opacity="0.82"><title>{escape_html(point["processed_at"])} · {value:.2f}</title></circle>'
+        )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + "".join(guides)
+        + "".join(circles)
+        + "</svg>"
+    )
+
+
 def fetch_sites() -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -468,51 +537,55 @@ def fetch_site_synoptic(site_id: str) -> dict:
         reverse=True,
     )[:6]
 
-    birdnet_score_map: dict[str, list[dict]] = {}
-    birdnet_occupancy_map: dict[str, list[dict]] = {}
+    activity_buckets: dict[str, float] = {}
+    species_activity: dict[str, float] = {}
+    species_events: dict[str, list[dict]] = {}
     for processed_at, top_label, top_score, top_likely_score in reversed(birdnet_rows):
         processed = format_rfc3339_utc(processed_at)
-        birdnet_score_map.setdefault(top_label, []).append(
-            {"processed_at": processed, "value": float(top_score)}
+        occupancy = float(top_likely_score) if top_likely_score is not None else float(top_score)
+        quality = float(top_score)
+        activity = quality * occupancy
+        bucket = processed_at.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        bucket_key = format_rfc3339_utc(bucket)
+        activity_buckets[bucket_key] = activity_buckets.get(bucket_key, 0.0) + activity
+        species_activity[top_label] = species_activity.get(top_label, 0.0) + activity
+        species_events.setdefault(top_label, []).append(
+            {
+                "processed_at": processed,
+                "activity": activity,
+                "top_score": quality,
+                "occupancy_score": occupancy,
+            }
         )
-        if top_likely_score is not None:
-            birdnet_occupancy_map.setdefault(top_label, []).append(
-                {"processed_at": processed, "value": float(top_likely_score)}
-            )
 
-    birdnet_score_series = sorted(
-        (
-            {
-                "label": label,
-                "points": points[-72:],
-                "latest_value": points[-1]["value"],
-                "peak_value": max(point["value"] for point in points),
-            }
-            for label, points in birdnet_score_map.items()
-            if points
-        ),
-        key=lambda item: (item["peak_value"], len(item["points"])),
-        reverse=True,
-    )[:10]
-    birdnet_occupancy_series = sorted(
-        (
-            {
-                "label": label,
-                "points": points[-72:],
-                "latest_value": points[-1]["value"],
-                "peak_value": max(point["value"] for point in points),
-            }
-            for label, points in birdnet_occupancy_map.items()
-            if points
-        ),
-        key=lambda item: (item["peak_value"], len(item["points"])),
-        reverse=True,
-    )[:10]
+    birdnet_activity_series = [
+        {"processed_at": timestamp, "activity": value}
+        for timestamp, value in sorted(activity_buckets.items())
+    ][-72:]
+
+    dominant_species = [
+        label
+        for label, _ in sorted(
+            species_activity.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:5]
+    ]
+    dominant_species_timelines = [
+        {
+            "label": label,
+            "points": species_events[label][-80:],
+            "activity_total": species_activity[label],
+            "event_count": len(species_events[label]),
+        }
+        for label in dominant_species
+        if species_events.get(label)
+    ]
 
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["sensor_series"] = sensor_series
-    site["birdnet_score_series"] = birdnet_score_series
-    site["birdnet_occupancy_series"] = birdnet_occupancy_series
+    site["birdnet_activity_series"] = birdnet_activity_series
+    site["dominant_species_timelines"] = dominant_species_timelines
     return site
 
 
@@ -644,6 +717,19 @@ def render_site_detail_html(site: dict) -> str:
       cursor: pointer;
       box-shadow: 0 10px 24px rgba(27,36,32,0.08);
     }}
+    .primary-link {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-top: 0.85rem;
+      padding: 0.75rem 1rem;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(12,109,98,0.96), rgba(25,148,135,0.9));
+      color: white;
+      text-decoration: none;
+      font-weight: 700;
+      box-shadow: 0 12px 28px rgba(12,109,98,0.22);
+    }}
     h1 {{
       margin: 0.55rem 0 0;
       font-size: clamp(2.2rem, 4vw, 4rem);
@@ -747,10 +833,10 @@ def render_site_detail_html(site: dict) -> str:
         <div class="kicker">SensOS Public Site</div>
         <h1>{site['site_label']}</h1>
         {note_html}
+        <a class="primary-link" href="{synoptic_url}">Open Synoptic Time Series</a>
       </div>
       <div class="meta">
         <div><a href="/">Back to all field sites</a></div>
-        <div><a href="{synoptic_url}">Open synoptic time series</a></div>
         <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
         <div>{site['last_check_in'] or 'No check-in yet'}</div>
       </div>
@@ -830,35 +916,36 @@ def render_synoptic_html(site: dict) -> str:
         for series in site["sensor_series"]
     ) or '<div class="empty">No sensor time series are visible yet for this site.</div>'
 
-    detection_sections = "".join(
+    activity_sections = (
         f"""
         <section class="chart-card">
           <div class="chart-head">
             <div>
-              <strong>{escape_html(series['label'])}</strong>
-              <div class="dim">peak score {series['peak_value']:.2f} · latest {series['latest_value']:.2f}</div>
+              <strong>Bird Activity Intensity</strong>
+              <div class="dim">Hourly aggregate of quality score × occupancy score across all detections</div>
             </div>
           </div>
-          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#b45309')}</div>
+          <div class="chart">{render_bar_chart_svg(site['birdnet_activity_series'], 'activity', '#b45309')}</div>
         </section>
         """
-        for series in site["birdnet_score_series"]
-    ) or '<div class="empty">No BirdNET detection-score series are visible yet for this site.</div>'
+        if site["birdnet_activity_series"]
+        else '<div class="empty">No BirdNET activity series are visible yet for this site.</div>'
+    )
 
-    occupancy_sections = "".join(
+    dominant_species_sections = "".join(
         f"""
         <section class="chart-card">
           <div class="chart-head">
             <div>
               <strong>{escape_html(series['label'])}</strong>
-              <div class="dim">peak occupancy {series['peak_value']:.2f} · latest {series['latest_value']:.2f}</div>
+              <div class="dim">{series['event_count']} events · total activity {series['activity_total']:.2f}</div>
             </div>
           </div>
-          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#2563eb')}</div>
+          <div class="chart">{render_event_timeline_svg(series['points'], 'activity', '#2563eb')}</div>
         </section>
         """
-        for series in site["birdnet_occupancy_series"]
-    ) or '<div class="empty">No BirdNET occupancy-score series are visible yet for this site.</div>'
+        for series in site["dominant_species_timelines"]
+    ) or '<div class="empty">No dominant BirdNET species event series are visible yet for this site.</div>'
 
     return f"""<!doctype html>
 <html lang="en">
@@ -958,7 +1045,7 @@ def render_synoptic_html(site: dict) -> str:
       <div>
         <button class="back-button" type="button" onclick="goBack()">← Return to previous view</button>
         <h1>{escape_html(site['site_label'])}</h1>
-        <div class="lede">Synoptic time series highlighting environmental sensor readings, BirdNET detection scores, and occupancy-style BirdNET scores for this site.</div>
+        <div class="lede">Synoptic view highlighting environmental sensor patterns, overall bird activity intensity, and discrete event timelines for dominant species at this site.</div>
       </div>
       <div class="meta">
         <div><a href="{escape_html(site['public_url'])}">Back to client dashboard</a></div>
@@ -971,12 +1058,12 @@ def render_synoptic_html(site: dict) -> str:
         <div class="chart-grid">{sensor_sections}</div>
       </section>
       <section class="panel">
-        <h2 class="section-title">BirdNET Detection Score Time Series</h2>
-        <div class="chart-grid">{detection_sections}</div>
+        <h2 class="section-title">Bird Activity Intensity</h2>
+        <div class="chart-grid">{activity_sections}</div>
       </section>
       <section class="panel">
-        <h2 class="section-title">BirdNET Occupancy Score Time Series</h2>
-        <div class="chart-grid">{occupancy_sections}</div>
+        <h2 class="section-title">Dominant Species Event Timelines</h2>
+        <div class="chart-grid">{dominant_species_sections}</div>
       </section>
     </div>
   </div>
@@ -1060,7 +1147,7 @@ def render_index_html() -> str:
       align-items: center;
       flex-wrap: wrap;
     }}
-    .toolbar-chip, .toolbar-button {{
+    .toolbar-button {{
       border-radius: 999px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.82);
@@ -1206,14 +1293,13 @@ def render_index_html() -> str:
     <div class="layout">
       <section class="panel map-wrap">
         <div class="map-toolbar">
-          <div class="toolbar-chip" id="siteCountChip">Loading sites…</div>
           <button class="toolbar-button" id="resetViewButton" type="button">Reset View</button>
         </div>
         <div class="map-stage" id="mapStage">
           <canvas id="mapCanvas"></canvas>
           <div class="markers" id="markersLayer"></div>
         </div>
-        <div class="map-caption">Markers stay fixed in screen size so site visibility does not depend on zoom. Local overlap is intentional.</div>
+        <div class="map-caption" id="mapCaption">Loading mapped sites…</div>
       </section>
       <aside class="panel sidebar">
         <div>
@@ -1253,7 +1339,7 @@ def render_index_html() -> str:
     const mapStage = document.getElementById("mapStage");
     const canvas = document.getElementById("mapCanvas");
     const markersLayer = document.getElementById("markersLayer");
-    const siteCountChip = document.getElementById("siteCountChip");
+    const mapCaption = document.getElementById("mapCaption");
     const resetViewButton = document.getElementById("resetViewButton");
     const siteTitle = document.getElementById("siteTitle");
     const siteSubtitle = document.getElementById("siteSubtitle");
@@ -1462,7 +1548,7 @@ def render_index_html() -> str:
     function render() {{
       drawMap();
       renderMarkers();
-      siteCountChip.textContent = `${{sites.length}} mapped sites`;
+      mapCaption.textContent = `${{sites.length}} mapped sites. Markers stay fixed in screen size so site visibility does not depend on zoom. Local overlap is intentional.`;
     }}
 
     function fitSites(targetSites) {{
