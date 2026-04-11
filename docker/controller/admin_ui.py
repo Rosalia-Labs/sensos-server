@@ -109,6 +109,7 @@ def render_page(
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
         ("/admin/peers", "Peers"),
+        ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
         ("/admin/runtime", "Runtime"),
     ]
@@ -472,7 +473,11 @@ def fetch_network_rows() -> list[dict]:
     ]
 
 
-def fetch_peer_rows() -> list[dict]:
+def fetch_peer_rows(
+    network_name: str | None = None,
+    sort_by: str = "network",
+    direction: str = "asc",
+) -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -500,11 +505,14 @@ def fetch_peer_rows() -> list[dict]:
                 FROM sensos.wireguard_peers p
                 JOIN sensos.networks n ON n.id = p.network_id
                 LEFT JOIN latest_status ls ON ls.peer_id = p.id
+                WHERE (%s IS NULL OR n.name = %s)
                 ORDER BY n.name, p.wg_ip;
                 """
+                ,
+                (network_name, network_name),
             )
             rows = cur.fetchall()
-    return [
+    peers = [
         {
             "peer_uuid": row[0],
             "wg_ip": row[1],
@@ -519,6 +527,23 @@ def fetch_peer_rows() -> list[dict]:
         }
         for row in rows
     ]
+    sorters = {
+        "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
+        "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
+        "checkin": lambda row: (row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc), row["wg_ip"]),
+        "state": lambda row: (row["is_active"], row["wg_ip"]),
+        "client": lambda row: (((row["note"] or row["wg_ip"]).lower()), row["wg_ip"]),
+    }
+    key_func = sorters.get(sort_by, sorters["network"])
+    peers.sort(key=key_func, reverse=(direction == "desc"))
+    return peers
+
+
+def fetch_network_names() -> list[str]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM sensos.networks ORDER BY name;")
+            return [row[0] for row in cur.fetchall()]
 
 
 def fetch_runtime_rows() -> list[dict]:
@@ -630,6 +655,67 @@ def fetch_birdnet_overview() -> dict:
     }
 
 
+def fetch_sensor_rows(limit: int = 100) -> list[dict]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.wireguard_ip::text,
+                       p.note,
+                       n.name,
+                       b.hostname,
+                       b.client_version,
+                       b.batch_id,
+                       b.ownership_mode,
+                       b.reading_count,
+                       b.first_recorded_at,
+                       b.last_recorded_at,
+                       b.server_received_at,
+                       b.receipt_id::text
+                FROM sensos.i2c_reading_batches b
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                ORDER BY b.server_received_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "wg_ip": row[0],
+            "note": row[1],
+            "network_name": row[2] or "—",
+            "hostname": row[3] or "—",
+            "client_version": row[4] or "—",
+            "batch_id": row[5],
+            "ownership_mode": row[6],
+            "reading_count": row[7],
+            "first_recorded_at": row[8],
+            "last_recorded_at": row[9],
+            "server_received_at": row[10],
+            "receipt_id": row[11],
+        }
+        for row in rows
+    ]
+
+
+def fetch_sensor_overview() -> dict:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM sensos.i2c_reading_batches;")
+            batch_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM sensos.i2c_readings;")
+            reading_count = cur.fetchone()[0]
+            cur.execute("SELECT max(server_received_at) FROM sensos.i2c_reading_batches;")
+            latest_upload = cur.fetchone()[0]
+    return {
+        "batch_count": batch_count,
+        "reading_count": reading_count,
+        "latest_upload": latest_upload,
+    }
+
+
 def stat_card(label: str, value: str, help_text: str) -> str:
     return f"""
 <section class="panel">
@@ -694,21 +780,6 @@ def overview_page(request: Request, flash: str | None = None):
 </div>
 <div class="split">
   <section class="panel">
-    <h2 class="section-title">Recent networks</h2>
-    <table>
-      <thead>
-        <tr><th>Name</th><th>CIDR</th><th>Endpoint</th><th>Peers</th></tr>
-      </thead>
-      <tbody>
-        {''.join(
-            f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
-            f"<td class='mono'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
-            for row in networks
-        ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
-      </tbody>
-    </table>
-  </section>
-  <section class="panel">
     <h2 class="section-title">Recent peers</h2>
     <table>
       <thead>
@@ -720,6 +791,21 @@ def overview_page(request: Request, flash: str | None = None):
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
         ) or '<tr><td colspan="4" class="dim">No peers registered.</td></tr>'}
+      </tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2 class="section-title">Recent networks</h2>
+    <table>
+      <thead>
+        <tr><th>Name</th><th>CIDR</th><th>Endpoint</th><th>Peers</th></tr>
+      </thead>
+      <tbody>
+        {''.join(
+            f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
+            f"<td class='mono'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
+            for row in networks
+        ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
   </section>
@@ -753,17 +839,6 @@ def networks_page(request: Request, flash: str | None = None):
     body = f"""
 <div class="split">
   <section class="panel">
-    <h2 class="section-title">Create network</h2>
-    <form class="block" method="post" action="/admin/networks">
-      <label>Network name<input type="text" name="name" placeholder="testing" required></label>
-      <label>Published WireGuard IP or hostname<input type="text" name="wg_public_ip" placeholder="server.example.org" required></label>
-      <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820"></label>
-      <button type="submit">Create or reconcile network</button>
-    </form>
-    <p class="help">These fields start blank. Placeholder text is only an example, not the current saved endpoint.</p>
-    <p class="help">This reuses the same network-creation path as the CLI and waits for the generated WireGuard public key when needed.</p>
-  </section>
-  <section class="panel">
     <h2 class="section-title">Current published endpoints</h2>
     <table>
       <thead>
@@ -782,6 +857,17 @@ def networks_page(request: Request, flash: str | None = None):
         ) or '<tr><td colspan="5" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
+  </section>
+  <section class="panel">
+    <h2 class="section-title">Create network</h2>
+    <form class="block" method="post" action="/admin/networks">
+      <label>Network name<input type="text" name="name" placeholder="testing" required></label>
+      <label>Published WireGuard IP or hostname<input type="text" name="wg_public_ip" placeholder="server.example.org" required></label>
+      <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820"></label>
+      <button type="submit">Create or reconcile network</button>
+    </form>
+    <p class="help">These fields start blank. Placeholder text is only an example, not the current saved endpoint.</p>
+    <p class="help">This reuses the same network-creation path as the CLI and waits for the generated WireGuard public key when needed.</p>
   </section>
 </div>
 <section class="panel">
@@ -878,12 +964,22 @@ async def update_network_endpoint_action(request: Request):
 
 
 @router.get("/peers", response_class=HTMLResponse)
-def peers_page(request: Request, flash: str | None = None):
+def peers_page(
+    request: Request,
+    flash: str | None = None,
+    network: str | None = None,
+    sort: str = "network",
+    direction: str = "asc",
+):
     redirect = require_session(request)
     if redirect:
         return redirect
 
-    rows = fetch_peer_rows()
+    selected_network = (network or "").strip() or None
+    sort = sort if sort in {"network", "host", "checkin", "state", "client"} else "network"
+    direction = direction if direction in {"asc", "desc"} else "asc"
+    rows = fetch_peer_rows(selected_network, sort, direction)
+    network_names = fetch_network_names()
     body_rows = []
     for row in rows:
         action_label = "Deactivate" if row["is_active"] else "Activate"
@@ -901,20 +997,50 @@ def peers_page(request: Request, flash: str | None = None):
             f"<div class='dim mono'>{html.escape(row['version'] or row['peer_uuid'])}</div>"
             "</td>"
             "<td>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['wg_ip'])}/active'>"
+            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/active'>"
             f"<input type='hidden' name='is_active' value='{action_value}'>"
             f"<button class='secondary' type='submit'>{action_label}</button>"
             "</form>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['wg_ip'])}/delete' "
+            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/delete' "
             "onsubmit=\"return confirm('Delete this peer and all related state?');\">"
             "<button class='danger' type='submit'>Delete</button>"
             "</form>"
             "</td>"
             "</tr>"
         )
+    filter_form = f"""
+<form class="inline" method="get" action="/admin/peers" style="margin-bottom: 1rem;">
+  <label>Network
+    <select name="network">
+      <option value="">All networks</option>
+      {''.join(
+          f"<option value='{html.escape(name)}'{' selected' if selected_network == name else ''}>{html.escape(name)}</option>"
+          for name in network_names
+      )}
+    </select>
+  </label>
+  <label>Sort
+    <select name="sort">
+      <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
+      <option value="client"{' selected' if sort == 'client' else ''}>Client</option>
+      <option value="host"{' selected' if sort == 'host' else ''}>Host</option>
+      <option value="checkin"{' selected' if sort == 'checkin' else ''}>Last check-in</option>
+      <option value="state"{' selected' if sort == 'state' else ''}>State</option>
+    </select>
+  </label>
+  <label>Direction
+    <select name="direction">
+      <option value="asc"{' selected' if direction == 'asc' else ''}>Ascending</option>
+      <option value="desc"{' selected' if direction == 'desc' else ''}>Descending</option>
+    </select>
+  </label>
+  <button class="secondary" type="submit">Apply</button>
+</form>
+"""
     body = f"""
 <section class="panel">
   <h2 class="section-title">Registered peers</h2>
+  {filter_form}
   <table>
     <thead>
       <tr><th>Client</th><th>Network</th><th>Host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
@@ -933,30 +1059,46 @@ def peers_page(request: Request, flash: str | None = None):
     )
 
 
-@router.post("/peers/{wg_ip}/active")
-async def peer_active_action(request: Request, wg_ip: str):
+@router.post("/peers/{peer_uuid}/active")
+async def peer_active_action(request: Request, peer_uuid: str):
     redirect = require_session(request)
     if redirect:
         return redirect
     form = await request.form()
     is_active = str(form.get("is_active", "")).strip().lower() == "true"
-    ok = set_peer_active_state(wg_ip, is_active)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wg_ip::text FROM sensos.wireguard_peers WHERE uuid = %s;",
+                (peer_uuid,),
+            )
+            row = cur.fetchone()
+    wg_ip = row[0] if row else None
+    ok = set_peer_active_state(wg_ip, is_active) if wg_ip else False
     message = (
         f"Peer '{wg_ip}' set to {'active' if is_active else 'inactive'}."
         if ok
-        else f"Peer '{wg_ip}' was not found."
+        else f"Peer '{peer_uuid}' was not found."
     )
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
     )
 
 
-@router.post("/peers/{wg_ip}/delete")
-def peer_delete_action(request: Request, wg_ip: str):
+@router.post("/peers/{peer_uuid}/delete")
+def peer_delete_action(request: Request, peer_uuid: str):
     redirect = require_session(request)
     if redirect:
         return redirect
-    ok = delete_peer(wg_ip)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wg_ip::text FROM sensos.wireguard_peers WHERE uuid = %s;",
+                (peer_uuid,),
+            )
+            row = cur.fetchone()
+    wg_ip = row[0] if row else None
+    ok = delete_peer(wg_ip) if wg_ip else False
     message = (
         f"Peer '{wg_ip}' deleted." if ok else f"Peer '{wg_ip}' was not found."
     )
@@ -1064,5 +1206,51 @@ def birdnet_page(request: Request, flash: str | None = None):
         title="BirdNET",
         body=body,
         current_path="/admin/birdnet",
+        flash=flash,
+    )
+
+
+@router.get("/sensors", response_class=HTMLResponse)
+def sensors_page(request: Request, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    overview = fetch_sensor_overview()
+    rows = fetch_sensor_rows()
+    body = f"""
+<div class="grid">
+  {stat_card("Upload batches", str(overview["batch_count"]), "Accepted sensor upload batches stored on the server.")}
+  {stat_card("Readings", str(overview["reading_count"]), "Individual sensor readings received across all batches.")}
+  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent sensor batch was accepted.")}
+</div>
+<section class="panel">
+  <h2 class="section-title">Recent sensor uploads</h2>
+  <table>
+    <thead>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Batch</th><th>Ownership</th><th>Readings</th><th>Recorded window</th><th>Received</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td>{html.escape(row['hostname'])}</td>"
+          f"<td><div>{row['batch_id']}</div><div class='dim mono'>{html.escape(row['receipt_id'])}</div></td>"
+          f"<td>{html.escape(row['ownership_mode'])}</td>"
+          f"<td>{row['reading_count']}</td>"
+          f"<td><div>{html.escape(format_timestamp(row['first_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
+          f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
+          "</tr>"
+          for row in rows
+      ) or '<tr><td colspan="8" class="dim">No sensor uploads stored yet.</td></tr>'}
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="Sensors",
+        body=body,
+        current_path="/admin/sensors",
         flash=flash,
     )
