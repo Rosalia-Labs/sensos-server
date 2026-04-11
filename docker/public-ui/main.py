@@ -80,7 +80,7 @@ def fetch_sites() -> list[dict]:
     return [
         {
             "peer_uuid": row[0],
-            "site_id": row[1],
+            "site_id": row[0],
             "wg_ip": row[1],
             "network_name": row[2],
             "note": row[3],
@@ -97,6 +97,7 @@ def fetch_sites() -> list[dict]:
             "birdnet_batch_count": int(row[14]),
             "birdnet_source_count": int(row[15]),
             "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
+            "public_url": f"/sites/{row[0]}",
         }
         for row in rows
     ]
@@ -125,13 +126,14 @@ def fetch_site_detail(site_id: str) -> dict:
                        birdnet_source_count,
                        latest_birdnet_upload_at
                 FROM sensos.public_sites
-                WHERE wg_ip = %s;
+                WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
-                (site_id,),
+                (site_id, site_id),
             )
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Site not found.")
+            lookup_wg_ip = row[1]
             cur.execute(
                 """
                 SELECT count(*)::integer,
@@ -139,7 +141,7 @@ def fetch_site_detail(site_id: str) -> dict:
                 FROM sensos.public_site_birdnet_detections
                 WHERE wg_ip = %s;
                 """,
-                (site_id,),
+                (lookup_wg_ip,),
             )
             birdnet_summary = cur.fetchone()
             cur.execute(
@@ -149,7 +151,7 @@ def fetch_site_detail(site_id: str) -> dict:
                 FROM sensos.public_site_i2c_recent
                 WHERE wg_ip = %s;
                 """,
-                (site_id,),
+                (lookup_wg_ip,),
             )
             i2c_summary = cur.fetchone()
             cur.execute(
@@ -168,7 +170,7 @@ def fetch_site_detail(site_id: str) -> dict:
                   AND batch_rank <= 12
                 ORDER BY server_received_at DESC;
                 """,
-                (site_id,),
+                (lookup_wg_ip,),
             )
             batches = cur.fetchall()
             cur.execute(
@@ -190,7 +192,7 @@ def fetch_site_detail(site_id: str) -> dict:
                   AND detection_rank <= 12
                 ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
                 """,
-                (site_id,),
+                (lookup_wg_ip,),
             )
             detections = cur.fetchall()
             cur.execute(
@@ -210,12 +212,12 @@ def fetch_site_detail(site_id: str) -> dict:
                   AND reading_rank <= 12
                 ORDER BY recorded_at DESC, server_received_at DESC;
                 """,
-                (site_id,),
+                (lookup_wg_ip,),
             )
             readings = cur.fetchall()
     return {
         "peer_uuid": row[0],
-        "site_id": row[1],
+        "site_id": row[0],
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
@@ -232,6 +234,7 @@ def fetch_site_detail(site_id: str) -> dict:
         "birdnet_batch_count": int(row[14]),
         "birdnet_source_count": int(row[15]),
         "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
+        "public_url": f"/sites/{row[0]}",
         "birdnet_detection_count": int((birdnet_summary[0] or 0) if birdnet_summary else 0),
         "latest_birdnet_result_at": format_rfc3339_utc(
             birdnet_summary[1] if birdnet_summary else None
@@ -285,6 +288,260 @@ def fetch_site_detail(site_id: str) -> dict:
             for reading in readings
         ],
     }
+
+
+def render_site_detail_html(site: dict) -> str:
+    birdnet_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f}</span></div>
+          <div class="dim">{detection['processed_at'] or 'Unknown time'} · batch {detection['batch_id']} · ch {detection['channel_index']}</div>
+          <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
+          <div class="mono">{detection['source_path']}</div>
+        </article>
+        """
+        for detection in site["recent_birdnet_detections"]
+    ) or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+
+    i2c_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>{reading['sensor_type']}</strong> <span class="dim">{reading['reading_key']}</span></div>
+          <div class="dim">value {reading['reading_value']:.3f} · {reading['recorded_at'] or 'Unknown time'}</div>
+          <div class="mono">{reading['device_address']} · batch {reading['batch_id']}</div>
+        </article>
+        """
+        for reading in site["recent_i2c_readings"]
+    ) or '<div class="empty">No I2C readings are visible yet for this site.</div>'
+
+    batch_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>Batch {batch['batch_id']}</strong> <span class="dim">{batch['ownership_mode']}</span></div>
+          <div class="dim">{batch['source_count']} source files · received {batch['server_received_at'] or 'Unknown time'}</div>
+          <div class="mono">{batch['receipt_id']}</div>
+        </article>
+        """
+        for batch in site["recent_birdnet_batches"]
+    ) or '<div class="empty">No BirdNET batches are visible yet for this site.</div>'
+
+    note_html = (
+        f"<p class='lede'>{site['note']}</p>" if (site.get("note") or "").strip() else ""
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{site['site_label']} · SensOS Public Site</title>
+  <style>
+    :root {{
+      --bg: #f3efe6;
+      --ink: #1b2420;
+      --muted: #61706a;
+      --panel: rgba(255,255,255,0.86);
+      --border: rgba(27,36,32,0.12);
+      --accent: #0c6d62;
+      --accent-2: #b45309;
+      --shadow: 0 22px 58px rgba(27,36,32,0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      background:
+        radial-gradient(circle at top left, rgba(12,109,98,0.18), transparent 26rem),
+        radial-gradient(circle at right, rgba(180,83,9,0.14), transparent 24rem),
+        linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
+    }}
+    a {{ color: var(--accent); }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 1.25rem; }}
+    .masthead {{
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }}
+    .kicker {{
+      display: inline-block;
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.75);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+    .back-button {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.55rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.78);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(27,36,32,0.08);
+    }}
+    h1 {{
+      margin: 0.55rem 0 0;
+      font-size: clamp(2.2rem, 4vw, 4rem);
+      letter-spacing: -0.05em;
+    }}
+    .lede {{ color: var(--muted); max-width: 42rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 1rem;
+    }}
+    .stack {{ display: grid; gap: 1rem; align-content: start; }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      padding: 1rem;
+    }}
+    .hero {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+      gap: 1rem;
+      align-items: stretch;
+    }}
+    .coord-card {{
+      min-height: 15rem;
+      border-radius: 20px;
+      background:
+        linear-gradient(135deg, rgba(12,109,98,0.92), rgba(12,109,98,0.62)),
+        linear-gradient(180deg, #b6d4cf, #8db7ae);
+      color: white;
+      padding: 1rem;
+      display: grid;
+      align-content: end;
+    }}
+    .coord-card .mono {{ opacity: 0.92; }}
+    .metric-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem;
+    }}
+    .metric {{
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.72);
+    }}
+    .metric-label {{
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .metric-value {{
+      margin-top: 0.25rem;
+      font-size: 1.5rem;
+      letter-spacing: -0.05em;
+      font-weight: 700;
+    }}
+    .section-title {{
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .record-list {{ display: grid; gap: 0.7rem; }}
+    .record-card {{
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.7);
+    }}
+    .mono {{
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.9rem;
+      word-break: break-word;
+    }}
+    .dim {{ color: var(--muted); }}
+    .empty {{
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 1rem;
+      color: var(--muted);
+      background: rgba(255,255,255,0.45);
+    }}
+    @media (max-width: 980px) {{
+      .layout, .hero {{ grid-template-columns: 1fr; }}
+      .metric-grid {{ grid-template-columns: 1fr 1fr; }}
+    }}
+  </style>
+</head>
+  <body>
+  <div class="shell">
+    <div class="masthead">
+      <div>
+        <button class="back-button" type="button" onclick="goBack()">← Return to previous view</button>
+        <div class="kicker">SensOS Public Site</div>
+        <h1>{site['site_label']}</h1>
+        {note_html}
+      </div>
+      <div class="meta">
+        <div><a href="/">Back to all field sites</a></div>
+        <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
+        <div>{site['last_check_in'] or 'No check-in yet'}</div>
+      </div>
+    </div>
+    <div class="layout">
+      <main class="stack">
+        <section class="panel hero">
+          <div class="coord-card">
+            <div class="dim">Coordinates</div>
+            <div style="font-size:2rem;font-weight:700;letter-spacing:-0.05em;">{site['latitude']:.4f}, {site['longitude']:.4f}</div>
+            <div class="mono">{site['wg_ip']} · {site['peer_uuid']}</div>
+          </div>
+          <div class="metric-grid">
+            <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{site['last_check_in'] or 'Never'}</div></div>
+            <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
+            <div class="metric"><div class="metric-label">I2C Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
+            <div class="metric"><div class="metric-label">BirdNET Batches</div><div class="metric-value">{site['birdnet_batch_count']}</div></div>
+            <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
+            <div class="metric"><div class="metric-label">Status</div><div class="metric-value">{site['status_message'] or ('Active' if site['is_active'] else 'Inactive')}</div></div>
+          </div>
+        </section>
+        <section class="panel">
+          <h2 class="section-title">Recent BirdNET Detections</h2>
+          <div class="record-list">{birdnet_cards}</div>
+        </section>
+        <section class="panel">
+          <h2 class="section-title">Recent I2C Readings</h2>
+          <div class="record-list">{i2c_cards}</div>
+        </section>
+      </main>
+      <aside class="stack">
+        <section class="panel">
+          <h2 class="section-title">BirdNET Upload Batches</h2>
+          <div class="record-list">{batch_cards}</div>
+        </section>
+      </aside>
+    </div>
+  </div>
+  <script>
+    function goBack() {{
+      if (window.history.length > 1) {{
+        window.history.back();
+        return;
+      }}
+      window.location.assign("/");
+    }}
+  </script>
+</body>
+</html>"""
 
 
 def render_index_html() -> str:
@@ -686,7 +943,7 @@ def render_index_html() -> str:
         const button = document.createElement("button");
         button.type = "button";
         button.innerHTML = `<strong>${{escapeHtml(site.site_label)}}</strong><div class="dim mono">${{escapeHtml(site.wg_ip)}}</div>`;
-        button.addEventListener("click", () => loadSiteDetail(site.site_id));
+        button.addEventListener("click", () => openSiteDashboard(site));
         chooserBlock.appendChild(button);
       }}
     }}
@@ -707,6 +964,11 @@ def render_index_html() -> str:
       return parts[parts.length - 1] || text;
     }}
 
+    function openSiteDashboard(site) {{
+      if (!site || !site.public_url) return;
+      window.location.assign(site.public_url);
+    }}
+
     async function loadSiteDetail(siteId) {{
       const response = await fetch(`/api/sites/${{encodeURIComponent(siteId)}}`);
       if (!response.ok) return;
@@ -714,7 +976,7 @@ def render_index_html() -> str:
       activeSiteId = site.site_id;
       setChooserSites([]);
       siteTitle.textContent = site.site_label;
-      siteSubtitle.innerHTML = `<span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
+      siteSubtitle.innerHTML = `<a href="${{escapeHtml(site.public_url)}}" target="_blank" rel="noopener">Open public site page</a> · <span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
       metricGrid.innerHTML = `
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
@@ -788,7 +1050,7 @@ def render_index_html() -> str:
 
       if (!candidates.length) return;
       if (candidates.length === 1) {{
-        loadSiteDetail(candidates[0].site.site_id);
+        openSiteDashboard(candidates[0].site);
         return;
       }}
 
@@ -864,6 +1126,11 @@ def api_sites():
 @app.get("/api/sites/{site_id}")
 def api_site(site_id: str):
     return fetch_site_detail(site_id)
+
+
+@app.get("/sites/{site_id}", response_class=HTMLResponse)
+def site_page(site_id: str):
+    return HTMLResponse(render_site_detail_html(fetch_site_detail(site_id)))
 
 
 @app.get("/", response_class=HTMLResponse)
