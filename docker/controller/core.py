@@ -1454,10 +1454,27 @@ def ensure_public_dashboard_role(cur):
     cur.execute(f"GRANT CONNECT ON DATABASE postgres TO {PUBLIC_DB_ROLE};")
     cur.execute(f"GRANT USAGE ON SCHEMA sensos TO {PUBLIC_DB_ROLE};")
     cur.execute(
-        f"GRANT SELECT ON sensos.public_sites, sensos.public_site_birdnet_recent, "
-        f"sensos.public_site_birdnet_detections, sensos.public_site_i2c_recent "
-        f"TO {PUBLIC_DB_ROLE};"
+        """
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'sensos'
+          AND c.relname = ANY(%s)
+          AND c.relkind IN ('v', 'm', 'r');
+        """,
+        (
+            [
+                "public_sites",
+                "public_site_birdnet_recent",
+                "public_site_birdnet_detections",
+                "public_site_i2c_recent",
+            ],
+        ),
     )
+    existing_relations = [row[0] for row in cur.fetchall()]
+    if existing_relations:
+        relation_list = ", ".join(f"sensos.{name}" for name in existing_relations)
+        cur.execute(f"GRANT SELECT ON {relation_list} TO {PUBLIC_DB_ROLE};")
 
 
 def format_rfc3339_utc(value: datetime) -> str:
