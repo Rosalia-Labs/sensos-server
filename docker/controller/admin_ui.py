@@ -1027,7 +1027,7 @@ def peers_page(
     filter_form = f"""
 <form class="inline" method="get" action="/admin/peers" style="margin-bottom: 1rem;">
   <label>Network
-    <select name="network">
+    <select name="network" onchange="this.form.submit()">
       <option value="">All networks</option>
       {''.join(
           f"<option value='{html.escape(name)}'{' selected' if selected_network == name else ''}>{html.escape(name)}</option>"
@@ -1036,7 +1036,7 @@ def peers_page(
     </select>
   </label>
   <label>Sort
-    <select name="sort">
+    <select name="sort" onchange="this.form.submit()">
       <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
       <option value="client"{' selected' if sort == 'client' else ''}>Client</option>
       <option value="host"{' selected' if sort == 'host' else ''}>Host</option>
@@ -1045,12 +1045,11 @@ def peers_page(
     </select>
   </label>
   <label>Direction
-    <select name="direction">
+    <select name="direction" onchange="this.form.submit()">
       <option value="asc"{' selected' if direction == 'asc' else ''}>Ascending</option>
       <option value="desc"{' selected' if direction == 'desc' else ''}>Descending</option>
     </select>
   </label>
-  <button class="secondary" type="submit">Apply</button>
 </form>
 """
     body = f"""
