@@ -102,9 +102,7 @@ def render_page(
 ) -> HTMLResponse:
     flash_html = ""
     if flash:
-        flash_html = (
-            f'<div class="flash">{html.escape(flash)}</div>'
-        )
+        flash_html = f'<div class="flash">{html.escape(flash)}</div>'
     nav_items = [
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
@@ -478,40 +476,44 @@ def fetch_peer_rows(
     sort_by: str = "network",
     direction: str = "asc",
 ) -> list[dict]:
+    query = """
+        WITH latest_status AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                last_check_in,
+                hostname,
+                version,
+                status_message
+            FROM sensos.client_status
+            ORDER BY peer_id, last_check_in DESC
+        )
+        SELECT p.uuid::text,
+               p.wg_ip::text,
+               n.name,
+               p.is_active,
+               p.note,
+               p.registered_at,
+               ls.last_check_in,
+               ls.hostname,
+               ls.version,
+               ls.status_message
+        FROM sensos.wireguard_peers p
+        JOIN sensos.networks n ON n.id = p.network_id
+        LEFT JOIN latest_status ls ON ls.peer_id = p.id
+    """
+    params: list[str] = []
+
+    if network_name is not None:
+        query += " WHERE n.name = %s"
+        params.append(network_name)
+
+    query += " ORDER BY n.name, p.wg_ip;"
+
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH latest_status AS (
-                    SELECT DISTINCT ON (peer_id)
-                        peer_id,
-                        last_check_in,
-                        hostname,
-                        version,
-                        status_message
-                    FROM sensos.client_status
-                    ORDER BY peer_id, last_check_in DESC
-                )
-                SELECT p.uuid::text,
-                       p.wg_ip::text,
-                       n.name,
-                       p.is_active,
-                       p.note,
-                       p.registered_at,
-                       ls.last_check_in,
-                       ls.hostname,
-                       ls.version,
-                       ls.status_message
-                FROM sensos.wireguard_peers p
-                JOIN sensos.networks n ON n.id = p.network_id
-                LEFT JOIN latest_status ls ON ls.peer_id = p.id
-                WHERE (%s IS NULL OR n.name = %s)
-                ORDER BY n.name, p.wg_ip;
-                """
-                ,
-                (network_name, network_name),
-            )
+            cur.execute(query, params)
             rows = cur.fetchall()
+
     peers = [
         {
             "peer_uuid": row[0],
@@ -527,13 +529,18 @@ def fetch_peer_rows(
         }
         for row in rows
     ]
+
     sorters = {
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
         "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
-        "checkin": lambda row: (row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc), row["wg_ip"]),
+        "checkin": lambda row: (
+            row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc),
+            row["wg_ip"],
+        ),
         "state": lambda row: (row["is_active"], row["wg_ip"]),
-        "client": lambda row: (((row["note"] or row["wg_ip"]).lower()), row["wg_ip"]),
+        "client": lambda row: ((row["note"] or row["wg_ip"]).lower(), row["wg_ip"]),
     }
+
     key_func = sorters.get(sort_by, sorters["network"])
     peers.sort(key=key_func, reverse=(direction == "desc"))
     return peers
@@ -644,9 +651,13 @@ def fetch_birdnet_overview() -> dict:
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM sensos.birdnet_result_batches;")
             batch_count = cur.fetchone()[0]
-            cur.execute("SELECT COALESCE(sum(source_count), 0) FROM sensos.birdnet_result_batches;")
+            cur.execute(
+                "SELECT COALESCE(sum(source_count), 0) FROM sensos.birdnet_result_batches;"
+            )
             source_count = cur.fetchone()[0]
-            cur.execute("SELECT max(server_received_at) FROM sensos.birdnet_result_batches;")
+            cur.execute(
+                "SELECT max(server_received_at) FROM sensos.birdnet_result_batches;"
+            )
             latest_upload = cur.fetchone()[0]
     return {
         "batch_count": batch_count,
@@ -707,7 +718,9 @@ def fetch_sensor_overview() -> dict:
             batch_count = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM sensos.i2c_readings;")
             reading_count = cur.fetchone()[0]
-            cur.execute("SELECT max(server_received_at) FROM sensos.i2c_reading_batches;")
+            cur.execute(
+                "SELECT max(server_received_at) FROM sensos.i2c_reading_batches;"
+            )
             latest_upload = cur.fetchone()[0]
     return {
         "batch_count": batch_count,
@@ -740,7 +753,9 @@ async def login_submit(request: Request):
     password = str(form.get("password", ""))
     next_path = sanitize_next_path(str(form.get("next", "/admin")) or "/admin")
     if username != "sensos" or password != ADMIN_API_PASSWORD:
-        return render_login_page(next_path=next_path, error="Invalid admin credentials.")
+        return render_login_page(
+            next_path=next_path, error="Invalid admin credentials."
+        )
 
     response = RedirectResponse(url=next_path, status_code=303)
     response.set_cookie(
@@ -923,9 +938,7 @@ async def create_network_action(request: Request):
             ready = wait_for_network_ready(name)
             result["wg_public_key"] = ready[2]
         message = (
-            f"Network '{name}' created."
-            if created
-            else f"Network '{name}' reconciled."
+            f"Network '{name}' created." if created else f"Network '{name}' reconciled."
         )
     except Exception as exc:
         message = f"Network action failed: {exc}"
@@ -976,7 +989,9 @@ def peers_page(
         return redirect
 
     selected_network = (network or "").strip() or None
-    sort = sort if sort in {"network", "host", "checkin", "state", "client"} else "network"
+    sort = (
+        sort if sort in {"network", "host", "checkin", "state", "client"} else "network"
+    )
     direction = direction if direction in {"asc", "desc"} else "asc"
     rows = fetch_peer_rows(selected_network, sort, direction)
     network_names = fetch_network_names()
@@ -1099,9 +1114,7 @@ def peer_delete_action(request: Request, peer_uuid: str):
             row = cur.fetchone()
     wg_ip = row[0] if row else None
     ok = delete_peer(wg_ip) if wg_ip else False
-    message = (
-        f"Peer '{wg_ip}' deleted." if ok else f"Peer '{wg_ip}' was not found."
-    )
+    message = f"Peer '{wg_ip}' deleted." if ok else f"Peer '{wg_ip}' was not found."
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
     )
