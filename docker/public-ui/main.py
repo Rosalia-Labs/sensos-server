@@ -54,6 +54,62 @@ def escape_html(value) -> str:
     return html.escape(str(value or ""))
 
 
+def _format_axis_value(value: float) -> str:
+    if abs(value) >= 100:
+        return f"{value:.0f}"
+    if abs(value) >= 10:
+        return f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _format_time_tick(value: str) -> str:
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return timestamp.strftime("%m-%d %H:%M")
+
+
+def _chart_bounds(width: int, height: int) -> dict:
+    return {
+        "left": 58,
+        "right": width - 18,
+        "top": 14,
+        "bottom": height - 32,
+    }
+
+
+def _render_axes(
+    bounds: dict,
+    min_value: float,
+    max_value: float,
+    x_labels: list[tuple[float, str]],
+) -> str:
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    span = max(max_value - min_value, 1e-9)
+    parts = [
+        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bottom}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
+    ]
+    for frac in (0.0, 0.5, 1.0):
+        value = min_value + span * frac
+        y = bottom - (bottom - top) * frac
+        parts.append(
+            f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>'
+        )
+        parts.append(
+            f'<text x="{left - 8}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
+        )
+    for x, label in x_labels:
+        parts.append(
+            f'<line x1="{x:.2f}" y1="{bottom}" x2="{x:.2f}" y2="{bottom + 6}" stroke="rgba(23,32,29,0.24)" stroke-width="1"></line>'
+        )
+        parts.append(
+            f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
+        )
+    return "".join(parts)
+
+
 def render_line_chart_svg(
     points: list[dict],
     value_key: str,
@@ -66,27 +122,38 @@ def render_line_chart_svg(
     values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
     if not values:
         return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
     min_value = min(values)
     max_value = max(values)
     span = max(max_value - min_value, 1e-9)
-    step_x = width / max(1, len(points) - 1)
+    step_x = (right - left) / max(1, len(points) - 1)
     coords = []
     for index, point in enumerate(points):
         value = float(point[value_key])
-        x = index * step_x
-        y = height - ((value - min_value) / span) * (height - 20) - 10
+        x = left + index * step_x
+        y = bottom - ((value - min_value) / span) * (bottom - top)
         coords.append((x, y))
+    x_labels = []
+    if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
+        time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
+        tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
+        x_labels = [(coords[index][0], _format_time_tick(points[index][time_key])) for index in tick_indexes]
     path = " ".join(
         ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
         + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
     )
     area = " ".join(
-        ["M {:.2f} {:.2f}".format(coords[0][0], height - 8)]
+        ["M {:.2f} {:.2f}".format(coords[0][0], bottom)]
         + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords]
-        + ["L {:.2f} {:.2f} Z".format(coords[-1][0], height - 8)]
+        + ["L {:.2f} {:.2f} Z".format(coords[-1][0], bottom)]
     )
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        f'{_render_axes(bounds, min_value, max_value, x_labels)}'
         f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
         f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
         f"</svg>"
@@ -105,22 +172,38 @@ def render_bar_chart_svg(
     values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
     if not values:
         return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
     max_value = max(values)
     if max_value <= 0:
         max_value = 1.0
-    bar_width = max(6, width / max(1, len(points)) - 2)
-    step_x = width / max(1, len(points))
+    bar_width = max(6, (right - left) / max(1, len(points)) - 4)
+    step_x = (right - left) / max(1, len(points))
     rects = []
     for index, point in enumerate(points):
         value = float(point[value_key])
-        bar_height = (value / max_value) * (height - 24)
-        x = index * step_x + max(1, (step_x - bar_width) / 2)
-        y = height - bar_height - 8
+        bar_height = (value / max_value) * (bottom - top)
+        x = left + index * step_x + max(1, (step_x - bar_width) / 2)
+        y = bottom - bar_height
         rects.append(
             f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fill}" opacity="0.82"></rect>'
         )
+    x_labels = []
+    if points and "processed_at" in points[0]:
+        tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
+        x_labels = [
+            (
+                left + index * step_x + step_x / 2,
+                _format_time_tick(points[index]["processed_at"]),
+            )
+            for index in tick_indexes
+        ]
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        f'{_render_axes(bounds, 0.0, max_value, x_labels)}'
         + "".join(rects)
         + "</svg>"
     )
@@ -139,17 +222,24 @@ def render_event_timeline_svg(
     values = [float(point[value_key]) for point in points]
     if not timestamps or not values:
         return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
     min_ts = min(timestamps)
     max_ts = max(timestamps)
     total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
     circles = []
-    guides = [
-        f'<line x1="0" y1="{height - 20}" x2="{width}" y2="{height - 20}" stroke="rgba(23,32,29,0.18)" stroke-width="1"></line>',
-        f'<line x1="0" y1="20" x2="{width}" y2="20" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>',
+    x_labels = [
+        (left, _format_time_tick(points[0]["processed_at"])),
+        ((left + right) / 2, _format_time_tick(points[len(points) // 2]["processed_at"])),
+        (right, _format_time_tick(points[-1]["processed_at"])),
     ]
+    guides = [_render_axes(bounds, 0.0, 1.0, x_labels)]
     for ts, value, point in zip(timestamps, values, points):
-        x = ((ts - min_ts).total_seconds() / total_seconds) * width
-        y = height - 20 - value * (height - 40)
+        x = left + ((ts - min_ts).total_seconds() / total_seconds) * (right - left)
+        y = bottom - value * (bottom - top)
         radius = 3.5 + value * 4.5
         circles.append(
             f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="{stroke}" opacity="0.82"><title>{escape_html(point["processed_at"])} · {value:.2f}</title></circle>'
