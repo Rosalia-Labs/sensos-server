@@ -175,6 +175,55 @@ def fetch_site_detail(site_id: str) -> dict:
             batches = cur.fetchall()
             cur.execute(
                 """
+                SELECT top_label,
+                       count(*)::integer AS detection_count,
+                       max(top_score) AS best_score,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                GROUP BY top_label
+                ORDER BY detection_count DESC, best_score DESC, top_label ASC
+                LIMIT 10;
+                """,
+                (lookup_wg_ip,),
+            )
+            top_birdnet_labels = cur.fetchall()
+            cur.execute(
+                """
+                SELECT top_label,
+                       count(*)::integer AS detection_count,
+                       avg(top_score) AS average_score,
+                       max(top_score) AS best_score
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                GROUP BY top_label
+                ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
+                LIMIT 10;
+                """,
+                (lookup_wg_ip,),
+            )
+            top_birdnet_scores = cur.fetchall()
+            cur.execute(
+                """
+                SELECT top_label,
+                       count(*)::integer AS detection_count,
+                       avg(top_likely_score) AS average_occupancy_score,
+                       max(top_likely_score) AS best_occupancy_score
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                  AND top_likely_score IS NOT NULL
+                GROUP BY top_label
+                ORDER BY best_occupancy_score DESC,
+                         average_occupancy_score DESC,
+                         detection_count DESC,
+                         top_label ASC
+                LIMIT 10;
+                """,
+                (lookup_wg_ip,),
+            )
+            top_birdnet_occupancy = cur.fetchall()
+            cur.execute(
+                """
                 SELECT receipt_id,
                        hostname,
                        client_version,
@@ -255,6 +304,33 @@ def fetch_site_detail(site_id: str) -> dict:
             }
             for batch in batches
         ],
+        "top_birdnet_summaries": [
+            {
+                "label": summary[0],
+                "detection_count": int(summary[1]),
+                "best_score": float(summary[2]) if summary[2] is not None else None,
+                "latest_processed_at": format_rfc3339_utc(summary[3]),
+            }
+            for summary in top_birdnet_labels
+        ],
+        "top_birdnet_score_summaries": [
+            {
+                "label": summary[0],
+                "detection_count": int(summary[1]),
+                "average_score": float(summary[2]) if summary[2] is not None else None,
+                "best_score": float(summary[3]) if summary[3] is not None else None,
+            }
+            for summary in top_birdnet_scores
+        ],
+        "top_birdnet_occupancy_summaries": [
+            {
+                "label": summary[0],
+                "detection_count": int(summary[1]),
+                "average_occupancy_score": float(summary[2]) if summary[2] is not None else None,
+                "best_occupancy_score": float(summary[3]) if summary[3] is not None else None,
+            }
+            for summary in top_birdnet_occupancy
+        ],
         "recent_birdnet_detections": [
             {
                 "receipt_id": detection[0],
@@ -324,6 +400,36 @@ def render_site_detail_html(site: dict) -> str:
         """
         for batch in site["recent_birdnet_batches"]
     ) or '<div class="empty">No BirdNET batches are visible yet for this site.</div>'
+
+    top_birdnet_summary_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>{summary['label']}</strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
+          <div class="dim">{summary['detection_count']} detections · latest {summary['latest_processed_at'] or 'Unknown time'}</div>
+        </article>
+        """
+        for summary in site["top_birdnet_summaries"]
+    ) or '<div class="empty">No BirdNET summary labels are visible yet for this site.</div>'
+
+    top_birdnet_score_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_score']:.2f}</span></div>
+          <div class="dim">avg score {summary['average_score']:.2f} · {summary['detection_count']} detections</div>
+        </article>
+        """
+        for summary in site["top_birdnet_score_summaries"]
+    ) or '<div class="empty">No BirdNET score summaries are visible yet for this site.</div>'
+
+    top_birdnet_occupancy_cards = "".join(
+        f"""
+        <article class="record-card">
+          <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_occupancy_score']:.2f}</span></div>
+          <div class="dim">avg occupancy {summary['average_occupancy_score']:.2f} · {summary['detection_count']} detections</div>
+        </article>
+        """
+        for summary in site["top_birdnet_occupancy_summaries"]
+    ) or '<div class="empty">No BirdNET occupancy summaries are visible yet for this site.</div>'
 
     note_html = (
         f"<p class='lede'>{site['note']}</p>" if (site.get("note") or "").strip() else ""
@@ -527,6 +633,18 @@ def render_site_detail_html(site: dict) -> str:
         <section class="panel">
           <h2 class="section-title">BirdNET Upload Batches</h2>
           <div class="record-list">{batch_cards}</div>
+        </section>
+        <section class="panel">
+          <h2 class="section-title">Top BirdNET Summaries</h2>
+          <div class="record-list">{top_birdnet_summary_cards}</div>
+        </section>
+        <section class="panel">
+          <h2 class="section-title">Top Detection Scores</h2>
+          <div class="record-list">{top_birdnet_score_cards}</div>
+        </section>
+        <section class="panel">
+          <h2 class="section-title">Top Occupancy Scores</h2>
+          <div class="record-list">{top_birdnet_occupancy_cards}</div>
         </section>
       </aside>
     </div>

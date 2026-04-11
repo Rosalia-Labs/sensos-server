@@ -108,20 +108,22 @@ Behavior:
 ### `bin/reset-server`
 
 Resets the local server stack in place by deleting Docker volumes, then
-rebuilding and starting the stack in the foreground.
+rebuilding and starting the stack again.
 
 Typical use:
 
 ```sh
 ./bin/reset-server
 ./bin/reset-server --yes
+./bin/reset-server --debug
 ```
 
 Behavior:
 
 - stops the Docker stack through `bin/stop-server --remove-volumes --no-backup`
 - wipes the database and other Docker volume-backed runtime state
-- rebuilds containers and starts them in the foreground for live debugging
+- rebuilds containers and starts them detached by default
+- `--debug` keeps the rebuilt stack attached in the foreground for live debugging
 - preserves the repo checkout, `docker/.env`, and host integration
 - prompts for confirmation unless `--yes` is passed
 

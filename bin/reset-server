@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STOP_SERVER_SCRIPT="${REPO_ROOT}/bin/stop-server"
 START_SERVER_SCRIPT="${REPO_ROOT}/bin/start-server"
 ASSUME_YES=0
+DEBUG_MODE=0
 
 log() {
     printf '[bin/reset-server] %s\n' "$*"
@@ -25,11 +26,11 @@ print_usage() {
 Usage: ${SCRIPT_PATH} [options]
 
 Reset the local server stack in place by removing Docker volumes, which wipes
-the database and other container state, then rebuilding and starting in the
-foreground.
+the database and other container state, then rebuilding and starting it again.
 
 Options:
   --yes             Skip the confirmation prompt
+  --debug           Start the rebuilt stack attached in the foreground
   --help            Show this help and exit
 EOF
 }
@@ -39,6 +40,9 @@ parse_args() {
         case "$1" in
             --yes)
                 ASSUME_YES=1
+                ;;
+            --debug)
+                DEBUG_MODE=1
                 ;;
             --help|-h)
                 print_usage
@@ -73,7 +77,10 @@ main() {
     log "stopping stack and removing Docker volumes"
     "${STOP_SERVER_SCRIPT}" --remove-volumes --no-backup
     log "rebuilding and starting from empty state"
-    exec "${START_SERVER_SCRIPT}" --rebuild-containers --no-detach
+    if [[ "${DEBUG_MODE}" == "1" ]]; then
+        exec "${START_SERVER_SCRIPT}" --rebuild-containers --no-detach
+    fi
+    exec "${START_SERVER_SCRIPT}" --rebuild-containers
 }
 
 main "$@"
