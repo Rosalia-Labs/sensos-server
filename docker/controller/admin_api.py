@@ -2,7 +2,7 @@
 # Copyright (c) 2025 Rosalia Labs LLC
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -26,6 +26,7 @@ from models import (
 )
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+HANDSHAKE_RE = re.compile(r"^(\d+)\s+(\w+)\s+ago$")
 
 
 def error_response(status_code: int, message: str):
@@ -400,13 +401,13 @@ def wireguard_status(credentials=Depends(authenticate_admin)):
         return peers
 
     def parse_handshake(text):
-        match = re.match(r"(\d+)\s+(\w+)\s+ago", text)
+        match = HANDSHAKE_RE.match(text)
         if not match:
             return text
         num, unit = match.groups()
         try:
             delta = timedelta(**{unit: int(num)})
-            ts = datetime.utcnow() - delta
+            ts = datetime.now(timezone.utc) - delta
             return ts.strftime("%Y-%m-%d %H:%M:%S UTC")
         except Exception:
             return text
