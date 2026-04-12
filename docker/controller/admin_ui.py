@@ -181,7 +181,7 @@ def render_page(
     .stat-value {{ font-size: 2rem; font-weight: 700; letter-spacing: -0.04em; }}
     .stat-label, .help, .dim {{ color: var(--muted); }}
     .section-title {{ margin: 0 0 0.85rem; font-size: 1.2rem; }}
-    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+    table {{ width: 100%; border-collapse: collapse; }}
     th, td {{ text-align: left; padding: 0.7rem 0.55rem; border-bottom: 1px solid var(--border); vertical-align: top; }}
     th {{ font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }}
     .badge {{
@@ -212,7 +212,6 @@ def render_page(
       margin-bottom: 1rem;
     }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.92rem; }}
-    .wrap {{ overflow-wrap: anywhere; word-break: break-word; }}
     ul.clean {{ margin: 0; padding-left: 1.1rem; }}
     @media (max-width: 900px) {{
       .masthead {{ flex-direction: column; }}
@@ -354,6 +353,22 @@ def peer_display_label(row: dict) -> str:
     if note:
         return note
     return str(row.get("wg_ip") or "Unknown")
+
+
+def truncate_middle(value, max_chars: int = 36) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    keep_left = (max_chars - 1) // 2
+    keep_right = max_chars - keep_left - 1
+    return f"{text[:keep_left]}…{text[-keep_right:]}"
+
+
+def format_endpoint(host: str | None, port) -> str:
+    host_text = str(host or "").strip() or "—"
+    return f"{host_text}:{port}" if port not in (None, "") else host_text
 
 
 def format_peer_location(row: dict) -> str:
@@ -845,7 +860,7 @@ def overview_page(request: Request, flash: str | None = None):
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
-            f"<td class='mono wrap'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
+            f"<td class='mono' title='{html.escape(format_endpoint(row['wg_public_ip'], row['wg_port']))}'>{html.escape(truncate_middle(format_endpoint(row['wg_public_ip'], row['wg_port']), 28))}</td><td>{row['peer_count']}</td></tr>"
             for row in networks
         ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
       </tbody>
@@ -1162,11 +1177,11 @@ def runtime_page(request: Request, flash: str | None = None):
                 "<th>Last contact</th><th>Transfer</th></tr></thead><tbody>"
                 + "".join(
                     "<tr>"
-                    f"<td class='mono'>{html.escape(peer['public_key'])}</td>"
-                    f"<td class='mono'>{html.escape(peer['allowed_ips'])}</td>"
-                    f"<td class='mono'>{html.escape(peer['endpoint'])}</td>"
+                    f"<td class='mono' title='{html.escape(peer['public_key'])}'>{html.escape(truncate_middle(peer['public_key'], 30))}</td>"
+                    f"<td class='mono' title='{html.escape(peer['allowed_ips'])}'>{html.escape(truncate_middle(peer['allowed_ips'], 22))}</td>"
+                    f"<td class='mono' title='{html.escape(peer['endpoint'])}'>{html.escape(truncate_middle(peer['endpoint'], 22))}</td>"
                     f"<td>{html.escape(peer['last_contact'])}</td>"
-                    f"<td>{html.escape(peer['transfer'])}</td>"
+                    f"<td title='{html.escape(peer['transfer'])}'>{html.escape(truncate_middle(peer['transfer'], 28))}</td>"
                     "</tr>"
                     for peer in row["peers"]
                 )
@@ -1184,7 +1199,7 @@ def runtime_page(request: Request, flash: str | None = None):
     <div><div class="dim">Status</div><div>{badge_for_status(row["status"])}</div></div>
     <div><div class="dim">Updated</div><div>{html.escape(format_timestamp(row["updated_at"]))}</div></div>
   </div>
-  <p><strong>Public key:</strong> <span class="mono">{html.escape(row["public_key"] or "—")}</span></p>
+  <p><strong>Public key:</strong> <span class="mono" title="{html.escape(row["public_key"] or "—")}">{html.escape(truncate_middle(row["public_key"] or "—", 48))}</span></p>
   <p><strong>Last error:</strong> {html.escape(row["last_error"] or "—")}</p>
   {peer_markup}
 </section>
