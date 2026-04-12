@@ -5,11 +5,11 @@ import json
 import os
 import html
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 
@@ -23,6 +23,13 @@ VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
 VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")
 VERSION_PATCH = os.getenv("VERSION_PATCH", "Unknown")
 VERSION_SUFFIX = os.getenv("VERSION_SUFFIX", "")
+
+SYNOPTIC_RANGES = {
+    "hour": timedelta(hours=1),
+    "day": timedelta(days=1),
+    "week": timedelta(days=7),
+    "month": timedelta(days=30),
+}
 
 
 def current_version() -> str:
@@ -52,6 +59,43 @@ def format_rfc3339_utc(value: datetime | None) -> str | None:
 
 def escape_html(value) -> str:
     return html.escape(str(value or ""))
+
+
+def normalize_synoptic_range(value: str | None) -> str:
+    candidate = (value or "day").strip().lower()
+    return candidate if candidate in SYNOPTIC_RANGES else "day"
+
+
+def downsample_points(points: list[dict], limit: int) -> list[dict]:
+    if len(points) <= limit:
+        return points
+    if limit <= 2:
+        return [points[0], points[-1]]
+    step = (len(points) - 1) / float(limit - 1)
+    sampled = [points[min(round(index * step), len(points) - 1)] for index in range(limit - 1)]
+    sampled.append(points[-1])
+    deduped: list[dict] = []
+    seen: set[tuple[str, float]] = set()
+    for point in sampled:
+        marker = (str(point.get("recorded_at") or point.get("processed_at")), float(point.get("value", point.get("activity", 0.0))))
+        if marker in seen:
+            continue
+        deduped.append(point)
+        seen.add(marker)
+    return deduped
+
+
+def bucket_birdnet_timestamp(value: datetime, range_key: str) -> datetime:
+    ts = value.astimezone(timezone.utc)
+    if range_key == "hour":
+        minute = (ts.minute // 5) * 5
+        return ts.replace(minute=minute, second=0, microsecond=0)
+    if range_key == "day":
+        return ts.replace(minute=0, second=0, microsecond=0)
+    if range_key == "week":
+        hour = (ts.hour // 6) * 6
+        return ts.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return ts.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _format_axis_value(value: float) -> str:
@@ -569,9 +613,11 @@ def fetch_site_detail(site_id: str) -> dict:
     }
 
 
-def fetch_site_synoptic(site_id: str) -> dict:
+def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     site = fetch_site_detail(site_id)
     lookup_wg_ip = site["wg_ip"]
+    normalized_range = normalize_synoptic_range(range_key)
+    cutoff = datetime.now(timezone.utc) - SYNOPTIC_RANGES[normalized_range]
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -582,10 +628,11 @@ def fetch_site_synoptic(site_id: str) -> dict:
                        reading_value
                 FROM sensos.public_site_i2c_recent
                 WHERE wg_ip = %s
+                  AND recorded_at >= %s
                 ORDER BY recorded_at DESC
-                LIMIT 320;
+                LIMIT 12000;
                 """,
-                (lookup_wg_ip,),
+                (lookup_wg_ip, cutoff),
             )
             sensor_rows = cur.fetchall()
             cur.execute(
@@ -596,10 +643,11 @@ def fetch_site_synoptic(site_id: str) -> dict:
                        top_likely_score
                 FROM sensos.public_site_birdnet_detections
                 WHERE wg_ip = %s
+                  AND processed_at >= %s
                 ORDER BY processed_at DESC
-                LIMIT 320;
+                LIMIT 12000;
                 """,
-                (lookup_wg_ip,),
+                (lookup_wg_ip, cutoff),
             )
             birdnet_rows = cur.fetchall()
 
@@ -616,7 +664,7 @@ def fetch_site_synoptic(site_id: str) -> dict:
         (
             {
                 "label": label,
-                "points": points[-96:],
+                "points": downsample_points(points, 160),
                 "latest_value": points[-1]["value"],
                 "latest_at": points[-1]["recorded_at"],
             }
@@ -635,7 +683,7 @@ def fetch_site_synoptic(site_id: str) -> dict:
         occupancy = float(top_likely_score) if top_likely_score is not None else float(top_score)
         quality = float(top_score)
         activity = quality * occupancy
-        bucket = processed_at.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        bucket = bucket_birdnet_timestamp(processed_at, normalized_range)
         bucket_key = format_rfc3339_utc(bucket)
         activity_buckets[bucket_key] = activity_buckets.get(bucket_key, 0.0) + activity
         species_activity[top_label] = species_activity.get(top_label, 0.0) + activity
@@ -651,7 +699,7 @@ def fetch_site_synoptic(site_id: str) -> dict:
     birdnet_activity_series = [
         {"processed_at": timestamp, "activity": value}
         for timestamp, value in sorted(activity_buckets.items())
-    ][-72:]
+    ]
 
     dominant_species = [
         label
@@ -664,7 +712,7 @@ def fetch_site_synoptic(site_id: str) -> dict:
     dominant_species_timelines = [
         {
             "label": label,
-            "points": species_events[label][-80:],
+            "points": downsample_points(species_events[label], 120),
             "activity_total": species_activity[label],
             "event_count": len(species_events[label]),
         }
@@ -673,8 +721,9 @@ def fetch_site_synoptic(site_id: str) -> dict:
     ]
 
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
+    site["synoptic_range"] = normalized_range
     site["sensor_series"] = sensor_series
-    site["birdnet_activity_series"] = birdnet_activity_series
+    site["birdnet_activity_series"] = downsample_points(birdnet_activity_series, 120)
     site["dominant_species_timelines"] = dominant_species_timelines
     return site
 
@@ -994,6 +1043,11 @@ def render_site_detail_html(site: dict) -> str:
 
 
 def render_synoptic_html(site: dict) -> str:
+    range_key = normalize_synoptic_range(site.get("synoptic_range"))
+    range_links = "".join(
+        f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(site["synoptic_url"])}?range={key}">{label}</a>'
+        for key, label in (("hour", "Hour"), ("day", "Day"), ("week", "Week"), ("month", "Month"))
+    )
     sensor_sections = "".join(
         f"""
         <section class="chart-card">
@@ -1046,7 +1100,7 @@ def render_synoptic_html(site: dict) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape_html(site['site_label'])} · Synoptic Time Series</title>
-  <style>
+    <style>
     :root {{
       --bg: #eff3ea;
       --ink: #17201d;
@@ -1066,19 +1120,19 @@ def render_synoptic_html(site: dict) -> str:
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
     a {{ color: #0c6d62; }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 1.25rem; }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.8rem 1rem 1.1rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
       gap: 1rem;
       align-items: flex-start;
-      margin-bottom: 1rem;
+      margin-bottom: 0.65rem;
     }}
     .back-button {{
       display: inline-flex;
       align-items: center;
       gap: 0.45rem;
-      padding: 0.55rem 0.9rem;
+      padding: 0.45rem 0.75rem;
       border-radius: 999px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.78);
@@ -1087,8 +1141,8 @@ def render_synoptic_html(site: dict) -> str:
       cursor: pointer;
       box-shadow: 0 10px 24px rgba(27,36,32,0.08);
     }}
-    h1 {{ margin: 0.55rem 0 0; font-size: clamp(2.2rem, 4vw, 4rem); letter-spacing: -0.05em; }}
-    .lede {{ color: var(--muted); max-width: 50rem; }}
+    h1 {{ margin: 0.25rem 0 0; font-size: clamp(2rem, 3.5vw, 3.2rem); letter-spacing: -0.05em; line-height: 0.96; }}
+    .lede {{ color: var(--muted); max-width: 46rem; margin-top: 0.35rem; margin-bottom: 0; font-size: 0.98rem; }}
     .meta {{ color: var(--muted); font-size: 0.95rem; }}
     .stack {{ display: grid; gap: 1rem; }}
     .panel {{
@@ -1097,23 +1151,31 @@ def render_synoptic_html(site: dict) -> str:
       border-radius: 24px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(16px);
-      padding: 1rem;
+      padding: 0.8rem 0.9rem;
+    }}
+    .section-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 0.55rem;
+      flex-wrap: wrap;
     }}
     .section-title {{
-      margin: 0 0 0.75rem;
+      margin: 0;
       font-size: 1rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--muted);
     }}
-    .chart-grid {{ display: grid; gap: 0.85rem; }}
+    .chart-grid {{ display: grid; gap: 0.75rem; }}
     .chart-card {{
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 0.85rem 0.9rem;
+      padding: 0.72rem 0.8rem;
       background: rgba(255,255,255,0.72);
     }}
-    .chart-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.6rem; }}
+    .chart-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.45rem; }}
     .chart {{
       height: 180px;
       border-radius: 14px;
@@ -1130,6 +1192,31 @@ def render_synoptic_html(site: dict) -> str:
       background: rgba(255,255,255,0.45);
     }}
     .dim {{ color: var(--muted); }}
+    .range-pills {{
+      display: inline-flex;
+      gap: 0.35rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .range-pill {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 3.5rem;
+      padding: 0.28rem 0.58rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.78);
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.82rem;
+      line-height: 1;
+    }}
+    .range-pill.active {{
+      background: #0c6d62;
+      border-color: #0c6d62;
+      color: #f7f4ed;
+    }}
   </style>
 </head>
 <body>
@@ -1147,7 +1234,10 @@ def render_synoptic_html(site: dict) -> str:
     </div>
     <div class="stack">
       <section class="panel">
-        <h2 class="section-title">Environmental Sensor Time Series</h2>
+        <div class="section-bar">
+          <h2 class="section-title">Environmental Sensor Time Series</h2>
+          <div class="range-pills">{range_links}</div>
+        </div>
         <div class="chart-grid">{sensor_sections}</div>
       </section>
       <section class="panel">
@@ -1866,8 +1956,12 @@ def site_page(site_id: str):
 
 
 @app.get("/sites/{site_id}/synoptic", response_class=HTMLResponse)
-def synoptic_site_page(site_id: str):
-    return HTMLResponse(render_synoptic_html(fetch_site_synoptic(site_id)))
+def synoptic_site_page(site_id: str, request: Request):
+    return HTMLResponse(
+        render_synoptic_html(
+            fetch_site_synoptic(site_id, request.query_params.get("range"))
+        )
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
