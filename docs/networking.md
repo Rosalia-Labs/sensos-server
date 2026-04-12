@@ -138,7 +138,7 @@ sudo ufw allow 8765/tcp
 When a new network is created, the server stores:
 
 - `name`
-- `wg_public_ip` as the client-visible WireGuard endpoint address
+- `wg_public_ip` as the client-visible WireGuard endpoint host or address
 - `wg_port`
 - a generated `10.x.0.0/16` WireGuard address range, chosen by hashing the
   network name and then probing for the next free `/16` if that preferred range
@@ -168,13 +168,14 @@ already running, for example:
 ```sh
 ./bin/create-network testing
 ./bin/create-network biosense
-./bin/create-network testing --wg-public-ip server.example.org --wg-port 51820
+./bin/create-network testing --wg-public-host server.example.org --wg-port 51820
 ```
 
 In the first two examples, `bin/create-network` uses the host's detected public
 IPv4 address and allocates the next free public WireGuard port in `51281..51289`.
-Use `--wg-public-ip` or `--wg-port` when clients should target a different
-address, hostname, or port.
+Use `--wg-public-host` or `--wg-port` when clients should target a different
+address, hostname, or port. Hostnames are valid anywhere the client can resolve
+them; IP literals remain fine for testing and tightly controlled environments.
 
 If all 9 default WireGuard ports are already assigned, network creation stops.
 At that point you need manual intervention: free an existing port, pick an

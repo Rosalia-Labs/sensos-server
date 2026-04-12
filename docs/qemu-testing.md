@@ -158,7 +158,7 @@ Create the test network from inside the server guest:
 
 ```bash
 ./bin/create-network testing \
-  --wg-public-ip 10.0.2.2 \
+  --wg-public-host 10.0.2.2 \
   --wg-port 51281
 ```
 
@@ -167,7 +167,7 @@ explicitly instead of editing the database by hand:
 
 ```bash
 ./bin/update-network-endpoint testing \
-  --wg-public-ip 10.0.2.2 \
+  --wg-public-host 10.0.2.2 \
   --wg-port 51281
 ```
 

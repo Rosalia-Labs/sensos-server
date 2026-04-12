@@ -206,7 +206,7 @@ Typical server-guest network creation:
 
 ```sh
 ./bin/create-network testing \
-  --wg-public-ip 10.0.2.2 \
+  --wg-public-host 10.0.2.2 \
   --wg-port 51281
 ```
 
