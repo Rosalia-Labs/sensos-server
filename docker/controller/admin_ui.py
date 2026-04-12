@@ -181,7 +181,7 @@ def render_page(
     .stat-value {{ font-size: 2rem; font-weight: 700; letter-spacing: -0.04em; }}
     .stat-label, .help, .dim {{ color: var(--muted); }}
     .section-title {{ margin: 0 0 0.85rem; font-size: 1.2rem; }}
-    table {{ width: 100%; border-collapse: collapse; }}
+    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
     th, td {{ text-align: left; padding: 0.7rem 0.55rem; border-bottom: 1px solid var(--border); vertical-align: top; }}
     th {{ font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }}
     .badge {{
@@ -209,8 +209,10 @@ def render_page(
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
       gap: 1rem;
+      margin-bottom: 1rem;
     }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.92rem; }}
+    .wrap {{ overflow-wrap: anywhere; word-break: break-word; }}
     ul.clean {{ margin: 0; padding-left: 1.1rem; }}
     @media (max-width: 900px) {{
       .masthead {{ flex-direction: column; }}
@@ -843,14 +845,14 @@ def overview_page(request: Request, flash: str | None = None):
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
-            f"<td class='mono'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
+            f"<td class='mono wrap'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td><td>{row['peer_count']}</td></tr>"
             for row in networks
         ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
   </section>
 </div>
-<section class="panel">
+<section class="panel" style="margin-top: 1rem;">
   <h2 class="section-title">Build metadata</h2>
   <ul class="clean">
     <li><span class="mono">version</span>: {html.escape(current_server_version())}</li>

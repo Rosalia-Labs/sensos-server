@@ -869,6 +869,7 @@ def render_site_detail_html(site: dict) -> str:
       border-radius: 18px;
       padding: 0.85rem 0.9rem;
       background: rgba(255,255,255,0.72);
+      min-width: 0;
     }}
     .metric-label {{
       color: var(--muted);
@@ -881,6 +882,8 @@ def render_site_detail_html(site: dict) -> str:
       font-size: 1.5rem;
       letter-spacing: -0.05em;
       font-weight: 700;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }}
     .section-title {{
       margin: 0 0 0.75rem;
@@ -1321,11 +1324,14 @@ def render_index_html() -> str:
       border-radius: 18px;
       padding: 0.85rem 0.9rem;
       background: rgba(255,255,255,0.62);
+      min-width: 0;
     }}
     .metric-value {{
       font-size: 1.5rem;
       font-weight: 700;
       letter-spacing: -0.05em;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }}
     .section-title {{
       margin: 0 0 0.55rem;
