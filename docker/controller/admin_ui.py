@@ -354,6 +354,14 @@ def peer_display_label(row: dict) -> str:
     return str(row.get("wg_ip") or "Unknown")
 
 
+def format_peer_location(row: dict) -> str:
+    latitude = row.get("latitude")
+    longitude = row.get("longitude")
+    if latitude is None or longitude is None:
+        return "Location unknown"
+    return f"{float(latitude):.5f}, {float(longitude):.5f}"
+
+
 def parse_wireguard_peers(output: str) -> list[dict[str, str]]:
     lines = output.strip().splitlines()
     peers: list[dict[str, str]] = []
@@ -487,6 +495,15 @@ def fetch_peer_rows(
                 status_message
             FROM sensos.client_status
             ORDER BY peer_id, last_check_in DESC
+        ),
+        latest_location AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                recorded_at,
+                public.ST_Y(location::public.geometry)::float AS latitude,
+                public.ST_X(location::public.geometry)::float AS longitude
+            FROM sensos.peer_locations
+            ORDER BY peer_id, recorded_at DESC
         )
         SELECT p.uuid::text,
                p.wg_ip::text,
@@ -497,10 +514,14 @@ def fetch_peer_rows(
                ls.last_check_in,
                ls.hostname,
                ls.version,
-               ls.status_message
+               ls.status_message,
+               ll.recorded_at,
+               ll.latitude,
+               ll.longitude
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
+        LEFT JOIN latest_location ll ON ll.peer_id = p.id
     """
     params: list[str] = []
 
@@ -527,6 +548,9 @@ def fetch_peer_rows(
             "hostname": row[7],
             "version": row[8],
             "status_message": row[9],
+            "location_recorded_at": row[10],
+            "latitude": row[11],
+            "longitude": row[12],
         }
         for row in rows
     ]
@@ -1009,8 +1033,8 @@ def peers_page(
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
             f"<td>{html.escape(summarize_age(row['last_check_in']))}</td>"
             "<td>"
-            f"<div>{html.escape(row['status_message'] or row['note'] or '—')}</div>"
-            f"<div class='dim mono'>{html.escape(row['version'] or row['peer_uuid'])}</div>"
+            f"<div>{html.escape(row['status_message'] or '—')}</div>"
+            f"<div class='dim mono'>{html.escape(format_peer_location(row))}</div>"
             "</td>"
             "<td>"
             f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/active'>"
