@@ -1143,7 +1143,6 @@ def fetch_site_birdnet_rankings(
                     WHERE wg_ip = %s
                     GROUP BY top_label
                     ORDER BY {sort_config["order_sql"]}
-                    LIMIT 24;
                     """,
                     (site["wg_ip"],),
                 )
@@ -1173,7 +1172,6 @@ def fetch_site_birdnet_rankings(
                         WHERE wg_ip = %s
                         GROUP BY top_label
                         ORDER BY {sort_config["order_sql"]}
-                        LIMIT 24;
                         """,
                         (site["wg_ip"],),
                     )
@@ -1193,7 +1191,6 @@ def fetch_site_birdnet_rankings(
                           AND processed_at >= %s
                         GROUP BY top_label
                         ORDER BY {sort_config["order_sql"]}
-                        LIMIT 24;
                         """,
                         (site["wg_ip"], anchored_cutoff),
                     )
