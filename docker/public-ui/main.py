@@ -49,6 +49,21 @@ def get_db(retries: int = 10, delay: int = 3):
             time.sleep(delay)
 
 
+def relation_has_column(cur, schema_name: str, relation_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1;
+        """,
+        (schema_name, relation_name, column_name),
+    )
+    return cur.fetchone() is not None
+
+
 def format_rfc3339_utc(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -353,6 +368,12 @@ def fetch_sites() -> list[dict]:
 def fetch_site_detail(site_id: str) -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_window_volume = relation_has_column(
+                cur,
+                "sensos",
+                "public_site_birdnet_detections",
+                "window_volume",
+            )
             cur.execute(
                 """
                 SELECT peer_uuid,
@@ -470,25 +491,48 @@ def fetch_site_detail(site_id: str) -> dict:
             )
             top_birdnet_occupancy = cur.fetchall()
             cur.execute(
-                """
-                SELECT receipt_id,
-                       hostname,
-                       client_version,
-                       batch_id,
-                       source_path,
-                       processed_at,
-                       channel_index,
-                       start_sec,
-                       end_sec,
-                       window_volume,
-                       top_label,
-                       top_score,
-                       top_likely_score
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                  AND detection_rank <= 12
-                ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
-                """,
+                (
+                    """
+                    SELECT receipt_id,
+                           hostname,
+                           client_version,
+                           batch_id,
+                           source_path,
+                           processed_at,
+                           channel_index,
+                           start_sec,
+                           end_sec,
+                           window_volume,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND detection_rank <= 12
+                    ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
+                    """
+                    if has_window_volume
+                    else
+                    """
+                    SELECT receipt_id,
+                           hostname,
+                           client_version,
+                           batch_id,
+                           source_path,
+                           processed_at,
+                           channel_index,
+                           start_sec,
+                           end_sec,
+                           NULL::double precision AS window_volume,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND detection_rank <= 12
+                    ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
+                    """
+                ),
                 (lookup_wg_ip,),
             )
             detections = cur.fetchall()

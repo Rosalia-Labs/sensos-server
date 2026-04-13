@@ -170,7 +170,7 @@ class BirdNETDetectionUploadEntry(BaseModel):
     end_frame: int = Field(ge=0)
     start_sec: float = Field(ge=0)
     end_sec: float = Field(ge=0)
-    window_volume: float = Field(ge=0, le=1)
+    window_volume: Optional[float] = Field(default=None, ge=0, le=1)
     top_label: str
     top_score: float
     top_likely_score: Optional[float] = None

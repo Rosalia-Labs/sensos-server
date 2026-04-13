@@ -1243,7 +1243,7 @@ def create_birdnet_detections_table(cur):
             end_frame BIGINT NOT NULL,
             start_sec DOUBLE PRECISION NOT NULL,
             end_sec DOUBLE PRECISION NOT NULL,
-            window_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+            window_volume DOUBLE PRECISION,
             top_label TEXT NOT NULL,
             top_score DOUBLE PRECISION NOT NULL,
             top_likely_score DOUBLE PRECISION
@@ -1253,7 +1253,19 @@ def create_birdnet_detections_table(cur):
     cur.execute(
         """
         ALTER TABLE sensos.birdnet_detections
-        ADD COLUMN IF NOT EXISTS window_volume DOUBLE PRECISION NOT NULL DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS window_volume DOUBLE PRECISION;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ALTER COLUMN window_volume DROP DEFAULT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ALTER COLUMN window_volume DROP NOT NULL;
         """
     )
     cur.execute(
