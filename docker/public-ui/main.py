@@ -1158,7 +1158,6 @@ def render_site_detail_html(site: dict) -> str:
             <div class="metric"><div class="metric-label">Sensor Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
             <div class="metric"><div class="metric-label">Status</div><div class="metric-value">{site['status_message'] or ('Active' if site['is_active'] else 'Inactive')}</div></div>
-            <div class="metric"><div class="metric-label">Peer ID</div><div class="metric-value mono">{site['peer_uuid']}</div></div>
           </div>
         </section>
         <section class="panel">
