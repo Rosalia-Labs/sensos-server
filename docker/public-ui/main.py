@@ -445,6 +445,26 @@ def fetch_site_detail(site_id: str) -> dict:
                 """
                 SELECT top_label,
                        count(*)::integer AS detection_count,
+                       sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                       avg(top_score) AS average_score,
+                       max(top_score) AS best_score,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                GROUP BY top_label
+                ORDER BY evidence_weight DESC,
+                         best_score DESC,
+                         detection_count DESC,
+                         top_label ASC
+                LIMIT 8;
+                """,
+                (lookup_wg_ip,),
+            )
+            top_birdnet_evidence = cur.fetchall()
+            cur.execute(
+                """
+                SELECT top_label,
+                       count(*)::integer AS detection_count,
                        max(top_score) AS best_score,
                        max(processed_at) AS latest_processed_at
                 FROM sensos.public_site_birdnet_detections
@@ -604,6 +624,17 @@ def fetch_site_detail(site_id: str) -> dict:
                 "latest_processed_at": format_rfc3339_utc(summary[3]),
             }
             for summary in top_birdnet_labels
+        ],
+        "top_birdnet_evidence": [
+            {
+                "label": summary[0],
+                "detection_count": int(summary[1]),
+                "evidence_weight": float(summary[2]) if summary[2] is not None else None,
+                "average_score": float(summary[3]) if summary[3] is not None else None,
+                "best_score": float(summary[4]) if summary[4] is not None else None,
+                "latest_processed_at": format_rfc3339_utc(summary[5]),
+            }
+            for summary in top_birdnet_evidence
         ],
         "top_birdnet_score_summaries": [
             {
@@ -777,11 +808,25 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
 
 
 def render_site_detail_html(site: dict) -> str:
+    evidence_cards = "".join(
+        f"""
+        <article class="evidence-card">
+          <div class="evidence-rank">{index}</div>
+          <div>
+            <div><strong>{summary['label']}</strong></div>
+            <div class="dim">weight {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
+            <div class="dim">avg score {summary['average_score']:.2f} · latest {summary['latest_processed_at'] or 'Unknown time'}</div>
+          </div>
+        </article>
+        """
+        for index, summary in enumerate(site["top_birdnet_evidence"], start=1)
+    ) or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+
     birdnet_cards = "".join(
         f"""
         <article class="record-card">
           <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('window_volume') is None else f"{detection['window_volume']:.3f}"}</span></div>
-          <div class="dim">{detection['processed_at'] or 'Unknown time'} · batch {detection['batch_id']} · ch {detection['channel_index']}</div>
+          <div class="dim">{detection['processed_at'] or 'Unknown time'} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
         </article>
@@ -799,17 +844,6 @@ def render_site_detail_html(site: dict) -> str:
         """
         for reading in site["recent_i2c_readings"]
     ) or '<div class="empty">No sensor readings are visible yet for this site.</div>'
-
-    batch_cards = "".join(
-        f"""
-        <article class="record-card">
-          <div><strong>Batch {batch['batch_id']}</strong> <span class="dim">{batch['ownership_mode']}</span></div>
-          <div class="dim">{batch['source_count']} source files · received {batch['server_received_at'] or 'Unknown time'}</div>
-          <div class="mono">{batch['receipt_id']}</div>
-        </article>
-        """
-        for batch in site["recent_birdnet_batches"]
-    ) or '<div class="empty">No BirdNET batches are visible yet for this site.</div>'
 
     top_birdnet_summary_cards = "".join(
         f"""
@@ -874,59 +908,44 @@ def render_site_detail_html(site: dict) -> str:
         linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
     }}
     a {{ color: var(--accent); }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 1.25rem; }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.9rem 1rem 1.25rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
       gap: 1rem;
       align-items: flex-start;
-      margin-bottom: 1rem;
+      margin-bottom: 0.8rem;
     }}
-    .kicker {{
-      display: inline-block;
-      padding: 0.35rem 0.7rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.75);
+    .nav-row {{
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 0.35rem;
+    }}
+    .nav-link {{
       color: var(--muted);
-      font-size: 0.9rem;
-    }}
-    .back-button {{
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      padding: 0.55rem 0.9rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.78);
-      color: var(--ink);
-      font: inherit;
-      cursor: pointer;
-      box-shadow: 0 10px 24px rgba(27,36,32,0.08);
-    }}
-    .primary-link {{
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      margin-top: 0.85rem;
-      padding: 0.75rem 1rem;
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(12,109,98,0.96), rgba(25,148,135,0.9));
-      color: white;
       text-decoration: none;
-      font-weight: 700;
-      box-shadow: 0 12px 28px rgba(12,109,98,0.22);
+      font-size: 0.96rem;
     }}
+    .nav-link strong {{ color: var(--ink); }}
     h1 {{
-      margin: 0.55rem 0 0;
-      font-size: clamp(2.2rem, 4vw, 4rem);
+      margin: 0;
+      font-size: clamp(2rem, 3.2vw, 3.2rem);
       letter-spacing: -0.05em;
+      line-height: 0.95;
     }}
-    .lede {{ color: var(--muted); max-width: 42rem; }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .lede {{ color: var(--muted); max-width: 44rem; margin: 0.35rem 0 0; }}
+    .meta {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      text-align: right;
+      display: grid;
+      gap: 0.25rem;
+    }}
     .layout {{
       display: grid;
-      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      grid-template-columns: minmax(0, 1fr);
       gap: 1rem;
     }}
     .stack {{ display: grid; gap: 1rem; align-content: start; }}
@@ -936,37 +955,51 @@ def render_site_detail_html(site: dict) -> str:
       border-radius: 24px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(16px);
-      padding: 1rem;
+      padding: 0.9rem;
     }}
-    .hero {{
+    .summary-strip {{
       display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-      gap: 1rem;
-      align-items: stretch;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 0.7rem;
     }}
-    .coord-card {{
-      min-height: 15rem;
-      border-radius: 20px;
-      background:
-        linear-gradient(135deg, rgba(12,109,98,0.92), rgba(12,109,98,0.62)),
-        linear-gradient(180deg, #b6d4cf, #8db7ae);
-      color: white;
-      padding: 1rem;
-      display: grid;
-      align-content: end;
-    }}
-    .coord-card .mono {{ opacity: 0.92; }}
-    .metric-grid {{
+    .evidence-grid {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.8rem;
+      gap: 0.7rem;
+    }}
+    .detail-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 1rem;
     }}
     .metric {{
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 0.85rem 0.9rem;
+      padding: 0.8rem 0.85rem;
       background: rgba(255,255,255,0.72);
       min-width: 0;
+    }}
+    .evidence-card {{
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.72);
+      display: grid;
+      grid-template-columns: 2.4rem minmax(0, 1fr);
+      gap: 0.8rem;
+      align-items: start;
+    }}
+    .evidence-rank {{
+      width: 2.4rem;
+      height: 2.4rem;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(12,109,98,0.94), rgba(25,148,135,0.88));
+      color: white;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 1rem;
+      box-shadow: 0 10px 24px rgba(12,109,98,0.18);
     }}
     .metric-label {{
       color: var(--muted);
@@ -1010,8 +1043,9 @@ def render_site_detail_html(site: dict) -> str:
       background: rgba(255,255,255,0.45);
     }}
     @media (max-width: 980px) {{
-      .layout, .hero {{ grid-template-columns: 1fr; }}
-      .metric-grid {{ grid-template-columns: 1fr 1fr; }}
+      .masthead {{ grid-template-columns: 1fr; }}
+      .summary-strip, .evidence-grid, .detail-grid {{ grid-template-columns: 1fr; }}
+      .meta {{ text-align: left; }}
     }}
   </style>
 </head>
@@ -1019,11 +1053,13 @@ def render_site_detail_html(site: dict) -> str:
   <div class="shell">
     <div class="masthead">
       <div>
-        <button class="back-button" type="button" onclick="goBack()">← Return to previous view</button>
-        <div class="kicker">SensOS Public Site</div>
+        <div class="nav-row">
+          <a class="nav-link" href="/" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
+          <span class="nav-link">SensOS Public Site</span>
+          <a class="nav-link" href="{synoptic_url}">Time series</a>
+        </div>
         <h1>{site['site_label']}</h1>
         {note_html}
-        <a class="primary-link" href="{synoptic_url}">Open Synoptic Time Series</a>
       </div>
       <div class="meta">
         <div><a href="/">Back to all field sites</a></div>
@@ -1033,48 +1069,43 @@ def render_site_detail_html(site: dict) -> str:
     </div>
     <div class="layout">
       <main class="stack">
-        <section class="panel hero">
-          <div class="coord-card">
-            <div class="dim">Coordinates</div>
-            <div style="font-size:2rem;font-weight:700;letter-spacing:-0.05em;">{site['latitude']:.4f}, {site['longitude']:.4f}</div>
-            <div class="mono">{site['wg_ip']} · {site['peer_uuid']}</div>
-          </div>
-          <div class="metric-grid">
+        <section class="panel">
+          <div class="summary-strip">
+            <div class="metric"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{site['wg_ip']}</div></div>
             <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{site['last_check_in'] or 'Never'}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
             <div class="metric"><div class="metric-label">Sensor Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
-            <div class="metric"><div class="metric-label">BirdNET Batches</div><div class="metric-value">{site['birdnet_batch_count']}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
             <div class="metric"><div class="metric-label">Status</div><div class="metric-value">{site['status_message'] or ('Active' if site['is_active'] else 'Inactive')}</div></div>
+            <div class="metric"><div class="metric-label">Peer ID</div><div class="metric-value mono">{site['peer_uuid']}</div></div>
           </div>
         </section>
         <section class="panel">
-          <h2 class="section-title">Recent BirdNET Detections</h2>
-          <div class="record-list">{birdnet_cards}</div>
+          <h2 class="section-title">Top Species By Weight Of Evidence</h2>
+          <div class="dim" style="margin-bottom:0.8rem;">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
+          <div class="evidence-grid">{evidence_cards}</div>
         </section>
-        <section class="panel">
-          <h2 class="section-title">Recent Sensor Readings</h2>
-          <div class="record-list">{i2c_cards}</div>
-        </section>
+        <div class="detail-grid">
+          <section class="panel">
+            <h2 class="section-title">Recent BirdNET Detections</h2>
+            <div class="record-list">{birdnet_cards}</div>
+          </section>
+          <div class="stack">
+            <section class="panel">
+              <h2 class="section-title">Top Detection Scores</h2>
+              <div class="record-list">{top_birdnet_score_cards}</div>
+            </section>
+            <section class="panel">
+              <h2 class="section-title">Recent Sensor Readings</h2>
+              <div class="record-list">{i2c_cards}</div>
+            </section>
+            <section class="panel">
+              <h2 class="section-title">Species Detection Counts</h2>
+              <div class="record-list">{top_birdnet_summary_cards}</div>
+            </section>
+          </div>
+        </div>
       </main>
-      <aside class="stack">
-        <section class="panel">
-          <h2 class="section-title">BirdNET Upload Batches</h2>
-          <div class="record-list">{batch_cards}</div>
-        </section>
-        <section class="panel">
-          <h2 class="section-title">Top BirdNET Summaries</h2>
-          <div class="record-list">{top_birdnet_summary_cards}</div>
-        </section>
-        <section class="panel">
-          <h2 class="section-title">Top Detection Scores</h2>
-          <div class="record-list">{top_birdnet_score_cards}</div>
-        </section>
-        <section class="panel">
-          <h2 class="section-title">Top Occupancy Scores</h2>
-          <div class="record-list">{top_birdnet_occupancy_cards}</div>
-        </section>
-      </aside>
     </div>
   </div>
   <script>
