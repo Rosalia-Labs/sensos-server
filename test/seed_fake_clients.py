@@ -435,6 +435,7 @@ def build_birdnet_payloads(
                         "end_frame": end_frame,
                         "start_sec": start_sec,
                         "end_sec": end_sec,
+                        "window_volume": round(rng.uniform(0.005, 0.2), 4),
                         "top_label": label,
                         "top_score": top_score,
                         "top_likely_score": likely_score,

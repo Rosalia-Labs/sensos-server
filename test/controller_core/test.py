@@ -535,6 +535,7 @@ def test_store_birdnet_results_upload_inserts_new_batch():
             end_frame=144000,
             start_sec=0.0,
             end_sec=3.0,
+            window_volume=0.018,
             top_label="Bird",
             top_score=0.9,
             top_likely_score=0.7,

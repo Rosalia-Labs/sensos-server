@@ -1243,10 +1243,17 @@ def create_birdnet_detections_table(cur):
             end_frame BIGINT NOT NULL,
             start_sec DOUBLE PRECISION NOT NULL,
             end_sec DOUBLE PRECISION NOT NULL,
+            window_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
             top_label TEXT NOT NULL,
             top_score DOUBLE PRECISION NOT NULL,
             top_likely_score DOUBLE PRECISION
         );
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS window_volume DOUBLE PRECISION NOT NULL DEFAULT 0;
         """
     )
     cur.execute(
@@ -1381,6 +1388,7 @@ def create_public_site_birdnet_detections_view(cur):
                d.window_index,
                d.start_sec,
                d.end_sec,
+               d.window_volume,
                d.top_label,
                d.top_score,
                d.top_likely_score,
@@ -1721,10 +1729,11 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                             end_frame,
                             start_sec,
                             end_sec,
+                            window_volume,
                             top_label,
                             top_score,
                             top_likely_score
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                         """,
                         [
                             (
@@ -1735,6 +1744,7 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                                 detection.end_frame,
                                 detection.start_sec,
                                 detection.end_sec,
+                                detection.window_volume,
                                 detection.top_label,
                                 detection.top_score,
                                 detection.top_likely_score,

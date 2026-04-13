@@ -480,6 +480,7 @@ def fetch_site_detail(site_id: str) -> dict:
                        channel_index,
                        start_sec,
                        end_sec,
+                       window_volume,
                        top_label,
                        top_score,
                        top_likely_score
@@ -589,9 +590,10 @@ def fetch_site_detail(site_id: str) -> dict:
                 "channel_index": detection[6],
                 "start_sec": float(detection[7]),
                 "end_sec": float(detection[8]),
-                "top_label": detection[9],
-                "top_score": float(detection[10]),
-                "top_likely_score": float(detection[11]) if detection[11] is not None else None,
+                "window_volume": float(detection[9]),
+                "top_label": detection[10],
+                "top_score": float(detection[11]),
+                "top_likely_score": float(detection[12]) if detection[12] is not None else None,
             }
             for detection in detections
         ],
@@ -732,7 +734,7 @@ def render_site_detail_html(site: dict) -> str:
     birdnet_cards = "".join(
         f"""
         <article class="record-card">
-          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f}</span></div>
+          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {detection['window_volume']:.3f}</span></div>
           <div class="dim">{detection['processed_at'] or 'Unknown time'} · batch {detection['batch_id']} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
@@ -1815,7 +1817,7 @@ def render_index_html() -> str:
           const card = document.createElement("div");
           card.className = "record-card";
           card.innerHTML = `
-            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}}</span></div>
+            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.window_volume, 3))}}</span></div>
             <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
             <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s · batch ${{detection.batch_id}}</div>
             <div class="mono">${{escapeHtml(detection.source_path)}}</div>
