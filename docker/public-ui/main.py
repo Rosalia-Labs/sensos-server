@@ -590,7 +590,9 @@ def fetch_site_detail(site_id: str) -> dict:
                 "channel_index": detection[6],
                 "start_sec": float(detection[7]),
                 "end_sec": float(detection[8]),
-                "window_volume": float(detection[9]),
+                "window_volume": (
+                    float(detection[9]) if detection[9] is not None else None
+                ),
                 "top_label": detection[10],
                 "top_score": float(detection[11]),
                 "top_likely_score": float(detection[12]) if detection[12] is not None else None,
@@ -734,7 +736,7 @@ def render_site_detail_html(site: dict) -> str:
     birdnet_cards = "".join(
         f"""
         <article class="record-card">
-          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {detection['window_volume']:.3f}</span></div>
+          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('window_volume') is None else f"{detection['window_volume']:.3f}"}</span></div>
           <div class="dim">{detection['processed_at'] or 'Unknown time'} · batch {detection['batch_id']} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
