@@ -4,6 +4,7 @@
 import json
 import os
 import html
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -124,6 +125,53 @@ def escape_html(value) -> str:
     return html.escape(str(value or ""))
 
 
+def render_local_time(value: str | None, fallback: str = "Unknown time") -> str:
+    if not value:
+        return escape_html(fallback)
+    safe_value = escape_html(value)
+    return f'<time class="local-time" data-utc="{safe_value}" datetime="{safe_value}">{safe_value}</time>'
+
+
+def render_local_time_script() -> str:
+    return """
+  <script>
+    function formatLocalTimestamp(value, options) {
+      if (!value) return "";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      return new Intl.DateTimeFormat(undefined, options || {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short"
+      }).format(parsed);
+    }
+
+    function localizeUtcElements(root) {
+      const scope = root || document;
+      for (const node of scope.querySelectorAll("[data-utc]")) {
+        const utcValue = node.getAttribute("data-utc");
+        const mode = node.getAttribute("data-time-style") || "full";
+        const options = mode === "tick"
+          ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
+          : { year: "numeric", month: "short", day: "2-digit", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" };
+        node.textContent = formatLocalTimestamp(utcValue, options);
+      }
+      const timezoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || "your browser timezone";
+      for (const node of scope.querySelectorAll("[data-browser-timezone]")) {
+        node.textContent = timezoneName;
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+      localizeUtcElements(document);
+    });
+  </script>"""
+
+
 def normalize_synoptic_range(value: str | None) -> str:
     candidate = (value or "day").strip().lower()
     return candidate if candidate in SYNOPTIC_RANGES else "day"
@@ -142,6 +190,17 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 def normalize_birdnet_ranking_sort(value: str | None) -> str:
     candidate = (value or "sum_score_x_occup").strip().lower()
     return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_occup"
+
+
+def window_cutoff_from_latest(
+    latest_timestamp: datetime | None,
+    window: timedelta | None,
+) -> datetime | None:
+    if latest_timestamp is None or window is None:
+        return None
+    if latest_timestamp.tzinfo is None:
+        latest_timestamp = latest_timestamp.replace(tzinfo=timezone.utc)
+    return latest_timestamp.astimezone(timezone.utc) - window
 
 
 def downsample_points(points: list[dict], limit: int) -> list[dict]:
@@ -189,6 +248,24 @@ def _format_time_tick(value: str) -> str:
     return timestamp.strftime("%m-%d %H:%M")
 
 
+def detection_event_timestamp(source_path: str | None, start_sec: float | None, processed_at: datetime) -> datetime:
+    if source_path:
+        match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)", source_path)
+        if match is not None:
+            try:
+                start_dt = datetime.strptime(match.group(1), "%Y-%m-%dT%H-%M-%SZ").replace(
+                    tzinfo=timezone.utc
+                )
+                if start_sec is not None:
+                    return start_dt + timedelta(seconds=float(start_sec))
+                return start_dt
+            except ValueError:
+                pass
+    if processed_at.tzinfo is None:
+        return processed_at.replace(tzinfo=timezone.utc)
+    return processed_at.astimezone(timezone.utc)
+
+
 def _chart_bounds(width: int, height: int) -> dict:
     return {
         "left": 58,
@@ -202,7 +279,7 @@ def _render_axes(
     bounds: dict,
     min_value: float,
     max_value: float,
-    x_labels: list[tuple[float, str]],
+    x_labels: list,
 ) -> str:
     left = bounds["left"]
     right = bounds["right"]
@@ -222,13 +299,27 @@ def _render_axes(
         parts.append(
             f'<text x="{left - 8}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
         )
-    for x, label in x_labels:
+    for item in x_labels:
+        if isinstance(item, dict):
+            x = float(item["x"])
+            label = item.get("label")
+            utc_value = item.get("utc")
+        else:
+            x, label = item
+            utc_value = None
         parts.append(
             f'<line x1="{x:.2f}" y1="{bottom}" x2="{x:.2f}" y2="{bottom + 6}" stroke="rgba(23,32,29,0.24)" stroke-width="1"></line>'
         )
-        parts.append(
-            f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
-        )
+        if utc_value:
+            safe_utc = escape_html(str(utc_value))
+            fallback = escape_html(_format_time_tick(str(utc_value)))
+            parts.append(
+                f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)" data-utc="{safe_utc}" data-time-style="tick">{fallback}</text>'
+            )
+        else:
+            parts.append(
+                f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
+            )
     return "".join(parts)
 
 
@@ -263,7 +354,7 @@ def render_line_chart_svg(
     if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
         time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
-        x_labels = [(coords[index][0], _format_time_tick(points[index][time_key])) for index in tick_indexes]
+        x_labels = [{"x": coords[index][0], "utc": points[index][time_key]} for index in tick_indexes]
     path = " ".join(
         ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
         + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
@@ -317,10 +408,7 @@ def render_bar_chart_svg(
     if points and "processed_at" in points[0]:
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
         x_labels = [
-            (
-                left + index * step_x + step_x / 2,
-                _format_time_tick(points[index]["processed_at"]),
-            )
+            {"x": left + index * step_x + step_x / 2, "utc": points[index]["processed_at"]}
             for index in tick_indexes
         ]
     return (
@@ -340,7 +428,8 @@ def render_event_timeline_svg(
 ) -> str:
     if not points:
         return ""
-    timestamps = [datetime.fromisoformat(point["processed_at"].replace("Z", "+00:00")) for point in points]
+    time_key = "event_at" if points and "event_at" in points[0] else "processed_at"
+    timestamps = [datetime.fromisoformat(point[time_key].replace("Z", "+00:00")) for point in points]
     values = [float(point[value_key]) for point in points]
     if not timestamps or not values:
         return ""
@@ -354,9 +443,9 @@ def render_event_timeline_svg(
     total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
     circles = []
     x_labels = [
-        (left, _format_time_tick(points[0]["processed_at"])),
-        ((left + right) / 2, _format_time_tick(points[len(points) // 2]["processed_at"])),
-        (right, _format_time_tick(points[-1]["processed_at"])),
+        {"x": left, "utc": points[0][time_key]},
+        {"x": (left + right) / 2, "utc": points[len(points) // 2][time_key]},
+        {"x": right, "utc": points[-1][time_key]},
     ]
     guides = [_render_axes(bounds, 0.0, 1.0, x_labels)]
     for ts, value, point in zip(timestamps, values, points):
@@ -364,7 +453,7 @@ def render_event_timeline_svg(
         y = bottom - value * (bottom - top)
         radius = 3.5 + value * 4.5
         circles.append(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="{stroke}" opacity="0.82"><title>{escape_html(point["processed_at"])} · {value:.2f}</title></circle>'
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="{stroke}" opacity="0.82"><title>{escape_html(point[time_key])} · {value:.2f}</title></circle>'
         )
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
@@ -843,37 +932,95 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     site = fetch_site_detail(site_id)
     lookup_wg_ip = site["wg_ip"]
     normalized_range = normalize_synoptic_range(range_key)
-    cutoff = datetime.now(timezone.utc) - SYNOPTIC_RANGES[normalized_range]
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT recorded_at,
-                       sensor_type,
-                       reading_key,
-                       reading_value
+                SELECT max(recorded_at)
                 FROM sensos.public_site_i2c_recent
-                WHERE wg_ip = %s
-                  AND recorded_at >= %s
-                ORDER BY recorded_at DESC
-                LIMIT 12000;
+                WHERE wg_ip = %s;
                 """,
-                (lookup_wg_ip, cutoff),
+                (lookup_wg_ip,),
             )
+            latest_sensor_at = cur.fetchone()[0]
+            sensor_cutoff = window_cutoff_from_latest(
+                latest_sensor_at,
+                SYNOPTIC_RANGES[normalized_range],
+            )
+            if sensor_cutoff is None:
+                cur.execute(
+                    """
+                    SELECT recorded_at,
+                           sensor_type,
+                           reading_key,
+                           reading_value
+                    FROM sensos.public_site_i2c_recent
+                    WHERE wg_ip = %s
+                    ORDER BY recorded_at DESC
+                    LIMIT 12000;
+                    """,
+                    (lookup_wg_ip,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT recorded_at,
+                           sensor_type,
+                           reading_key,
+                           reading_value
+                    FROM sensos.public_site_i2c_recent
+                    WHERE wg_ip = %s
+                      AND recorded_at >= %s
+                    ORDER BY recorded_at DESC
+                    LIMIT 12000;
+                    """,
+                    (lookup_wg_ip, sensor_cutoff),
+                )
             sensor_rows = cur.fetchall()
             cur.execute(
                 """
-                SELECT processed_at,
-                       top_label,
-                       top_score,
-                       top_likely_score
+                SELECT max(processed_at)
                 FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                  AND processed_at >= %s
-                ORDER BY processed_at DESC
-                LIMIT 12000;
+                WHERE wg_ip = %s;
                 """,
-                (lookup_wg_ip, cutoff),
+                (lookup_wg_ip,),
+            )
+            latest_birdnet_at = cur.fetchone()[0]
+            birdnet_cutoff = window_cutoff_from_latest(
+                latest_birdnet_at,
+                SYNOPTIC_RANGES[normalized_range],
+            )
+            cur.execute(
+                (
+                    """
+                    SELECT source_path,
+                           processed_at,
+                           start_sec,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                    ORDER BY processed_at DESC
+                    LIMIT 12000;
+                    """
+                    if birdnet_cutoff is None
+                    else
+                    """
+                    SELECT source_path,
+                           processed_at,
+                           start_sec,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    ORDER BY processed_at DESC
+                    LIMIT 12000;
+                    """
+                ),
+                (lookup_wg_ip,) if birdnet_cutoff is None else (lookup_wg_ip, birdnet_cutoff),
             )
             birdnet_rows = cur.fetchall()
 
@@ -904,17 +1051,20 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     activity_buckets: dict[str, float] = {}
     species_activity: dict[str, float] = {}
     species_events: dict[str, list[dict]] = {}
-    for processed_at, top_label, top_score, top_likely_score in reversed(birdnet_rows):
+    for source_path, processed_at, start_sec, top_label, top_score, top_likely_score in reversed(birdnet_rows):
+        event_ts = detection_event_timestamp(source_path, start_sec, processed_at)
+        event_at = format_rfc3339_utc(event_ts)
         processed = format_rfc3339_utc(processed_at)
         occupancy = float(top_likely_score) if top_likely_score is not None else float(top_score)
         quality = float(top_score)
         activity = quality * occupancy
-        bucket = bucket_birdnet_timestamp(processed_at, normalized_range)
+        bucket = bucket_birdnet_timestamp(event_ts, normalized_range)
         bucket_key = format_rfc3339_utc(bucket)
         activity_buckets[bucket_key] = activity_buckets.get(bucket_key, 0.0) + activity
         species_activity[top_label] = species_activity.get(top_label, 0.0) + activity
         species_events.setdefault(top_label, []).append(
             {
+                "event_at": event_at,
                 "processed_at": processed,
                 "activity": activity,
                 "top_score": quality,
@@ -999,24 +1149,54 @@ def fetch_site_birdnet_rankings(
                 )
             else:
                 cur.execute(
-                    f"""
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                           max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                           max(top_score) AS max_score,
-                           max(coalesce(top_likely_score, top_score)) AS max_occup,
-                           {avg_volume_expr},
-                           max(processed_at) AS latest_processed_at
+                    """
+                    SELECT max(processed_at)
                     FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY {sort_config["order_sql"]}
-                    LIMIT 24;
+                    WHERE wg_ip = %s;
                     """,
-                    (site["wg_ip"], datetime.now(timezone.utc) - range_cutoff),
+                    (site["wg_ip"],),
                 )
+                latest_birdnet_at = cur.fetchone()[0]
+                anchored_cutoff = window_cutoff_from_latest(latest_birdnet_at, range_cutoff)
+                if anchored_cutoff is None:
+                    cur.execute(
+                        f"""
+                        SELECT top_label,
+                               count(*)::integer AS detection_count,
+                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
+                               max(top_score) AS max_score,
+                               max(coalesce(top_likely_score, top_score)) AS max_occup,
+                               {avg_volume_expr},
+                               max(processed_at) AS latest_processed_at
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                        GROUP BY top_label
+                        ORDER BY {sort_config["order_sql"]}
+                        LIMIT 24;
+                        """,
+                        (site["wg_ip"],),
+                    )
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT top_label,
+                               count(*)::integer AS detection_count,
+                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
+                               max(top_score) AS max_score,
+                               max(coalesce(top_likely_score, top_score)) AS max_occup,
+                               {avg_volume_expr},
+                               max(processed_at) AS latest_processed_at
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                          AND processed_at >= %s
+                        GROUP BY top_label
+                        ORDER BY {sort_config["order_sql"]}
+                        LIMIT 24;
+                        """,
+                        (site["wg_ip"], anchored_cutoff),
+                    )
             ranking_rows = cur.fetchall()
 
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
@@ -1061,7 +1241,7 @@ def render_site_detail_html(site: dict) -> str:
           <div>
             <div><strong>{summary['label']}</strong></div>
             <div class="dim">weight {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
-            <div class="dim">avg score {summary['average_score']:.2f} · latest {summary['latest_processed_at'] or 'Unknown time'}</div>
+            <div class="dim">avg score {summary['average_score']:.2f} · latest {render_local_time(summary['latest_processed_at'])}</div>
           </div>
         </article>
         """
@@ -1072,7 +1252,7 @@ def render_site_detail_html(site: dict) -> str:
         f"""
         <article class="record-card">
           <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('window_volume') is None else f"{detection['window_volume']:.3f}"}</span></div>
-          <div class="dim">{detection['processed_at'] or 'Unknown time'} · ch {detection['channel_index']}</div>
+          <div class="dim">{render_local_time(detection['processed_at'])} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
         </article>
@@ -1084,7 +1264,7 @@ def render_site_detail_html(site: dict) -> str:
         f"""
         <article class="record-card">
           <div><strong>{reading['sensor_type']}</strong> <span class="dim">{reading['reading_key']}</span></div>
-          <div class="dim">value {reading['reading_value']:.3f} · {reading['recorded_at'] or 'Unknown time'}</div>
+          <div class="dim">value {reading['reading_value']:.3f} · {render_local_time(reading['recorded_at'])}</div>
           <div class="mono">{reading['device_address']} · batch {reading['batch_id']}</div>
         </article>
         """
@@ -1095,7 +1275,7 @@ def render_site_detail_html(site: dict) -> str:
         f"""
         <article class="record-card">
           <div><strong>{summary['label']}</strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
-          <div class="dim">{summary['detection_count']} detections · latest {summary['latest_processed_at'] or 'Unknown time'}</div>
+          <div class="dim">{summary['detection_count']} detections · latest {render_local_time(summary['latest_processed_at'])}</div>
         </article>
         """
         for summary in site["top_birdnet_summaries"]
@@ -1344,7 +1524,8 @@ def render_site_detail_html(site: dict) -> str:
       <div class="meta">
         <div><a href="/">Back to all field sites</a></div>
         <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
-        <div>{site['last_check_in'] or 'No check-in yet'}</div>
+        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
       </div>
     </div>
     <div class="layout">
@@ -1352,7 +1533,7 @@ def render_site_detail_html(site: dict) -> str:
         <section class="panel">
           <div class="summary-strip">
             <div class="metric"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{site['wg_ip']}</div></div>
-            <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{site['last_check_in'] or 'Never'}</div></div>
+            <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'Never')}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
             <div class="metric"><div class="metric-label">Sensor Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
             <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
@@ -1401,6 +1582,7 @@ def render_site_detail_html(site: dict) -> str:
       window.location.assign("/");
     }}
   </script>
+{render_local_time_script()}
 </body>
 </html>"""
 
@@ -1417,7 +1599,7 @@ def render_synoptic_html(site: dict) -> str:
           <div class="chart-head">
             <div>
               <strong>{escape_html(series['label'])}</strong>
-              <div class="dim">latest {series['latest_value']:.3f} at {escape_html(series['latest_at'])}</div>
+              <div class="dim">latest {series['latest_value']:.3f} at {render_local_time(series['latest_at'])}</div>
             </div>
           </div>
           <div class="chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62')}</div>
@@ -1593,6 +1775,7 @@ def render_synoptic_html(site: dict) -> str:
       <div class="meta">
         <div><a href="{escape_html(site['public_url'])}">Back to client dashboard</a></div>
         <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
       </div>
     </div>
     <div class="stack">
@@ -1622,6 +1805,7 @@ def render_synoptic_html(site: dict) -> str:
       window.location.assign("{escape_html(site['public_url'])}");
     }}
   </script>
+{render_local_time_script()}
 </body>
 </html>"""
 
@@ -1646,7 +1830,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
           </div>
           <div class="dim">Detections {item['detection_count']} · max score {'n/a' if item['max_score'] is None else _format_axis_value(item['max_score'])} · max occup {'n/a' if item['max_occup'] is None else _format_axis_value(item['max_occup'])}</div>
           <div class="dim">sum score x occup {'n/a' if item['sum_score_x_occup'] is None else _format_axis_value(item['sum_score_x_occup'])} · avg volume {'n/a' if item['avg_volume'] is None else _format_axis_value(item['avg_volume'])}</div>
-          <div class="dim">latest {escape_html(item['latest_processed_at'] or 'Unknown time')}</div>
+          <div class="dim">latest {render_local_time(item['latest_processed_at'])}</div>
         </article>
         """
         for item in site["birdnet_rankings"]
@@ -1750,18 +1934,6 @@ def render_birdnet_rankings_html(site: dict) -> str:
       color: var(--ink);
       font: inherit;
     }}
-    .button {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0.72rem 1rem;
-      border-radius: 14px;
-      border: 1px solid var(--accent);
-      background: var(--accent);
-      color: white;
-      font: inherit;
-      cursor: pointer;
-    }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1855,23 +2027,21 @@ def render_birdnet_rankings_html(site: dict) -> str:
       <div class="meta">
         <div>{escape_html(site['network_name'])}</div>
         <div>{escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>{escape_html(site['last_check_in'] or 'No check-in yet')}</div>
+        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
       </div>
     </div>
     <div class="stack">
       <section class="panel">
-        <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls">
+        <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
           <label>
             Sort Criteria
-            <select name="sort">{sort_options}</select>
+            <select name="sort" onchange="submitBirdnetRankingControls()">{sort_options}</select>
           </label>
           <label>
             Time Window
-            <select name="range">{range_options}</select>
+            <select name="range" onchange="submitBirdnetRankingControls()">{range_options}</select>
           </label>
-          <div>
-            <button class="button" type="submit">Update plot</button>
-          </div>
         </form>
       </section>
       <section class="panel">
@@ -1892,6 +2062,14 @@ def render_birdnet_rankings_html(site: dict) -> str:
       </section>
     </div>
   </div>
+  <script>
+    function submitBirdnetRankingControls() {{
+      const form = document.getElementById("birdnetRankingControls");
+      if (!form) return;
+      form.requestSubmit();
+    }}
+  </script>
+{render_local_time_script()}
 </body>
 </html>"""
 
