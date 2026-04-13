@@ -967,6 +967,17 @@ def fetch_site_birdnet_rankings(
 
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_window_volume = relation_has_column(
+                cur,
+                "sensos",
+                "public_site_birdnet_detections",
+                "window_volume",
+            )
+            avg_volume_expr = (
+                "avg(window_volume) AS avg_volume"
+                if has_window_volume
+                else "NULL::double precision AS avg_volume"
+            )
             if range_cutoff is None:
                 cur.execute(
                     f"""
@@ -976,7 +987,7 @@ def fetch_site_birdnet_rankings(
                            max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                            max(top_score) AS max_score,
                            max(coalesce(top_likely_score, top_score)) AS max_occup,
-                           avg(window_volume) AS avg_volume,
+                           {avg_volume_expr},
                            max(processed_at) AS latest_processed_at
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
@@ -995,7 +1006,7 @@ def fetch_site_birdnet_rankings(
                            max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                            max(top_score) AS max_score,
                            max(coalesce(top_likely_score, top_score)) AS max_occup,
-                           avg(window_volume) AS avg_volume,
+                           {avg_volume_expr},
                            max(processed_at) AS latest_processed_at
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
