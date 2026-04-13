@@ -39,6 +39,46 @@ DETAIL_EVIDENCE_RANGES = {
     "all": None,
 }
 
+BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
+
+BIRDNET_RANKING_SORTS = {
+    "sum_score_x_occup": {
+        "label": "Sum bn score x occup",
+        "metric_label": "Sum score x occup",
+        "description": "Summed BirdNET score multiplied by occupancy score across detections in the selected window.",
+        "order_sql": "sum_score_x_occup DESC NULLS LAST, max_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "sum_score_x_occup",
+    },
+    "max_score_x_occup": {
+        "label": "Max bn score x occup",
+        "metric_label": "Max score x occup",
+        "description": "Largest single BirdNET score multiplied by occupancy score observed in the selected window.",
+        "order_sql": "max_score_x_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "max_score_x_occup",
+    },
+    "max_score": {
+        "label": "Max bn score",
+        "metric_label": "Max score",
+        "description": "Largest BirdNET score observed in the selected window.",
+        "order_sql": "max_score DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "max_score",
+    },
+    "max_occup": {
+        "label": "Max occup",
+        "metric_label": "Max occupancy",
+        "description": "Largest occupancy score observed in the selected window.",
+        "order_sql": "max_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "max_occup",
+    },
+    "avg_volume": {
+        "label": "Avg volume",
+        "metric_label": "Avg volume",
+        "description": "Average retained BirdNET window volume observed in the selected window.",
+        "order_sql": "avg_volume DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "avg_volume",
+    },
+}
+
 
 def current_version() -> str:
     base = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
@@ -92,6 +132,16 @@ def normalize_synoptic_range(value: str | None) -> str:
 def normalize_detail_range(value: str | None) -> str:
     candidate = (value or "day").strip().lower()
     return candidate if candidate in DETAIL_EVIDENCE_RANGES else "day"
+
+
+def normalize_birdnet_ranking_range(value: str | None) -> str:
+    candidate = (value or "day").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_RANGES else "day"
+
+
+def normalize_birdnet_ranking_sort(value: str | None) -> str:
+    candidate = (value or "sum_score_x_occup").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_occup"
 
 
 def downsample_points(points: list[dict], limit: int) -> list[dict]:
@@ -322,6 +372,65 @@ def render_event_timeline_svg(
         + "".join(circles)
         + "</svg>"
     )
+
+
+def render_horizontal_lollipop_svg(
+    rows: list[dict],
+    value_key: str,
+    accent: str,
+    width: int = 1120,
+    row_height: int = 36,
+) -> str:
+    if not rows:
+        return ""
+    values = [float(row[value_key]) for row in rows if row.get(value_key) is not None]
+    if not values:
+        return ""
+    height = max(180, 68 + len(rows) * row_height)
+    label_width = 290
+    right_pad = 72
+    top = 28
+    bottom = height - 34
+    axis_x = label_width + 18
+    right = width - right_pad
+    chart_span = max(right - axis_x, 1)
+    usable_values = [value for value in values if value >= 0]
+    max_value = max(usable_values) if usable_values else max(values)
+    max_value = max(max_value, 1e-9)
+    row_step = (bottom - top) / max(len(rows), 1)
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">',
+        f'<line x1="{axis_x}" y1="{top - 8}" x2="{axis_x}" y2="{bottom + 10}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
+    ]
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        x = axis_x + chart_span * frac
+        value = max_value * frac
+        parts.append(
+            f'<line x1="{x:.2f}" y1="{top - 8}" x2="{x:.2f}" y2="{bottom + 10}" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>'
+        )
+        parts.append(
+            f'<text x="{x:.2f}" y="{height - 10}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
+        )
+    for index, row in enumerate(rows):
+        raw_value = row.get(value_key)
+        value = float(raw_value) if raw_value is not None else 0.0
+        y = top + row_step * index + row_step / 2
+        x = axis_x + (max(value, 0.0) / max_value) * chart_span
+        label = str(row.get("label") or row.get("top_label") or "Unknown")
+        parts.append(
+            f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{escape_html(label)}</text>'
+        )
+        parts.append(
+            f'<line x1="{axis_x}" y1="{y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="{accent}" stroke-width="3" stroke-linecap="round" opacity="0.72"></line>'
+        )
+        parts.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="6.5" fill="{accent}" opacity="0.95"></circle>'
+        )
+        parts.append(
+            f'<text x="{min(x + 10, width - 6):.2f}" y="{y + 4:.2f}" text-anchor="start" font-size="11" fill="rgba(23,32,29,0.66)">{escape_html(_format_axis_value(value))}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def fetch_sites() -> list[dict]:
@@ -845,6 +954,83 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     return site
 
 
+def fetch_site_birdnet_rankings(
+    site_id: str,
+    sort_key: str | None = None,
+    range_key: str | None = None,
+) -> dict:
+    site = fetch_site_detail(site_id)
+    normalized_sort = normalize_birdnet_ranking_sort(sort_key)
+    normalized_range = normalize_birdnet_ranking_range(range_key)
+    range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
+    sort_config = BIRDNET_RANKING_SORTS[normalized_sort]
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if range_cutoff is None:
+                cur.execute(
+                    f"""
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                           max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
+                           max(top_score) AS max_score,
+                           max(coalesce(top_likely_score, top_score)) AS max_occup,
+                           avg(window_volume) AS avg_volume,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                    GROUP BY top_label
+                    ORDER BY {sort_config["order_sql"]}
+                    LIMIT 24;
+                    """,
+                    (site["wg_ip"],),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                           max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
+                           max(top_score) AS max_score,
+                           max(coalesce(top_likely_score, top_score)) AS max_occup,
+                           avg(window_volume) AS avg_volume,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    GROUP BY top_label
+                    ORDER BY {sort_config["order_sql"]}
+                    LIMIT 24;
+                    """,
+                    (site["wg_ip"], datetime.now(timezone.utc) - range_cutoff),
+                )
+            ranking_rows = cur.fetchall()
+
+    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
+    site["birdnet_ranking_sort"] = normalized_sort
+    site["birdnet_ranking_range"] = normalized_range
+    site["birdnet_ranking_sort_label"] = sort_config["label"]
+    site["birdnet_ranking_metric_label"] = sort_config["metric_label"]
+    site["birdnet_ranking_description"] = sort_config["description"]
+    site["birdnet_rankings"] = [
+        {
+            "label": row[0],
+            "detection_count": int(row[1]),
+            "sum_score_x_occup": float(row[2]) if row[2] is not None else None,
+            "max_score_x_occup": float(row[3]) if row[3] is not None else None,
+            "max_score": float(row[4]) if row[4] is not None else None,
+            "max_occup": float(row[5]) if row[5] is not None else None,
+            "avg_volume": float(row[6]) if row[6] is not None else None,
+            "latest_processed_at": format_rfc3339_utc(row[7]),
+        }
+        for row in ranking_rows
+    ]
+    return site
+
+
 def render_site_detail_html(site: dict) -> str:
     evidence_range = normalize_detail_range(site.get("evidence_range"))
     evidence_range_links = "".join(
@@ -928,6 +1114,7 @@ def render_site_detail_html(site: dict) -> str:
         f"<p class='lede'>{site['note']}</p>" if (site.get("note") or "").strip() else ""
     )
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
+    birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1138,6 +1325,7 @@ def render_site_detail_html(site: dict) -> str:
           <a class="nav-link" href="/" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
           <span class="nav-link">SensOS Public Site</span>
           <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
+          <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
         </div>
         <h1>{site['site_label']}</h1>
         {note_html}
@@ -1423,6 +1611,276 @@ def render_synoptic_html(site: dict) -> str:
       window.location.assign("{escape_html(site['public_url'])}");
     }}
   </script>
+</body>
+</html>"""
+
+
+def render_birdnet_rankings_html(site: dict) -> str:
+    selected_sort = normalize_birdnet_ranking_sort(site.get("birdnet_ranking_sort"))
+    selected_range = normalize_birdnet_ranking_range(site.get("birdnet_ranking_range"))
+    selected_metric = BIRDNET_RANKING_SORTS[selected_sort]["value_key"]
+
+    plot_markup = (
+        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62")}</div>'
+        if site["birdnet_rankings"]
+        else '<div class="empty">No BirdNET detections are visible for the selected time window.</div>'
+    )
+
+    ranking_cards = "".join(
+        f"""
+        <article class="rank-card">
+          <div class="rank-main">
+            <strong>{escape_html(item['label'])}</strong>
+            <span class="metric-pill">{escape_html(site['birdnet_ranking_metric_label'])}: {'n/a' if item.get(selected_metric) is None else _format_axis_value(float(item[selected_metric]))}</span>
+          </div>
+          <div class="dim">Detections {item['detection_count']} · max score {'n/a' if item['max_score'] is None else _format_axis_value(item['max_score'])} · max occup {'n/a' if item['max_occup'] is None else _format_axis_value(item['max_occup'])}</div>
+          <div class="dim">sum score x occup {'n/a' if item['sum_score_x_occup'] is None else _format_axis_value(item['sum_score_x_occup'])} · avg volume {'n/a' if item['avg_volume'] is None else _format_axis_value(item['avg_volume'])}</div>
+          <div class="dim">latest {escape_html(item['latest_processed_at'] or 'Unknown time')}</div>
+        </article>
+        """
+        for item in site["birdnet_rankings"]
+    ) or '<div class="empty">No ranked BirdNET species are visible for the selected time window.</div>'
+
+    sort_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_sort else ""}>{escape_html(config["label"])}</option>'
+        for key, config in BIRDNET_RANKING_SORTS.items()
+    )
+    range_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_range else ""}>{label}</option>'
+        for key, label in (("hour", "Hour"), ("day", "Day"), ("week", "Week"), ("month", "Month"), ("all", "All"))
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(site['site_label'])} · BirdNET Rankings</title>
+  <style>
+    :root {{
+      --bg: #edf1ea;
+      --panel: rgba(255,255,255,0.9);
+      --ink: #17201d;
+      --muted: #5c6760;
+      --accent: #0c6d62;
+      --accent-2: #d97706;
+      --border: rgba(23,32,29,0.12);
+      --shadow: 0 24px 60px rgba(23,32,29,0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      background:
+        radial-gradient(circle at top left, rgba(12,109,98,0.18), transparent 28rem),
+        radial-gradient(circle at top right, rgba(217,119,6,0.14), transparent 22rem),
+        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
+    }}
+    a {{ color: var(--accent); }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 1rem; }}
+    .masthead {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }}
+    .nav-row {{
+      display: flex;
+      gap: 0.55rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 0.55rem;
+    }}
+    .nav-link, .nav-link-inline {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.42rem 0.72rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.78);
+      color: var(--ink);
+      text-decoration: none;
+    }}
+    h1 {{ margin: 0; font-size: clamp(2rem, 3.8vw, 3.4rem); letter-spacing: -0.05em; }}
+    .lede {{ color: var(--muted); max-width: 54rem; margin-top: 0.4rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .stack {{ display: grid; gap: 1rem; }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+      padding: 1rem;
+    }}
+    .controls {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 220px)) 1fr;
+      gap: 0.8rem;
+      align-items: end;
+    }}
+    label {{
+      display: grid;
+      gap: 0.35rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    select {{
+      width: 100%;
+      padding: 0.72rem 0.85rem;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.88);
+      color: var(--ink);
+      font: inherit;
+    }}
+    .button {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.72rem 1rem;
+      border-radius: 14px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.8rem;
+    }}
+    .metric {{
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.74);
+    }}
+    .metric-label {{
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .metric-value {{
+      margin-top: 0.25rem;
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      overflow-wrap: anywhere;
+    }}
+    .section-title {{
+      margin: 0 0 0.6rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .plot-shell {{
+      min-height: 16rem;
+      border-radius: 18px;
+      border: 1px solid rgba(23,32,29,0.08);
+      background: linear-gradient(180deg, rgba(247,244,237,0.92), rgba(237,241,234,0.72));
+      overflow-x: auto;
+      overflow-y: hidden;
+    }}
+    .plot-shell svg {{ width: 100%; min-width: 980px; display: block; }}
+    .rank-list {{ display: grid; gap: 0.7rem; }}
+    .rank-card {{
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.85rem 0.9rem;
+      background: rgba(255,255,255,0.72);
+    }}
+    .rank-main {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.8rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.25rem;
+    }}
+    .metric-pill {{
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(12,109,98,0.12);
+      color: var(--accent);
+      font-size: 0.82rem;
+    }}
+    .dim {{ color: var(--muted); }}
+    .empty {{
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 1rem;
+      color: var(--muted);
+      background: rgba(255,255,255,0.45);
+    }}
+    @media (max-width: 980px) {{
+      .masthead {{ flex-direction: column; }}
+      .controls, .summary-grid {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="masthead">
+      <div>
+        <div class="nav-row">
+          <a class="nav-link" href="{escape_html(site['public_url'])}">← <strong>Site page</strong></a>
+          <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+          <span class="nav-link">BirdNET rankings</span>
+        </div>
+        <h1>{escape_html(site['site_label'])}</h1>
+        <div class="lede">{escape_html(site['birdnet_ranking_description'])} The plot is ordered from largest at the top to smallest at the bottom, with species labels placed to the left of the y-axis.</div>
+      </div>
+      <div class="meta">
+        <div>{escape_html(site['network_name'])}</div>
+        <div>{escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div>{escape_html(site['last_check_in'] or 'No check-in yet')}</div>
+      </div>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls">
+          <label>
+            Sort Criteria
+            <select name="sort">{sort_options}</select>
+          </label>
+          <label>
+            Time Window
+            <select name="range">{range_options}</select>
+          </label>
+          <div>
+            <button class="button" type="submit">Update plot</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="summary-grid">
+          <div class="metric"><div class="metric-label">Selected Metric</div><div class="metric-value">{escape_html(site['birdnet_ranking_sort_label'])}</div></div>
+          <div class="metric"><div class="metric-label">Time Window</div><div class="metric-value">{escape_html(selected_range.title())}</div></div>
+          <div class="metric"><div class="metric-label">Species Ranked</div><div class="metric-value">{len(site['birdnet_rankings'])}</div></div>
+          <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Horizontal Lollipop Plot</h2>
+        {plot_markup}
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Ranked Species</h2>
+        <div class="rank-list">{ranking_cards}</div>
+      </section>
+    </div>
+  </div>
 </body>
 </html>"""
 
@@ -2126,6 +2584,19 @@ def synoptic_site_page(site_id: str, request: Request):
     return HTMLResponse(
         render_synoptic_html(
             fetch_site_synoptic(site_id, request.query_params.get("range"))
+        )
+    )
+
+
+@app.get("/sites/{site_id}/birdnet-rankings", response_class=HTMLResponse)
+def birdnet_rankings_site_page(site_id: str, request: Request):
+    return HTMLResponse(
+        render_birdnet_rankings_html(
+            fetch_site_birdnet_rankings(
+                site_id,
+                request.query_params.get("sort"),
+                request.query_params.get("range"),
+            )
         )
     )
 
