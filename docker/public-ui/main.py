@@ -31,6 +31,14 @@ SYNOPTIC_RANGES = {
     "month": timedelta(days=30),
 }
 
+DETAIL_EVIDENCE_RANGES = {
+    "hour": timedelta(hours=1),
+    "day": timedelta(days=1),
+    "week": timedelta(days=7),
+    "month": timedelta(days=30),
+    "all": None,
+}
+
 
 def current_version() -> str:
     base = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
@@ -79,6 +87,11 @@ def escape_html(value) -> str:
 def normalize_synoptic_range(value: str | None) -> str:
     candidate = (value or "day").strip().lower()
     return candidate if candidate in SYNOPTIC_RANGES else "day"
+
+
+def normalize_detail_range(value: str | None) -> str:
+    candidate = (value or "day").strip().lower()
+    return candidate if candidate in DETAIL_EVIDENCE_RANGES else "day"
 
 
 def downsample_points(points: list[dict], limit: int) -> list[dict]:
@@ -365,7 +378,9 @@ def fetch_sites() -> list[dict]:
     ]
 
 
-def fetch_site_detail(site_id: str) -> dict:
+def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
+    normalized_evidence_range = normalize_detail_range(evidence_range)
+    evidence_cutoff = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
     with get_db() as conn:
         with conn.cursor() as cur:
             has_window_volume = relation_has_column(
@@ -441,25 +456,47 @@ def fetch_site_detail(site_id: str) -> dict:
                 (lookup_wg_ip,),
             )
             batches = cur.fetchall()
-            cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                       avg(top_score) AS average_score,
-                       max(top_score) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                GROUP BY top_label
-                ORDER BY evidence_weight DESC,
-                         best_score DESC,
-                         detection_count DESC,
-                         top_label ASC
-                LIMIT 8;
-                """,
-                (lookup_wg_ip,),
-            )
+            if evidence_cutoff is None:
+                cur.execute(
+                    """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           avg(top_score) AS average_score,
+                           max(top_score) AS best_score,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                    GROUP BY top_label
+                    ORDER BY evidence_weight DESC,
+                             best_score DESC,
+                             detection_count DESC,
+                             top_label ASC
+                    LIMIT 8;
+                    """,
+                    (lookup_wg_ip,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           avg(top_score) AS average_score,
+                           max(top_score) AS best_score,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    GROUP BY top_label
+                    ORDER BY evidence_weight DESC,
+                             best_score DESC,
+                             detection_count DESC,
+                             top_label ASC
+                    LIMIT 8;
+                    """,
+                    (lookup_wg_ip, datetime.now(timezone.utc) - evidence_cutoff),
+                )
             top_birdnet_evidence = cur.fetchall()
             cur.execute(
                 """
@@ -596,6 +633,7 @@ def fetch_site_detail(site_id: str) -> dict:
         "birdnet_source_count": int(row[15]),
         "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
+        "evidence_range": normalized_evidence_range,
         "birdnet_detection_count": int((birdnet_summary[0] or 0) if birdnet_summary else 0),
         "latest_birdnet_result_at": format_rfc3339_utc(
             birdnet_summary[1] if birdnet_summary else None
@@ -808,6 +846,17 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
 
 
 def render_site_detail_html(site: dict) -> str:
+    evidence_range = normalize_detail_range(site.get("evidence_range"))
+    evidence_range_links = "".join(
+        f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site["public_url"])}?range={key}">{label}</a>'
+        for key, label in (
+            ("hour", "Hour"),
+            ("day", "Day"),
+            ("week", "Week"),
+            ("month", "Month"),
+            ("all", "All Time"),
+        )
+    )
     evidence_cards = "".join(
         f"""
         <article class="evidence-card">
@@ -929,6 +978,38 @@ def render_site_detail_html(site: dict) -> str:
       font-size: 0.96rem;
     }}
     .nav-link strong {{ color: var(--ink); }}
+    .nav-link-inline {{
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 0.16em;
+      text-decoration-thickness: 0.08em;
+      font-size: 0.96rem;
+    }}
+    .range-pills {{
+      display: inline-flex;
+      gap: 0.35rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .range-pill {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 3.6rem;
+      padding: 0.28rem 0.58rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.78);
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.82rem;
+      line-height: 1;
+    }}
+    .range-pill.active {{
+      background: #0c6d62;
+      border-color: #0c6d62;
+      color: #f7f4ed;
+    }}
     h1 {{
       margin: 0;
       font-size: clamp(2rem, 3.2vw, 3.2rem);
@@ -1056,7 +1137,7 @@ def render_site_detail_html(site: dict) -> str:
         <div class="nav-row">
           <a class="nav-link" href="/" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
           <span class="nav-link">SensOS Public Site</span>
-          <a class="nav-link" href="{synoptic_url}">Time series</a>
+          <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
         </div>
         <h1>{site['site_label']}</h1>
         {note_html}
@@ -1081,8 +1162,13 @@ def render_site_detail_html(site: dict) -> str:
           </div>
         </section>
         <section class="panel">
-          <h2 class="section-title">Top Species By Weight Of Evidence</h2>
-          <div class="dim" style="margin-bottom:0.8rem;">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
+            <div>
+              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weight Of Evidence</h2>
+              <div class="dim">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
+            </div>
+            <div class="range-pills">{evidence_range_links}</div>
+          </div>
           <div class="evidence-grid">{evidence_cards}</div>
         </section>
         <div class="detail-grid">
@@ -2025,13 +2111,15 @@ def api_sites():
 
 
 @app.get("/api/sites/{site_id}")
-def api_site(site_id: str):
-    return fetch_site_detail(site_id)
+def api_site(site_id: str, request: Request):
+    return fetch_site_detail(site_id, request.query_params.get("range"))
 
 
 @app.get("/sites/{site_id}", response_class=HTMLResponse)
-def site_page(site_id: str):
-    return HTMLResponse(render_site_detail_html(fetch_site_detail(site_id)))
+def site_page(site_id: str, request: Request):
+    return HTMLResponse(
+        render_site_detail_html(fetch_site_detail(site_id, request.query_params.get("range")))
+    )
 
 
 @app.get("/sites/{site_id}/synoptic", response_class=HTMLResponse)
