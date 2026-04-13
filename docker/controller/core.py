@@ -92,6 +92,21 @@ def current_server_version() -> str:
     return f"{base}-{VERSION_SUFFIX}" if VERSION_SUFFIX else base
 
 
+def relation_has_column(cur, schema_name: str, relation_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1;
+        """,
+        (schema_name, relation_name, column_name),
+    )
+    return cur.fetchone() is not None
+
+
 def schema_migration_target_version() -> str:
     version = current_server_version()
     if SEMVER_RE.fullmatch(version):
@@ -1621,6 +1636,12 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
 
     with conn.transaction():
         with conn.cursor() as cur:
+            has_window_volume = relation_has_column(
+                cur,
+                "sensos",
+                "birdnet_detections",
+                "window_volume",
+            )
             cur.execute(
                 """
                 SELECT id, receipt_id, accepted_count, payload_sha256, server_received_at
@@ -1731,39 +1752,72 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                 processed_file_row = cur.fetchone()
 
                 if processed_file.detections:
-                    cur.executemany(
-                        """
-                        INSERT INTO sensos.birdnet_detections (
-                            processed_file_id,
-                            channel_index,
-                            window_index,
-                            start_frame,
-                            end_frame,
-                            start_sec,
-                            end_sec,
-                            window_volume,
-                            top_label,
-                            top_score,
-                            top_likely_score
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                        """,
-                        [
-                            (
-                                processed_file_row[0],
-                                detection.channel_index,
-                                detection.window_index,
-                                detection.start_frame,
-                                detection.end_frame,
-                                detection.start_sec,
-                                detection.end_sec,
-                                detection.window_volume,
-                                detection.top_label,
-                                detection.top_score,
-                                detection.top_likely_score,
-                            )
-                            for detection in processed_file.detections
-                        ],
-                    )
+                    if has_window_volume:
+                        cur.executemany(
+                            """
+                            INSERT INTO sensos.birdnet_detections (
+                                processed_file_id,
+                                channel_index,
+                                window_index,
+                                start_frame,
+                                end_frame,
+                                start_sec,
+                                end_sec,
+                                window_volume,
+                                top_label,
+                                top_score,
+                                top_likely_score
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                            """,
+                            [
+                                (
+                                    processed_file_row[0],
+                                    detection.channel_index,
+                                    detection.window_index,
+                                    detection.start_frame,
+                                    detection.end_frame,
+                                    detection.start_sec,
+                                    detection.end_sec,
+                                    detection.window_volume,
+                                    detection.top_label,
+                                    detection.top_score,
+                                    detection.top_likely_score,
+                                )
+                                for detection in processed_file.detections
+                            ],
+                        )
+                    else:
+                        cur.executemany(
+                            """
+                            INSERT INTO sensos.birdnet_detections (
+                                processed_file_id,
+                                channel_index,
+                                window_index,
+                                start_frame,
+                                end_frame,
+                                start_sec,
+                                end_sec,
+                                top_label,
+                                top_score,
+                                top_likely_score
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                            """,
+                            [
+                                (
+                                    processed_file_row[0],
+                                    detection.channel_index,
+                                    detection.window_index,
+                                    detection.start_frame,
+                                    detection.end_frame,
+                                    detection.start_sec,
+                                    detection.end_sec,
+                                    detection.top_label,
+                                    detection.top_score,
+                                    detection.top_likely_score,
+                                )
+                                for detection in processed_file.detections
+                            ],
+                        )
 
                 if processed_file.flac_runs:
                     cur.executemany(
