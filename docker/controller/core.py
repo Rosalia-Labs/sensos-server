@@ -283,6 +283,14 @@ def migrate_0_12_0_public_site_detail_views(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_12_1_birdnet_volume_schema(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_birdnet_detections_table(cur)
+    create_public_site_birdnet_detections_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -323,6 +331,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.12.0"),
         name="add public site detail result views",
         apply=migrate_0_12_0_public_site_detail_views,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.12.1"),
+        name="add birdnet window volume to detections and public views",
+        apply=migrate_0_12_1_birdnet_volume_schema,
     ),
 ]
 
