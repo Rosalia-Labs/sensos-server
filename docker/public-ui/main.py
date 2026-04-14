@@ -98,7 +98,9 @@ def get_db(retries: int = 10, delay: int = 3):
             time.sleep(delay)
 
 
-def relation_has_column(cur, schema_name: str, relation_name: str, column_name: str) -> bool:
+def relation_has_column(
+    cur, schema_name: str, relation_name: str, column_name: str
+) -> bool:
     cur.execute(
         """
         SELECT 1
@@ -209,12 +211,17 @@ def downsample_points(points: list[dict], limit: int) -> list[dict]:
     if limit <= 2:
         return [points[0], points[-1]]
     step = (len(points) - 1) / float(limit - 1)
-    sampled = [points[min(round(index * step), len(points) - 1)] for index in range(limit - 1)]
+    sampled = [
+        points[min(round(index * step), len(points) - 1)] for index in range(limit - 1)
+    ]
     sampled.append(points[-1])
     deduped: list[dict] = []
     seen: set[tuple[str, float]] = set()
     for point in sampled:
-        marker = (str(point.get("recorded_at") or point.get("processed_at")), float(point.get("value", point.get("activity", 0.0))))
+        marker = (
+            str(point.get("recorded_at") or point.get("processed_at")),
+            float(point.get("value", point.get("activity", 0.0))),
+        )
         if marker in seen:
             continue
         deduped.append(point)
@@ -248,14 +255,16 @@ def _format_time_tick(value: str) -> str:
     return timestamp.strftime("%m-%d %H:%M")
 
 
-def detection_event_timestamp(source_path: str | None, start_sec: float | None, processed_at: datetime) -> datetime:
+def detection_event_timestamp(
+    source_path: str | None, start_sec: float | None, processed_at: datetime
+) -> datetime:
     if source_path:
         match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)", source_path)
         if match is not None:
             try:
-                start_dt = datetime.strptime(match.group(1), "%Y-%m-%dT%H-%M-%SZ").replace(
-                    tzinfo=timezone.utc
-                )
+                start_dt = datetime.strptime(
+                    match.group(1), "%Y-%m-%dT%H-%M-%SZ"
+                ).replace(tzinfo=timezone.utc)
                 if start_sec is not None:
                     return start_dt + timedelta(seconds=float(start_sec))
                 return start_dt
@@ -332,7 +341,9 @@ def render_line_chart_svg(
 ) -> str:
     if not points:
         return ""
-    values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
+    values = [
+        float(point[value_key]) for point in points if point.get(value_key) is not None
+    ]
     if not values:
         return ""
     bounds = _chart_bounds(width, height)
@@ -354,7 +365,10 @@ def render_line_chart_svg(
     if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
         time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
-        x_labels = [{"x": coords[index][0], "utc": points[index][time_key]} for index in tick_indexes]
+        x_labels = [
+            {"x": coords[index][0], "utc": points[index][time_key]}
+            for index in tick_indexes
+        ]
     path = " ".join(
         ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
         + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
@@ -366,7 +380,7 @@ def render_line_chart_svg(
     )
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
-        f'{_render_axes(bounds, min_value, max_value, x_labels)}'
+        f"{_render_axes(bounds, min_value, max_value, x_labels)}"
         f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
         f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
         f"</svg>"
@@ -382,7 +396,9 @@ def render_bar_chart_svg(
 ) -> str:
     if not points:
         return ""
-    values = [float(point[value_key]) for point in points if point.get(value_key) is not None]
+    values = [
+        float(point[value_key]) for point in points if point.get(value_key) is not None
+    ]
     if not values:
         return ""
     bounds = _chart_bounds(width, height)
@@ -408,14 +424,15 @@ def render_bar_chart_svg(
     if points and "processed_at" in points[0]:
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
         x_labels = [
-            {"x": left + index * step_x + step_x / 2, "utc": points[index]["processed_at"]}
+            {
+                "x": left + index * step_x + step_x / 2,
+                "utc": points[index]["processed_at"],
+            }
             for index in tick_indexes
         ]
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
-        f'{_render_axes(bounds, 0.0, max_value, x_labels)}'
-        + "".join(rects)
-        + "</svg>"
+        f"{_render_axes(bounds, 0.0, max_value, x_labels)}" + "".join(rects) + "</svg>"
     )
 
 
@@ -429,7 +446,10 @@ def render_event_timeline_svg(
     if not points:
         return ""
     time_key = "event_at" if points and "event_at" in points[0] else "processed_at"
-    timestamps = [datetime.fromisoformat(point[time_key].replace("Z", "+00:00")) for point in points]
+    timestamps = [
+        datetime.fromisoformat(point[time_key].replace("Z", "+00:00"))
+        for point in points
+    ]
     values = [float(point[value_key]) for point in points]
     if not timestamps or not values:
         return ""
@@ -767,8 +787,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
                     """
                     if has_window_volume
-                    else
-                    """
+                    else """
                     SELECT receipt_id,
                            hostname,
                            client_version,
@@ -832,12 +851,16 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
         "evidence_range": normalized_evidence_range,
-        "birdnet_detection_count": int((birdnet_summary[0] or 0) if birdnet_summary else 0),
+        "birdnet_detection_count": int(
+            (birdnet_summary[0] or 0) if birdnet_summary else 0
+        ),
         "latest_birdnet_result_at": format_rfc3339_utc(
             birdnet_summary[1] if birdnet_summary else None
         ),
         "i2c_reading_count": int((i2c_summary[0] or 0) if i2c_summary else 0),
-        "latest_i2c_reading_at": format_rfc3339_utc(i2c_summary[1] if i2c_summary else None),
+        "latest_i2c_reading_at": format_rfc3339_utc(
+            i2c_summary[1] if i2c_summary else None
+        ),
         "recent_birdnet_batches": [
             {
                 "receipt_id": batch[0],
@@ -865,7 +888,9 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             {
                 "label": summary[0],
                 "detection_count": int(summary[1]),
-                "evidence_weight": float(summary[2]) if summary[2] is not None else None,
+                "evidence_weight": (
+                    float(summary[2]) if summary[2] is not None else None
+                ),
                 "average_score": float(summary[3]) if summary[3] is not None else None,
                 "best_score": float(summary[4]) if summary[4] is not None else None,
                 "latest_processed_at": format_rfc3339_utc(summary[5]),
@@ -885,8 +910,12 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             {
                 "label": summary[0],
                 "detection_count": int(summary[1]),
-                "average_occupancy_score": float(summary[2]) if summary[2] is not None else None,
-                "best_occupancy_score": float(summary[3]) if summary[3] is not None else None,
+                "average_occupancy_score": (
+                    float(summary[2]) if summary[2] is not None else None
+                ),
+                "best_occupancy_score": (
+                    float(summary[3]) if summary[3] is not None else None
+                ),
             }
             for summary in top_birdnet_occupancy
         ],
@@ -906,7 +935,9 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 ),
                 "top_label": detection[10],
                 "top_score": float(detection[11]),
-                "top_likely_score": float(detection[12]) if detection[12] is not None else None,
+                "top_likely_score": (
+                    float(detection[12]) if detection[12] is not None else None
+                ),
             }
             for detection in detections
         ],
@@ -1005,8 +1036,7 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
                     LIMIT 12000;
                     """
                     if birdnet_cutoff is None
-                    else
-                    """
+                    else """
                     SELECT source_path,
                            processed_at,
                            start_sec,
@@ -1020,7 +1050,11 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
                     LIMIT 12000;
                     """
                 ),
-                (lookup_wg_ip,) if birdnet_cutoff is None else (lookup_wg_ip, birdnet_cutoff),
+                (
+                    (lookup_wg_ip,)
+                    if birdnet_cutoff is None
+                    else (lookup_wg_ip, birdnet_cutoff)
+                ),
             )
             birdnet_rows = cur.fetchall()
 
@@ -1051,11 +1085,22 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     activity_buckets: dict[str, float] = {}
     species_activity: dict[str, float] = {}
     species_events: dict[str, list[dict]] = {}
-    for source_path, processed_at, start_sec, top_label, top_score, top_likely_score in reversed(birdnet_rows):
+    for (
+        source_path,
+        processed_at,
+        start_sec,
+        top_label,
+        top_score,
+        top_likely_score,
+    ) in reversed(birdnet_rows):
         event_ts = detection_event_timestamp(source_path, start_sec, processed_at)
         event_at = format_rfc3339_utc(event_ts)
         processed = format_rfc3339_utc(processed_at)
-        occupancy = float(top_likely_score) if top_likely_score is not None else float(top_score)
+        occupancy = (
+            float(top_likely_score)
+            if top_likely_score is not None
+            else float(top_score)
+        )
         quality = float(top_score)
         activity = quality * occupancy
         bucket = bucket_birdnet_timestamp(event_ts, normalized_range)
@@ -1156,7 +1201,9 @@ def fetch_site_birdnet_rankings(
                     (site["wg_ip"],),
                 )
                 latest_birdnet_at = cur.fetchone()[0]
-                anchored_cutoff = window_cutoff_from_latest(latest_birdnet_at, range_cutoff)
+                anchored_cutoff = window_cutoff_from_latest(
+                    latest_birdnet_at, range_cutoff
+                )
                 if anchored_cutoff is None:
                     cur.execute(
                         f"""
@@ -1231,8 +1278,9 @@ def render_site_detail_html(site: dict) -> str:
             ("all", "All Time"),
         )
     )
-    evidence_cards = "".join(
-        f"""
+    evidence_cards = (
+        "".join(
+            f"""
         <article class="evidence-card">
           <div class="evidence-rank">{index}</div>
           <div>
@@ -1242,11 +1290,14 @@ def render_site_detail_html(site: dict) -> str:
           </div>
         </article>
         """
-        for index, summary in enumerate(site["top_birdnet_evidence"], start=1)
-    ) or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+            for index, summary in enumerate(site["top_birdnet_evidence"], start=1)
+        )
+        or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+    )
 
-    birdnet_cards = "".join(
-        f"""
+    birdnet_cards = (
+        "".join(
+            f"""
         <article class="record-card">
           <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('window_volume') is None else f"{detection['window_volume']:.3f}"}</span></div>
           <div class="dim">{render_local_time(detection['processed_at'])} · ch {detection['channel_index']}</div>
@@ -1254,52 +1305,68 @@ def render_site_detail_html(site: dict) -> str:
           <div class="mono">{detection['source_path']}</div>
         </article>
         """
-        for detection in site["recent_birdnet_detections"]
-    ) or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+            for detection in site["recent_birdnet_detections"]
+        )
+        or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+    )
 
-    i2c_cards = "".join(
-        f"""
+    i2c_cards = (
+        "".join(
+            f"""
         <article class="record-card">
           <div><strong>{reading['sensor_type']}</strong> <span class="dim">{reading['reading_key']}</span></div>
           <div class="dim">value {reading['reading_value']:.3f} · {render_local_time(reading['recorded_at'])}</div>
           <div class="mono">{reading['device_address']} · batch {reading['batch_id']}</div>
         </article>
         """
-        for reading in site["recent_i2c_readings"]
-    ) or '<div class="empty">No sensor readings are visible yet for this site.</div>'
+            for reading in site["recent_i2c_readings"]
+        )
+        or '<div class="empty">No sensor readings are visible yet for this site.</div>'
+    )
 
-    top_birdnet_summary_cards = "".join(
-        f"""
+    top_birdnet_summary_cards = (
+        "".join(
+            f"""
         <article class="record-card">
           <div><strong>{summary['label']}</strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
           <div class="dim">{summary['detection_count']} detections · latest {render_local_time(summary['latest_processed_at'])}</div>
         </article>
         """
-        for summary in site["top_birdnet_summaries"]
-    ) or '<div class="empty">No BirdNET summary labels are visible yet for this site.</div>'
+            for summary in site["top_birdnet_summaries"]
+        )
+        or '<div class="empty">No BirdNET summary labels are visible yet for this site.</div>'
+    )
 
-    top_birdnet_score_cards = "".join(
-        f"""
+    top_birdnet_score_cards = (
+        "".join(
+            f"""
         <article class="record-card">
           <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_score']:.2f}</span></div>
           <div class="dim">avg score {summary['average_score']:.2f} · {summary['detection_count']} detections</div>
         </article>
         """
-        for summary in site["top_birdnet_score_summaries"]
-    ) or '<div class="empty">No BirdNET score summaries are visible yet for this site.</div>'
+            for summary in site["top_birdnet_score_summaries"]
+        )
+        or '<div class="empty">No BirdNET score summaries are visible yet for this site.</div>'
+    )
 
-    top_birdnet_occupancy_cards = "".join(
-        f"""
+    top_birdnet_occupancy_cards = (
+        "".join(
+            f"""
         <article class="record-card">
           <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_occupancy_score']:.2f}</span></div>
           <div class="dim">avg occupancy {summary['average_occupancy_score']:.2f} · {summary['detection_count']} detections</div>
         </article>
         """
-        for summary in site["top_birdnet_occupancy_summaries"]
-    ) or '<div class="empty">No BirdNET occupancy summaries are visible yet for this site.</div>'
+            for summary in site["top_birdnet_occupancy_summaries"]
+        )
+        or '<div class="empty">No BirdNET occupancy summaries are visible yet for this site.</div>'
+    )
 
     note_html = (
-        f"<p class='lede'>{site['note']}</p>" if (site.get("note") or "").strip() else ""
+        f"<p class='lede'>{site['note']}</p>"
+        if (site.get("note") or "").strip()
+        else ""
     )
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
@@ -1588,10 +1655,16 @@ def render_synoptic_html(site: dict) -> str:
     range_key = normalize_synoptic_range(site.get("synoptic_range"))
     range_links = "".join(
         f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(site["synoptic_url"])}?range={key}">{label}</a>'
-        for key, label in (("hour", "Hour"), ("day", "Day"), ("week", "Week"), ("month", "Month"))
+        for key, label in (
+            ("hour", "Hour"),
+            ("day", "Day"),
+            ("week", "Week"),
+            ("month", "Month"),
+        )
     )
-    sensor_sections = "".join(
-        f"""
+    sensor_sections = (
+        "".join(
+            f"""
         <section class="chart-card">
           <div class="chart-head">
             <div>
@@ -1602,8 +1675,10 @@ def render_synoptic_html(site: dict) -> str:
           <div class="chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62')}</div>
         </section>
         """
-        for series in site["sensor_series"]
-    ) or '<div class="empty">No sensor time series are visible yet for this site.</div>'
+            for series in site["sensor_series"]
+        )
+        or '<div class="empty">No sensor time series are visible yet for this site.</div>'
+    )
 
     activity_sections = (
         f"""
@@ -1621,8 +1696,9 @@ def render_synoptic_html(site: dict) -> str:
         else '<div class="empty">No BirdNET activity series are visible yet for this site.</div>'
     )
 
-    dominant_species_sections = "".join(
-        f"""
+    dominant_species_sections = (
+        "".join(
+            f"""
         <section class="chart-card">
           <div class="chart-head">
             <div>
@@ -1633,8 +1709,10 @@ def render_synoptic_html(site: dict) -> str:
           <div class="chart">{render_event_timeline_svg(series['points'], 'activity', '#2563eb')}</div>
         </section>
         """
-        for series in site["dominant_species_timelines"]
-    ) or '<div class="empty">No dominant BirdNET species event series are visible yet for this site.</div>'
+            for series in site["dominant_species_timelines"]
+        )
+        or '<div class="empty">No dominant BirdNET species event series are visible yet for this site.</div>'
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1821,8 +1899,9 @@ def render_birdnet_rankings_html(site: dict) -> str:
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
 
-    ranking_cards = "".join(
-        f"""
+    ranking_cards = (
+        "".join(
+            f"""
         <article class="rank-card">
           <div class="rank-main">
             <strong>{escape_html(item['label'])}</strong>
@@ -1833,8 +1912,10 @@ def render_birdnet_rankings_html(site: dict) -> str:
           <div class="dim">latest {render_local_time(item['latest_processed_at'])}</div>
         </article>
         """
-        for item in site["birdnet_rankings"]
-    ) or '<div class="empty">No ranked BirdNET species are visible for the selected time window.</div>'
+            for item in site["birdnet_rankings"]
+        )
+        or '<div class="empty">No ranked BirdNET species are visible for the selected time window.</div>'
+    )
 
     sort_options = "".join(
         f'<option value="{key}"{" selected" if key == selected_sort else ""}>{escape_html(config["label"])}</option>'
@@ -1842,7 +1923,13 @@ def render_birdnet_rankings_html(site: dict) -> str:
     )
     range_options = "".join(
         f'<option value="{key}"{" selected" if key == selected_range else ""}>{label}</option>'
-        for key, label in (("hour", "Hour"), ("day", "Day"), ("week", "Week"), ("month", "Month"), ("all", "All"))
+        for key, label in (
+            ("hour", "Hour"),
+            ("day", "Day"),
+            ("week", "Week"),
+            ("month", "Month"),
+            ("all", "All"),
+        )
     )
 
     return f"""<!doctype html>
@@ -2054,7 +2141,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
         </div>
       </section>
       <section class="panel">
-        <h2 class="section-title">Horizontal Lollipop Plot</h2>
+        <h2 class="section-title">Rankings</h2>
         {plot_markup}
       </section>
       <section class="panel">
@@ -2765,7 +2852,9 @@ def api_site(site_id: str, request: Request):
 @app.get("/sites/{site_id}", response_class=HTMLResponse)
 def site_page(site_id: str, request: Request):
     return HTMLResponse(
-        render_site_detail_html(fetch_site_detail(site_id, request.query_params.get("range")))
+        render_site_detail_html(
+            fetch_site_detail(site_id, request.query_params.get("range"))
+        )
     )
 
 
