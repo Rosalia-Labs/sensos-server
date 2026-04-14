@@ -1428,7 +1428,6 @@ def create_public_site_birdnet_detections_view(cur):
                d.window_index,
                d.start_sec,
                d.end_sec,
-               d.window_volume,
                d.top_label,
                d.top_score,
                d.top_likely_score,
@@ -1439,7 +1438,8 @@ def create_public_site_birdnet_detections_view(cur):
                             pf.id DESC,
                             d.channel_index,
                             d.window_index
-               ) AS detection_rank
+               ) AS detection_rank,
+               d.window_volume
         FROM sensos.birdnet_result_batches b
         JOIN sensos.birdnet_processed_files pf ON pf.batch_upload_id = b.id
         JOIN sensos.birdnet_detections d ON d.processed_file_id = pf.id
