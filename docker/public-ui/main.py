@@ -470,12 +470,13 @@ def render_horizontal_lollipop_svg(
     width: int = 1120,
     row_height: int = 36,
 ) -> str:
-    if not rows:
+    plot_rows = [row for row in rows if row.get(value_key) is not None]
+    if not plot_rows:
         return ""
-    values = [float(row[value_key]) for row in rows if row.get(value_key) is not None]
+    values = [float(row[value_key]) for row in plot_rows]
     if not values:
         return ""
-    height = max(180, 68 + len(rows) * row_height)
+    height = max(180, 68 + len(plot_rows) * row_height)
     label_width = 290
     right_pad = 72
     top = 28
@@ -486,7 +487,7 @@ def render_horizontal_lollipop_svg(
     usable_values = [value for value in values if value >= 0]
     max_value = max(usable_values) if usable_values else max(values)
     max_value = max(max_value, 1e-9)
-    row_step = (bottom - top) / max(len(rows), 1)
+    row_step = (bottom - top) / max(len(plot_rows), 1)
     parts = [
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">',
         f'<line x1="{axis_x}" y1="{top - 8}" x2="{axis_x}" y2="{bottom + 10}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
@@ -500,9 +501,8 @@ def render_horizontal_lollipop_svg(
         parts.append(
             f'<text x="{x:.2f}" y="{height - 10}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
         )
-    for index, row in enumerate(rows):
-        raw_value = row.get(value_key)
-        value = float(raw_value) if raw_value is not None else 0.0
+    for index, row in enumerate(plot_rows):
+        value = float(row[value_key])
         y = top + row_step * index + row_step / 2
         x = axis_x + (max(value, 0.0) / max_value) * chart_span
         label = str(row.get("label") or row.get("top_label") or "Unknown")
@@ -1811,11 +1811,14 @@ def render_birdnet_rankings_html(site: dict) -> str:
     selected_sort = normalize_birdnet_ranking_sort(site.get("birdnet_ranking_sort"))
     selected_range = normalize_birdnet_ranking_range(site.get("birdnet_ranking_range"))
     selected_metric = BIRDNET_RANKING_SORTS[selected_sort]["value_key"]
+    plotted_species_count = sum(
+        1 for item in site["birdnet_rankings"] if item.get(selected_metric) is not None
+    )
 
     plot_markup = (
         f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62")}</div>'
-        if site["birdnet_rankings"]
-        else '<div class="empty">No BirdNET detections are visible for the selected time window.</div>'
+        if plotted_species_count
+        else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
 
     ranking_cards = "".join(
@@ -2046,6 +2049,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
           <div class="metric"><div class="metric-label">Selected Metric</div><div class="metric-value">{escape_html(site['birdnet_ranking_sort_label'])}</div></div>
           <div class="metric"><div class="metric-label">Time Window</div><div class="metric-value">{escape_html(selected_range.title())}</div></div>
           <div class="metric"><div class="metric-label">Species Ranked</div><div class="metric-value">{len(site['birdnet_rankings'])}</div></div>
+          <div class="metric"><div class="metric-label">Species Plotted</div><div class="metric-value">{plotted_species_count}</div></div>
           <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
         </div>
       </section>
