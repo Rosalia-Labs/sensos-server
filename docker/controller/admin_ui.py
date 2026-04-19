@@ -1228,15 +1228,15 @@ def birdnet_page(request: Request, flash: str | None = None):
     rows = fetch_birdnet_rows()
     body = f"""
 <div class="grid">
-  {stat_card("Upload batches", str(overview["batch_count"]), "Accepted BirdNET upload batches stored on the server.")}
-  {stat_card("Processed files", str(overview["source_count"]), "BirdNET processed-file records received across all batches.")}
-  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent BirdNET batch was accepted.")}
+  {stat_card("Uploads", str(overview["batch_count"]), "Accepted BirdNET uploads stored on the server.")}
+  {stat_card("Processed files", str(overview["source_count"]), "BirdNET processed-file records received by the server.")}
+  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent BirdNET upload was accepted.")}
 </div>
 <section class="panel">
   <h2 class="section-title">Recent BirdNET uploads</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Batch</th><th>Ownership</th><th>Sources</th><th>Processed window</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Ownership</th><th>Sources</th><th>Processed window</th><th>Received</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1244,14 +1244,13 @@ def birdnet_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td><div>{row['batch_id']}</div><div class='dim mono'>{html.escape(row['receipt_id'])}</div></td>"
           f"<td>{html.escape(row['ownership_mode'])}</td>"
           f"<td>{row['source_count']}</td>"
           f"<td><div>{html.escape(format_timestamp(row['first_processed_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_processed_at']))}</div></td>"
           f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
           "</tr>"
           for row in rows
-      ) or '<tr><td colspan="8" class="dim">No BirdNET uploads stored yet.</td></tr>'}
+      ) or '<tr><td colspan="7" class="dim">No BirdNET uploads stored yet.</td></tr>'}
     </tbody>
   </table>
 </section>
@@ -1274,15 +1273,15 @@ def sensors_page(request: Request, flash: str | None = None):
     rows = fetch_sensor_rows()
     body = f"""
 <div class="grid">
-  {stat_card("Upload batches", str(overview["batch_count"]), "Accepted sensor upload batches stored on the server.")}
-  {stat_card("Readings", str(overview["reading_count"]), "Individual sensor readings received across all batches.")}
-  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent sensor batch was accepted.")}
+  {stat_card("Uploads", str(overview["batch_count"]), "Accepted sensor uploads stored on the server.")}
+  {stat_card("Readings", str(overview["reading_count"]), "Individual sensor readings received by the server.")}
+  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent sensor upload was accepted.")}
 </div>
 <section class="panel">
   <h2 class="section-title">Recent sensor uploads</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Batch</th><th>Ownership</th><th>Readings</th><th>Recorded window</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Ownership</th><th>Readings</th><th>Recorded window</th><th>Received</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1290,14 +1289,13 @@ def sensors_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td><div>{row['batch_id']}</div><div class='dim mono'>{html.escape(row['receipt_id'])}</div></td>"
           f"<td>{html.escape(row['ownership_mode'])}</td>"
           f"<td>{row['reading_count']}</td>"
           f"<td><div>{html.escape(format_timestamp(row['first_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
           f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
           "</tr>"
           for row in rows
-      ) or '<tr><td colspan="8" class="dim">No sensor uploads stored yet.</td></tr>'}
+      ) or '<tr><td colspan="7" class="dim">No sensor uploads stored yet.</td></tr>'}
     </tbody>
   </table>
 </section>

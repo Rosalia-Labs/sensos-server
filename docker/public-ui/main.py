@@ -1316,7 +1316,7 @@ def render_site_detail_html(site: dict) -> str:
         <article class="record-card">
           <div><strong>{reading['sensor_type']}</strong> <span class="dim">{reading['reading_key']}</span></div>
           <div class="dim">value {reading['reading_value']:.3f} · {render_local_time(reading['recorded_at'])}</div>
-          <div class="mono">{reading['device_address']} · batch {reading['batch_id']}</div>
+          <div class="mono">{reading['device_address']}</div>
         </article>
         """
             for reading in site["recent_i2c_readings"]
@@ -2702,7 +2702,7 @@ def render_index_html() -> str:
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
         <div class="metric"><div class="section-title">Sensor Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
-        <div class="metric"><div class="section-title">BirdNET Batches</div><div class="metric-value">${{site.birdnet_batch_count}}</div></div>
+        <div class="metric"><div class="section-title">BirdNET Uploads</div><div class="metric-value">${{site.birdnet_batch_count}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Sources</div><div class="metric-value">${{site.birdnet_source_count}}</div></div>
         <div class="metric"><div class="section-title">Coordinates</div><div class="metric-value mono">${{site.latitude.toFixed(4)}}, ${{site.longitude.toFixed(4)}}</div></div>
       `;
@@ -2716,7 +2716,7 @@ def render_index_html() -> str:
           card.innerHTML = `
             <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.window_volume, 3))}}</span></div>
             <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
-            <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s · batch ${{detection.batch_id}}</div>
+            <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s</div>
             <div class="mono">${{escapeHtml(detection.source_path)}}</div>
           `;
           birdnetList.appendChild(card);
@@ -2732,7 +2732,7 @@ def render_index_html() -> str:
           card.innerHTML = `
             <div><strong>${{escapeHtml(reading.sensor_type)}}</strong> <span class="dim">· ${{escapeHtml(reading.reading_key)}}</span></div>
             <div class="dim">value ${{escapeHtml(formatNumber(reading.reading_value, 3))}} · recorded ${{escapeHtml(relativeTime(reading.recorded_at))}}</div>
-            <div class="dim">device ${{escapeHtml(reading.device_address)}} · batch ${{reading.batch_id}}</div>
+            <div class="dim">device ${{escapeHtml(reading.device_address)}}</div>
           `;
           i2cList.appendChild(card);
         }}
