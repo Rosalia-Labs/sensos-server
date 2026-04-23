@@ -3354,7 +3354,7 @@ def render_index_html() -> str:
       activeSiteId = site.site_id;
       setChooserSites([]);
       siteTitle.textContent = site.site_label;
-      siteTitleLink.href = `${site.public_url}/status`;
+      siteTitleLink.href = `${{site.public_url}}/status`;
       siteSubtitle.innerHTML = `<a href="${{escapeHtml(site.public_url)}}" target="_blank" rel="noopener">Open public site page</a> · <span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
       renderBirdnetSummary(site);
       renderMiniPlots(site);
