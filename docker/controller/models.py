@@ -164,141 +164,46 @@ class I2CReadingsUploadRequest(BaseModel):
 
 
 class BirdNETDetectionUploadEntry(BaseModel):
+    source_path: str
     channel_index: int = Field(ge=0)
     window_index: int = Field(ge=0)
-    start_frame: int = Field(ge=0)
-    end_frame: int = Field(ge=0)
-    start_sec: float = Field(ge=0)
-    end_sec: float = Field(ge=0)
-    window_volume: Optional[float] = Field(default=None, ge=0, le=1)
-    top_label: str
-    top_score: float
-    top_likely_score: Optional[float] = None
-
-    @field_validator("window_volume", "top_score", "top_likely_score")
-    @classmethod
-    def validate_scores(cls, value: Optional[float]) -> Optional[float]:
-        if value is None:
-            return value
-        if not math.isfinite(value):
-            raise ValueError("score must be finite")
-        return value
-
-    @model_validator(mode="after")
-    def validate_window(self):
-        if self.start_frame > self.end_frame:
-            raise ValueError("start_frame must not be after end_frame")
-        if self.start_sec > self.end_sec:
-            raise ValueError("start_sec must not be after end_sec")
-        return self
-
-
-class BirdNETFlacRunUploadEntry(BaseModel):
-    channel_index: int = Field(ge=0)
-    run_index: int = Field(ge=0)
+    max_score_start_frame: int = Field(ge=0)
     label: str
-    label_dir: Optional[str] = None
-    start_frame: int = Field(ge=0)
-    end_frame: int = Field(ge=0)
-    start_sec: float = Field(ge=0)
-    end_sec: float = Field(ge=0)
-    peak_score: float
-    peak_likely_score: Optional[float] = None
-    flac_path: str
-    deleted_at: Optional[datetime] = None
+    score: float
+    likely_score: Optional[float] = None
+    volume: Optional[float] = Field(default=None, ge=0, le=1)
+    clip_start_time: datetime
+    clip_end_time: datetime
 
-    @field_validator("deleted_at")
-    @classmethod
-    def validate_deleted_at(cls, value: Optional[datetime]) -> Optional[datetime]:
-        if value is None:
-            return value
-        return _validate_utc_timestamp(value)
-
-    @field_validator("peak_score", "peak_likely_score")
-    @classmethod
-    def validate_scores(cls, value: Optional[float]) -> Optional[float]:
-        if value is None:
-            return value
-        if not math.isfinite(value):
-            raise ValueError("score must be finite")
-        return value
-
-    @model_validator(mode="after")
-    def validate_window(self):
-        if self.start_frame > self.end_frame:
-            raise ValueError("start_frame must not be after end_frame")
-        if self.start_sec > self.end_sec:
-            raise ValueError("start_sec must not be after end_sec")
-        return self
-
-
-class BirdNETProcessedFileUploadEntry(BaseModel):
-    source_path: str
-    sample_rate: int = Field(ge=1)
-    channels: int = Field(ge=1)
-    frames: int = Field(ge=0)
-    started_at: datetime
-    processed_at: datetime
-    status: str
-    error: Optional[str] = None
-    output_dir: Optional[str] = None
-    deleted_source: bool
-    detections: list[BirdNETDetectionUploadEntry] = Field(default_factory=list)
-    flac_runs: list[BirdNETFlacRunUploadEntry] = Field(default_factory=list)
-
-    @field_validator("started_at", "processed_at")
+    @field_validator("clip_start_time", "clip_end_time")
     @classmethod
     def validate_timestamps(cls, value: datetime) -> datetime:
         return _validate_utc_timestamp(value)
 
+    @field_validator("volume", "score", "likely_score")
+    @classmethod
+    def validate_scores(cls, value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return value
+        if not math.isfinite(value):
+            raise ValueError("score must be finite")
+        return value
+
     @model_validator(mode="after")
-    def validate_metadata(self):
-        if self.processed_at < self.started_at:
-            raise ValueError("processed_at must not be before started_at")
-        if self.status != "done":
-            raise ValueError("status must be 'done'")
+    def validate_times(self):
+        if self.clip_start_time > self.clip_end_time:
+            raise ValueError("clip_start_time must not be after clip_end_time")
         return self
 
 
 class BirdNETResultsUploadRequest(BaseModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     hostname: str
     client_version: str
-    batch_id: int = Field(ge=0)
     sent_at: datetime
-    ownership_mode: Literal["client-retains", "server-owns"]
-    source_count: int = Field(ge=1)
-    first_source_path: str
-    last_source_path: str
-    first_processed_at: datetime
-    last_processed_at: datetime
-    processed_files: list[BirdNETProcessedFileUploadEntry] = Field(min_length=1)
+    detections: list[BirdNETDetectionUploadEntry] = Field(min_length=1)
 
-    @field_validator("sent_at", "first_processed_at", "last_processed_at")
+    @field_validator("sent_at")
     @classmethod
     def validate_timestamps(cls, value: datetime) -> datetime:
         return _validate_utc_timestamp(value)
-
-    @model_validator(mode="after")
-    def validate_batch_metadata(self):
-        processed_files = self.processed_files
-        if self.source_count != len(processed_files):
-            raise ValueError("source_count must equal the number of processed_files")
-
-        source_paths = [entry.source_path for entry in processed_files]
-        processed_times = [entry.processed_at for entry in processed_files]
-        if self.first_source_path != min(source_paths):
-            raise ValueError("first_source_path must match the minimum source_path")
-        if self.last_source_path != max(source_paths):
-            raise ValueError("last_source_path must match the maximum source_path")
-        if self.first_processed_at != min(processed_times):
-            raise ValueError(
-                "first_processed_at must match the earliest processed_at timestamp"
-            )
-        if self.last_processed_at != max(processed_times):
-            raise ValueError(
-                "last_processed_at must match the latest processed_at timestamp"
-            )
-        if self.first_processed_at > self.last_processed_at:
-            raise ValueError("first_processed_at must not be after last_processed_at")
-        return self

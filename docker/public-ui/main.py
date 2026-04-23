@@ -561,9 +561,9 @@ def fetch_sites() -> list[dict]:
                        hostname,
                        version,
                        status_message,
-                       birdnet_batch_count,
+                       birdnet_detection_count,
                        birdnet_source_count,
-                       latest_birdnet_upload_at
+                       latest_birdnet_result_at
                 FROM sensos.public_sites
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY site_label, wg_ip;
@@ -587,9 +587,9 @@ def fetch_sites() -> list[dict]:
             "hostname": row[11],
             "client_version": row[12],
             "status_message": row[13],
-            "birdnet_batch_count": int(row[14]),
+            "birdnet_detection_count": int(row[14]),
             "birdnet_source_count": int(row[15]),
-            "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
+            "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
             "public_url": f"/sites/{row[0]}",
         }
         for row in rows
@@ -605,7 +605,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 cur,
                 "sensos",
                 "public_site_birdnet_detections",
-                "window_volume",
+                "volume",
             )
             cur.execute(
                 """
@@ -623,9 +623,9 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                        hostname,
                        version,
                        status_message,
-                       birdnet_batch_count,
+                       birdnet_detection_count,
                        birdnet_source_count,
-                       latest_birdnet_upload_at
+                       latest_birdnet_result_at
                 FROM sensos.public_sites
                 WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
@@ -655,25 +655,6 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (lookup_wg_ip,),
             )
             i2c_summary = cur.fetchone()
-            cur.execute(
-                """
-                SELECT receipt_id,
-                       hostname,
-                       client_version,
-                       batch_id,
-                       ownership_mode,
-                       source_count,
-                       first_processed_at,
-                       last_processed_at,
-                       server_received_at
-                FROM sensos.public_site_birdnet_recent
-                WHERE wg_ip = %s
-                  AND batch_rank <= 12
-                ORDER BY server_received_at DESC;
-                """,
-                (lookup_wg_ip,),
-            )
-            batches = cur.fetchall()
             if evidence_cutoff is None:
                 cur.execute(
                     """
@@ -768,43 +749,43 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             cur.execute(
                 (
                     """
-                    SELECT receipt_id,
-                           hostname,
+                    SELECT hostname,
                            client_version,
-                           batch_id,
                            source_path,
                            processed_at,
+                           clip_end_time,
                            channel_index,
+                           max_score_start_frame,
                            start_sec,
                            end_sec,
-                           window_volume,
+                           volume,
                            top_label,
                            top_score,
                            top_likely_score
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
                       AND detection_rank <= 12
-                    ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame;
                     """
                     if has_window_volume
                     else """
-                    SELECT receipt_id,
-                           hostname,
+                    SELECT hostname,
                            client_version,
-                           batch_id,
                            source_path,
                            processed_at,
+                           clip_end_time,
                            channel_index,
+                           max_score_start_frame,
                            start_sec,
                            end_sec,
-                           NULL::double precision AS window_volume,
+                           NULL::double precision AS volume,
                            top_label,
                            top_score,
                            top_likely_score
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
                       AND detection_rank <= 12
-                    ORDER BY processed_at DESC, batch_id DESC, channel_index, start_sec;
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame;
                     """
                 ),
                 (lookup_wg_ip,),
@@ -846,9 +827,9 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
-        "birdnet_batch_count": int(row[14]),
+        "birdnet_detection_count": int(row[14]),
         "birdnet_source_count": int(row[15]),
-        "latest_birdnet_upload_at": format_rfc3339_utc(row[16]),
+        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
         "evidence_range": normalized_evidence_range,
         "birdnet_detection_count": int(
@@ -861,20 +842,6 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "latest_i2c_reading_at": format_rfc3339_utc(
             i2c_summary[1] if i2c_summary else None
         ),
-        "recent_birdnet_batches": [
-            {
-                "receipt_id": batch[0],
-                "hostname": batch[1],
-                "client_version": batch[2],
-                "batch_id": batch[3],
-                "ownership_mode": batch[4],
-                "source_count": batch[5],
-                "first_processed_at": format_rfc3339_utc(batch[6]),
-                "last_processed_at": format_rfc3339_utc(batch[7]),
-                "server_received_at": format_rfc3339_utc(batch[8]),
-            }
-            for batch in batches
-        ],
         "top_birdnet_summaries": [
             {
                 "label": summary[0],
@@ -921,16 +888,16 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         ],
         "recent_birdnet_detections": [
             {
-                "receipt_id": detection[0],
-                "hostname": detection[1],
-                "client_version": detection[2],
-                "batch_id": detection[3],
-                "source_path": detection[4],
-                "processed_at": format_rfc3339_utc(detection[5]),
-                "channel_index": detection[6],
+                "hostname": detection[0],
+                "client_version": detection[1],
+                "source_path": detection[2],
+                "processed_at": format_rfc3339_utc(detection[3]),
+                "clip_end_time": format_rfc3339_utc(detection[4]),
+                "channel_index": detection[5],
+                "max_score_start_frame": int(detection[6]),
                 "start_sec": float(detection[7]),
                 "end_sec": float(detection[8]),
-                "window_volume": (
+                "volume": (
                     float(detection[9]) if detection[9] is not None else None
                 ),
                 "top_label": detection[10],
@@ -1166,10 +1133,10 @@ def fetch_site_birdnet_rankings(
                 cur,
                 "sensos",
                 "public_site_birdnet_detections",
-                "window_volume",
+                "volume",
             )
             avg_volume_expr = (
-                "avg(window_volume) AS avg_volume"
+                "avg(volume) AS avg_volume"
                 if has_window_volume
                 else "NULL::double precision AS avg_volume"
             )
@@ -1299,7 +1266,7 @@ def render_site_detail_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('window_volume') is None else f"{detection['window_volume']:.3f}"}</span></div>
+          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('volume') is None else f"{detection['volume']:.3f}"}</span></div>
           <div class="dim">{render_local_time(detection['processed_at'])} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
@@ -2702,7 +2669,6 @@ def render_index_html() -> str:
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
         <div class="metric"><div class="section-title">Sensor Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
-        <div class="metric"><div class="section-title">BirdNET Uploads</div><div class="metric-value">${{site.birdnet_batch_count}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Sources</div><div class="metric-value">${{site.birdnet_source_count}}</div></div>
         <div class="metric"><div class="section-title">Coordinates</div><div class="metric-value mono">${{site.latitude.toFixed(4)}}, ${{site.longitude.toFixed(4)}}</div></div>
       `;
@@ -2714,7 +2680,7 @@ def render_index_html() -> str:
           const card = document.createElement("div");
           card.className = "record-card";
           card.innerHTML = `
-            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.window_volume, 3))}}</span></div>
+            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.volume, 3))}}</span></div>
             <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
             <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s</div>
             <div class="mono">${{escapeHtml(detection.source_path)}}</div>

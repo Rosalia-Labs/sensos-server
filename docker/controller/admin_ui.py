@@ -648,22 +648,26 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.wireguard_ip::text,
+                SELECT d.wireguard_ip::text,
                        p.note,
                        n.name,
-                       b.hostname,
-                       b.client_version,
-                       b.batch_id,
-                       b.ownership_mode,
-                       b.source_count,
-                       b.first_processed_at,
-                       b.last_processed_at,
-                       b.server_received_at,
-                       b.receipt_id::text
-                FROM sensos.birdnet_result_batches b
-                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                       d.hostname,
+                       d.client_version,
+                       d.source_path,
+                       d.channel_index,
+                       d.window_index,
+                       d.clip_start_time,
+                       d.clip_end_time,
+                       d.label,
+                       d.score,
+                       d.server_received_at
+                FROM sensos.birdnet_detections d
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
-                ORDER BY b.server_received_at DESC
+                ORDER BY d.clip_start_time DESC,
+                         d.channel_index,
+                         d.window_index,
+                         d.id DESC
                 LIMIT %s;
                 """,
                 (limit,),
@@ -676,13 +680,14 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
             "network_name": row[2] or "—",
             "hostname": row[3] or "—",
             "client_version": row[4] or "—",
-            "batch_id": row[5],
-            "ownership_mode": row[6],
-            "source_count": row[7],
-            "first_processed_at": row[8],
-            "last_processed_at": row[9],
-            "server_received_at": row[10],
-            "receipt_id": row[11],
+            "source_path": row[5] or "—",
+            "channel_index": row[6],
+            "window_index": row[7],
+            "clip_start_time": row[8],
+            "clip_end_time": row[9],
+            "label": row[10] or "—",
+            "score": row[11],
+            "server_received_at": row[12],
         }
         for row in rows
     ]
@@ -691,20 +696,20 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
 def fetch_birdnet_overview() -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM sensos.birdnet_result_batches;")
-            batch_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM sensos.birdnet_detections;")
+            detection_count = cur.fetchone()[0]
             cur.execute(
-                "SELECT COALESCE(sum(source_count), 0) FROM sensos.birdnet_result_batches;"
+                "SELECT count(DISTINCT source_path) FROM sensos.birdnet_detections;"
             )
             source_count = cur.fetchone()[0]
             cur.execute(
-                "SELECT max(server_received_at) FROM sensos.birdnet_result_batches;"
+                "SELECT max(clip_end_time) FROM sensos.birdnet_detections;"
             )
             latest_upload = cur.fetchone()[0]
     return {
-        "batch_count": batch_count,
+        "detection_count": detection_count,
         "source_count": source_count,
-        "latest_upload": latest_upload,
+        "latest_detection": latest_upload,
     }
 
 
@@ -1228,15 +1233,15 @@ def birdnet_page(request: Request, flash: str | None = None):
     rows = fetch_birdnet_rows()
     body = f"""
 <div class="grid">
-  {stat_card("Uploads", str(overview["batch_count"]), "Accepted BirdNET uploads stored on the server.")}
-  {stat_card("Processed files", str(overview["source_count"]), "BirdNET processed-file records received by the server.")}
-  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent BirdNET upload was accepted.")}
+  {stat_card("Detections", str(overview["detection_count"]), "BirdNET detections stored on the server.")}
+  {stat_card("Sources", str(overview["source_count"]), "Distinct source files represented in BirdNET detections.")}
+  {stat_card("Latest Detection", summarize_age(overview["latest_detection"]), "Time since the most recent BirdNET clip end time.")}
 </div>
 <section class="panel">
-  <h2 class="section-title">Recent BirdNET uploads</h2>
+  <h2 class="section-title">Recent BirdNET detections</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Ownership</th><th>Sources</th><th>Processed window</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Detection</th><th>Clip Window</th><th>Received</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1244,13 +1249,12 @@ def birdnet_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td>{html.escape(row['ownership_mode'])}</td>"
-          f"<td>{row['source_count']}</td>"
-          f"<td><div>{html.escape(format_timestamp(row['first_processed_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_processed_at']))}</div></td>"
+          f"<td><div>{html.escape(row['label'])}</div><div class='dim'>score {row['score']:.3f} · ch {row['channel_index']} · win {row['window_index']}</div><div class='dim mono'>{html.escape(row['source_path'])}</div></td>"
+          f"<td><div>{html.escape(format_timestamp(row['clip_start_time']))}</div><div class='dim'>{html.escape(format_timestamp(row['clip_end_time']))}</div></td>"
           f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
           "</tr>"
           for row in rows
-      ) or '<tr><td colspan="7" class="dim">No BirdNET uploads stored yet.</td></tr>'}
+      ) or '<tr><td colspan="6" class="dim">No BirdNET detections stored yet.</td></tr>'}
     </tbody>
   </table>
 </section>

@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional, Tuple
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -259,10 +260,7 @@ def migrate_0_9_0_runtime_operator_keys(cur):
 def migrate_0_10_0_birdnet_upload_schema(cur):
     ensure_shared_extensions(cur)
     cur.execute("SET search_path TO sensos, public;")
-    create_birdnet_result_batches_table(cur)
-    create_birdnet_processed_files_table(cur)
     create_birdnet_detections_table(cur)
-    create_birdnet_flac_runs_table(cur)
 
 
 def migrate_0_11_0_public_dashboard_views(cur):
@@ -1193,142 +1191,45 @@ def create_i2c_readings_table(cur):
     )
 
 
-def create_birdnet_result_batches_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensos.birdnet_result_batches (
-            id SERIAL PRIMARY KEY,
-            receipt_id UUID NOT NULL DEFAULT gen_random_uuid(),
-            schema_version INTEGER NOT NULL,
-            wireguard_ip INET NOT NULL,
-            hostname TEXT NOT NULL,
-            client_version TEXT NOT NULL,
-            batch_id BIGINT NOT NULL,
-            sent_at TIMESTAMPTZ NOT NULL,
-            ownership_mode TEXT NOT NULL CHECK (
-                ownership_mode IN ('client-retains', 'server-owns')
-            ),
-            source_count INTEGER NOT NULL CHECK (source_count >= 0),
-            first_source_path TEXT NOT NULL,
-            last_source_path TEXT NOT NULL,
-            first_processed_at TIMESTAMPTZ NOT NULL,
-            last_processed_at TIMESTAMPTZ NOT NULL,
-            accepted_count INTEGER NOT NULL DEFAULT 0 CHECK (accepted_count >= 0),
-            payload_sha256 TEXT NOT NULL,
-            request_json JSONB NOT NULL,
-            server_received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE (receipt_id),
-            UNIQUE (wireguard_ip, batch_id)
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_result_batches_wireguard_received
-        ON sensos.birdnet_result_batches (wireguard_ip, server_received_at DESC);
-        """
-    )
-
-
-def create_birdnet_processed_files_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
-            id BIGSERIAL PRIMARY KEY,
-            batch_upload_id INTEGER NOT NULL REFERENCES sensos.birdnet_result_batches(id) ON DELETE CASCADE,
-            source_path TEXT NOT NULL,
-            sample_rate INTEGER NOT NULL,
-            channels INTEGER NOT NULL,
-            frames BIGINT NOT NULL,
-            started_at TIMESTAMPTZ NOT NULL,
-            processed_at TIMESTAMPTZ NOT NULL,
-            status TEXT NOT NULL,
-            error TEXT,
-            output_dir TEXT,
-            deleted_source BOOLEAN NOT NULL DEFAULT FALSE,
-            UNIQUE (batch_upload_id, source_path)
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_processed_files_batch_upload_id
-        ON sensos.birdnet_processed_files (batch_upload_id, source_path);
-        """
-    )
-
-
 def create_birdnet_detections_table(cur):
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.birdnet_detections (
             id BIGSERIAL PRIMARY KEY,
-            processed_file_id BIGINT NOT NULL REFERENCES sensos.birdnet_processed_files(id) ON DELETE CASCADE,
+            wireguard_ip INET NOT NULL,
+            hostname TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            sent_at TIMESTAMPTZ NOT NULL,
+            server_received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            source_path TEXT NOT NULL,
             channel_index INTEGER NOT NULL,
             window_index INTEGER NOT NULL,
-            start_frame BIGINT NOT NULL,
-            end_frame BIGINT NOT NULL,
-            start_sec DOUBLE PRECISION NOT NULL,
-            end_sec DOUBLE PRECISION NOT NULL,
-            window_volume DOUBLE PRECISION,
-            top_label TEXT NOT NULL,
-            top_score DOUBLE PRECISION NOT NULL,
-            top_likely_score DOUBLE PRECISION
-        );
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE sensos.birdnet_detections
-        ADD COLUMN IF NOT EXISTS window_volume DOUBLE PRECISION;
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE sensos.birdnet_detections
-        ALTER COLUMN window_volume DROP DEFAULT;
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE sensos.birdnet_detections
-        ALTER COLUMN window_volume DROP NOT NULL;
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_processed_file_id
-        ON sensos.birdnet_detections (processed_file_id, channel_index, window_index);
-        """
-    )
-
-
-def create_birdnet_flac_runs_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensos.birdnet_flac_runs (
-            id BIGSERIAL PRIMARY KEY,
-            processed_file_id BIGINT NOT NULL REFERENCES sensos.birdnet_processed_files(id) ON DELETE CASCADE,
-            channel_index INTEGER NOT NULL,
-            run_index INTEGER NOT NULL,
+            max_score_start_frame BIGINT NOT NULL,
             label TEXT NOT NULL,
-            label_dir TEXT,
-            start_frame BIGINT NOT NULL,
-            end_frame BIGINT NOT NULL,
-            start_sec DOUBLE PRECISION NOT NULL,
-            end_sec DOUBLE PRECISION NOT NULL,
-            peak_score DOUBLE PRECISION NOT NULL,
-            peak_likely_score DOUBLE PRECISION,
-            flac_path TEXT NOT NULL,
-            deleted_at TIMESTAMPTZ
+            score DOUBLE PRECISION NOT NULL,
+            likely_score DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            clip_start_time TIMESTAMPTZ NOT NULL,
+            clip_end_time TIMESTAMPTZ NOT NULL,
+            clip_path TEXT
         );
         """
     )
     cur.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_flac_runs_processed_file_id
-        ON sensos.birdnet_flac_runs (processed_file_id, channel_index, run_index);
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
+        ON sensos.birdnet_detections (wireguard_ip, clip_start_time DESC, channel_index, window_index);
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_birdnet_detections_dedupe
+        ON sensos.birdnet_detections (
+            wireguard_ip,
+            channel_index,
+            clip_start_time,
+            clip_end_time
+        );
         """
     )
 
@@ -1358,10 +1259,10 @@ def create_public_sites_view(cur):
         ),
         birdnet_summary AS (
             SELECT wireguard_ip,
-                   count(*)::integer AS birdnet_batch_count,
-                   coalesce(sum(source_count), 0)::integer AS birdnet_source_count,
-                   max(server_received_at) AS latest_birdnet_upload_at
-            FROM sensos.birdnet_result_batches
+                   count(*)::integer AS birdnet_detection_count,
+                   count(DISTINCT source_path)::integer AS birdnet_source_count,
+                   max(clip_end_time) AS latest_birdnet_result_at
+            FROM sensos.birdnet_detections
             GROUP BY wireguard_ip
         )
         SELECT p.uuid::text AS peer_uuid,
@@ -1378,9 +1279,9 @@ def create_public_sites_view(cur):
                ls.hostname,
                ls.version,
                ls.status_message,
-               coalesce(bs.birdnet_batch_count, 0) AS birdnet_batch_count,
+               coalesce(bs.birdnet_detection_count, 0) AS birdnet_detection_count,
                coalesce(bs.birdnet_source_count, 0) AS birdnet_source_count,
-               bs.latest_birdnet_upload_at
+               bs.latest_birdnet_result_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
@@ -1394,21 +1295,28 @@ def create_public_site_birdnet_recent_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_recent AS
-        SELECT host(b.wireguard_ip)::text AS wg_ip,
-               b.receipt_id::text AS receipt_id,
-               b.hostname,
-               b.client_version,
-               b.batch_id,
-               b.ownership_mode,
-               b.source_count,
-               b.first_processed_at,
-               b.last_processed_at,
-               b.server_received_at,
+        SELECT host(d.wireguard_ip)::text AS wg_ip,
+               d.hostname,
+               d.client_version,
+               d.source_path,
+               d.channel_index,
+               d.window_index,
+               d.clip_start_time,
+               d.clip_end_time,
+               d.label,
+               d.score,
+               d.likely_score,
+               d.volume,
                row_number() OVER (
-                   PARTITION BY b.wireguard_ip
-                   ORDER BY b.server_received_at DESC, b.id DESC
-               ) AS batch_rank
-        FROM sensos.birdnet_result_batches b;
+                   PARTITION BY d.wireguard_ip
+                   ORDER BY d.clip_start_time DESC,
+                            d.clip_end_time DESC,
+                            d.channel_index,
+                            d.window_index,
+                            d.id DESC
+               ) AS detection_rank
+        FROM sensos.birdnet_detections d
+        ;
         """
     )
 
@@ -1417,33 +1325,30 @@ def create_public_site_birdnet_detections_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_detections AS
-        SELECT host(b.wireguard_ip)::text AS wg_ip,
-               b.receipt_id::text AS receipt_id,
-               b.hostname,
-               b.client_version,
-               b.batch_id,
-               pf.source_path,
-               pf.processed_at,
+        SELECT host(d.wireguard_ip)::text AS wg_ip,
+               d.hostname,
+               d.client_version,
+               d.source_path,
+               d.clip_start_time AS processed_at,
+               d.clip_end_time,
                d.channel_index,
                d.window_index,
-               d.start_sec,
-               d.end_sec,
-               d.top_label,
-               d.top_score,
-               d.top_likely_score,
+               d.max_score_start_frame,
+               0::double precision AS start_sec,
+               GREATEST(EXTRACT(EPOCH FROM (d.clip_end_time - d.clip_start_time)), 0)::double precision AS end_sec,
+               d.label AS top_label,
+               d.score AS top_score,
+               d.likely_score AS top_likely_score,
                row_number() OVER (
-                   PARTITION BY b.wireguard_ip
-                   ORDER BY pf.processed_at DESC,
-                            b.server_received_at DESC,
-                            pf.id DESC,
+                   PARTITION BY d.wireguard_ip
+                   ORDER BY d.clip_start_time DESC,
+                            d.server_received_at DESC,
+                            d.id DESC,
                             d.channel_index,
                             d.window_index
                ) AS detection_rank,
-               d.window_volume
-        FROM sensos.birdnet_result_batches b
-        JOIN sensos.birdnet_processed_files pf ON pf.batch_upload_id = b.id
-        JOIN sensos.birdnet_detections d ON d.processed_file_id = pf.id
-        WHERE pf.status = 'done';
+               d.volume
+        FROM sensos.birdnet_detections d;
         """
     )
 
@@ -1643,237 +1548,63 @@ def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
 
 
 def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
-    payload = upload.model_dump(mode="json")
-    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    payload_sha256 = sha256(payload_json.encode("utf-8")).hexdigest()
-
+    received_at = datetime.now(timezone.utc)
+    receipt_id = str(uuid4())
     with conn.transaction():
         with conn.cursor() as cur:
-            has_window_volume = relation_has_column(
-                cur,
-                "sensos",
-                "birdnet_detections",
-                "window_volume",
-            )
-            cur.execute(
+            cur.executemany(
                 """
-                SELECT id, receipt_id, accepted_count, payload_sha256, server_received_at
-                FROM sensos.birdnet_result_batches
-                WHERE wireguard_ip = %s AND batch_id = %s
-                FOR UPDATE;
-                """,
-                (wireguard_ip, upload.batch_id),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                if existing[3] != payload_sha256:
-                    raise RuntimeError(
-                        "batch retry payload does not match the previously stored batch"
-                    )
-                cur.execute(
-                    """
-                    UPDATE sensos.birdnet_result_batches
-                    SET last_seen_at = NOW()
-                    WHERE id = %s;
-                    """,
-                    (existing[0],),
-                )
-                return {
-                    "status": "ok",
-                    "receipt_id": str(existing[1]),
-                    "accepted_count": existing[2],
-                    "server_received_at": format_rfc3339_utc(existing[4]),
-                }
-
-            cur.execute(
-                """
-                INSERT INTO sensos.birdnet_result_batches (
-                    schema_version,
+                INSERT INTO sensos.birdnet_detections (
                     wireguard_ip,
                     hostname,
                     client_version,
-                    batch_id,
                     sent_at,
-                    ownership_mode,
-                    source_count,
-                    first_source_path,
-                    last_source_path,
-                    first_processed_at,
-                    last_processed_at,
-                    accepted_count,
-                    payload_sha256,
-                    request_json
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                RETURNING id, receipt_id, server_received_at;
-                """,
-                (
-                    upload.schema_version,
+                    server_received_at,
+                    source_path,
+                    channel_index,
+                    window_index,
+                    max_score_start_frame,
+                    label,
+                    score,
+                    likely_score,
+                    volume,
+                    clip_start_time,
+                    clip_end_time,
+                    clip_path
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (
                     wireguard_ip,
-                    upload.hostname,
-                    upload.client_version,
-                    upload.batch_id,
-                    upload.sent_at,
-                    upload.ownership_mode,
-                    upload.source_count,
-                    upload.first_source_path,
-                    upload.last_source_path,
-                    upload.first_processed_at,
-                    upload.last_processed_at,
-                    upload.source_count,
-                    payload_sha256,
-                    payload_json,
-                ),
-            )
-            batch_row = cur.fetchone()
-
-            for processed_file in upload.processed_files:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.birdnet_processed_files (
-                        batch_upload_id,
-                        source_path,
-                        sample_rate,
-                        channels,
-                        frames,
-                        started_at,
-                        processed_at,
-                        status,
-                        error,
-                        output_dir,
-                        deleted_source
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    )
-                    RETURNING id;
-                    """,
+                    channel_index,
+                    clip_start_time,
+                    clip_end_time
+                ) DO NOTHING;
+                """,
+                [
                     (
-                        batch_row[0],
-                        processed_file.source_path,
-                        processed_file.sample_rate,
-                        processed_file.channels,
-                        processed_file.frames,
-                        processed_file.started_at,
-                        processed_file.processed_at,
-                        processed_file.status,
-                        processed_file.error,
-                        processed_file.output_dir,
-                        processed_file.deleted_source,
-                    ),
-                )
-                processed_file_row = cur.fetchone()
-
-                if processed_file.detections:
-                    if has_window_volume:
-                        cur.executemany(
-                            """
-                            INSERT INTO sensos.birdnet_detections (
-                                processed_file_id,
-                                channel_index,
-                                window_index,
-                                start_frame,
-                                end_frame,
-                                start_sec,
-                                end_sec,
-                                window_volume,
-                                top_label,
-                                top_score,
-                                top_likely_score
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                            """,
-                            [
-                                (
-                                    processed_file_row[0],
-                                    detection.channel_index,
-                                    detection.window_index,
-                                    detection.start_frame,
-                                    detection.end_frame,
-                                    detection.start_sec,
-                                    detection.end_sec,
-                                    detection.window_volume,
-                                    detection.top_label,
-                                    detection.top_score,
-                                    detection.top_likely_score,
-                                )
-                                for detection in processed_file.detections
-                            ],
-                        )
-                    else:
-                        cur.executemany(
-                            """
-                            INSERT INTO sensos.birdnet_detections (
-                                processed_file_id,
-                                channel_index,
-                                window_index,
-                                start_frame,
-                                end_frame,
-                                start_sec,
-                                end_sec,
-                                top_label,
-                                top_score,
-                                top_likely_score
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                            """,
-                            [
-                                (
-                                    processed_file_row[0],
-                                    detection.channel_index,
-                                    detection.window_index,
-                                    detection.start_frame,
-                                    detection.end_frame,
-                                    detection.start_sec,
-                                    detection.end_sec,
-                                    detection.top_label,
-                                    detection.top_score,
-                                    detection.top_likely_score,
-                                )
-                                for detection in processed_file.detections
-                            ],
-                        )
-
-                if processed_file.flac_runs:
-                    cur.executemany(
-                        """
-                        INSERT INTO sensos.birdnet_flac_runs (
-                            processed_file_id,
-                            channel_index,
-                            run_index,
-                            label,
-                            label_dir,
-                            start_frame,
-                            end_frame,
-                            start_sec,
-                            end_sec,
-                            peak_score,
-                            peak_likely_score,
-                            flac_path,
-                            deleted_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                        """,
-                        [
-                            (
-                                processed_file_row[0],
-                                flac_run.channel_index,
-                                flac_run.run_index,
-                                flac_run.label,
-                                flac_run.label_dir,
-                                flac_run.start_frame,
-                                flac_run.end_frame,
-                                flac_run.start_sec,
-                                flac_run.end_sec,
-                                flac_run.peak_score,
-                                flac_run.peak_likely_score,
-                                flac_run.flac_path,
-                                flac_run.deleted_at,
-                            )
-                            for flac_run in processed_file.flac_runs
-                        ],
+                        wireguard_ip,
+                        upload.hostname,
+                        upload.client_version,
+                        upload.sent_at,
+                        received_at,
+                        detection.source_path,
+                        detection.channel_index,
+                        detection.window_index,
+                        detection.max_score_start_frame,
+                        detection.label,
+                        detection.score,
+                        detection.likely_score,
+                        detection.volume,
+                        detection.clip_start_time,
+                        detection.clip_end_time,
+                        None,
                     )
+                    for detection in upload.detections
+                ],
+            )
 
     return {
         "status": "ok",
-        "receipt_id": str(batch_row[1]),
-        "accepted_count": upload.source_count,
-        "server_received_at": format_rfc3339_utc(batch_row[2]),
+        "receipt_id": receipt_id,
+        "accepted_count": len(upload.detections),
+        "server_received_at": format_rfc3339_utc(received_at),
     }

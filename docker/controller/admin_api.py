@@ -259,59 +259,70 @@ def get_client_location(wg_ip: str, credentials=Depends(authenticate_admin)):
     return {"latitude": row[1], "longitude": row[2], "recorded_at": row[0]}
 
 
-@router.get("/birdnet/batches")
-def list_birdnet_batches(limit: int = 50, credentials=Depends(authenticate_admin)):
+@router.get("/birdnet/detections")
+def list_birdnet_detections(limit: int = 200, credentials=Depends(authenticate_admin)):
     bounded_limit = max(1, min(limit, 500))
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.receipt_id::text,
-                       b.wireguard_ip::text,
+                SELECT d.wireguard_ip::text,
                        p.note,
                        n.name,
-                       b.hostname,
-                       b.client_version,
-                       b.batch_id,
-                       b.ownership_mode,
-                       b.source_count,
-                       b.first_processed_at,
-                       b.last_processed_at,
-                       b.server_received_at
-                FROM sensos.birdnet_result_batches b
-                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                       d.hostname,
+                       d.client_version,
+                       d.source_path,
+                       d.channel_index,
+                       d.window_index,
+                       d.max_score_start_frame,
+                       d.clip_start_time,
+                       d.clip_end_time,
+                       d.label,
+                       d.score,
+                       d.likely_score,
+                       d.volume,
+                       d.server_received_at
+                FROM sensos.birdnet_detections d
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
-                ORDER BY b.server_received_at DESC
+                ORDER BY d.clip_start_time DESC,
+                         d.channel_index,
+                         d.window_index,
+                         d.id DESC
                 LIMIT %s;
                 """,
                 (bounded_limit,),
             )
             rows = cur.fetchall()
     return {
-        "batches": [
+        "detections": [
             {
-                "receipt_id": row[0],
-                "wg_ip": row[1],
-                "note": row[2],
-                "network_name": row[3],
-                "hostname": row[4],
-                "client_version": row[5],
-                "batch_id": row[6],
-                "ownership_mode": row[7],
-                "source_count": row[8],
-                "first_processed_at": row[9],
-                "last_processed_at": row[10],
-                "server_received_at": row[11],
+                "wg_ip": row[0],
+                "note": row[1],
+                "network_name": row[2],
+                "hostname": row[3],
+                "client_version": row[4],
+                "source_path": row[5],
+                "channel_index": row[6],
+                "window_index": row[7],
+                "max_score_start_frame": row[8],
+                "clip_start_time": row[9],
+                "clip_end_time": row[10],
+                "label": row[11],
+                "score": row[12],
+                "likely_score": row[13],
+                "volume": row[14],
+                "server_received_at": row[15],
             }
             for row in rows
         ]
     }
 
 
-@router.get("/peers/{wg_ip}/birdnet/batches")
-def get_peer_birdnet_batches(
+@router.get("/peers/{wg_ip}/birdnet/detections")
+def get_peer_birdnet_detections(
     wg_ip: str,
-    limit: int = 50,
+    limit: int = 200,
     credentials=Depends(authenticate_admin),
 ):
     bounded_limit = max(1, min(limit, 500))
@@ -319,18 +330,25 @@ def get_peer_birdnet_batches(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.receipt_id::text,
-                       b.hostname,
-                       b.client_version,
-                       b.batch_id,
-                       b.ownership_mode,
-                       b.source_count,
-                       b.first_processed_at,
-                       b.last_processed_at,
-                       b.server_received_at
-                FROM sensos.birdnet_result_batches b
-                WHERE b.wireguard_ip = %s
-                ORDER BY b.server_received_at DESC
+                SELECT d.hostname,
+                       d.client_version,
+                       d.source_path,
+                       d.channel_index,
+                       d.window_index,
+                       d.max_score_start_frame,
+                       d.clip_start_time,
+                       d.clip_end_time,
+                       d.label,
+                       d.score,
+                       d.likely_score,
+                       d.volume,
+                       d.server_received_at
+                FROM sensos.birdnet_detections d
+                WHERE d.wireguard_ip = %s
+                ORDER BY d.clip_start_time DESC,
+                         d.channel_index,
+                         d.window_index,
+                         d.id DESC
                 LIMIT %s;
                 """,
                 (wg_ip, bounded_limit),
@@ -338,17 +356,21 @@ def get_peer_birdnet_batches(
             rows = cur.fetchall()
     return {
         "wg_ip": wg_ip,
-        "batches": [
+        "detections": [
             {
-                "receipt_id": row[0],
-                "hostname": row[1],
-                "client_version": row[2],
-                "batch_id": row[3],
-                "ownership_mode": row[4],
-                "source_count": row[5],
-                "first_processed_at": row[6],
-                "last_processed_at": row[7],
-                "server_received_at": row[8],
+                "hostname": row[0],
+                "client_version": row[1],
+                "source_path": row[2],
+                "channel_index": row[3],
+                "window_index": row[4],
+                "max_score_start_frame": row[5],
+                "clip_start_time": row[6],
+                "clip_end_time": row[7],
+                "label": row[8],
+                "score": row[9],
+                "likely_score": row[10],
+                "volume": row[11],
+                "server_received_at": row[12],
             }
             for row in rows
         ],
