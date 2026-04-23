@@ -7,6 +7,7 @@ import html
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import psycopg
 
@@ -43,10 +44,17 @@ DETAIL_EVIDENCE_RANGES = {
 BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
 
 BIRDNET_RANKING_SORTS = {
+    "detection_count": {
+        "label": "Detection frequency",
+        "metric_label": "Detections",
+        "description": "Counts retained BirdNET detections (runs), treating each detection interval as one occurrence.",
+        "order_sql": "detection_count DESC, sum_score_x_occup DESC NULLS LAST, max_score DESC NULLS LAST, top_label ASC",
+        "value_key": "detection_count",
+    },
     "sum_score_x_occup": {
-        "label": "Sum bn score x occup",
-        "metric_label": "Sum score x occup",
-        "description": "Summed BirdNET score multiplied by occupancy score across detections in the selected window.",
+        "label": "Duration-weighted bn score x occup",
+        "metric_label": "Duration-weighted score x occup",
+        "description": "Summed clip duration multiplied by BirdNET score and occupancy score across detections in the selected window.",
         "order_sql": "sum_score_x_occup DESC NULLS LAST, max_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
         "value_key": "sum_score_x_occup",
     },
@@ -192,6 +200,13 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 def normalize_birdnet_ranking_sort(value: str | None) -> str:
     candidate = (value or "sum_score_x_occup").strip().lower()
     return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_occup"
+
+
+def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
+    path = f"/sites/{site_id}/birdnet-species/{quote(label, safe='')}"
+    if range_key:
+        return f"{path}?range={quote(range_key, safe='')}"
+    return path
 
 
 def window_cutoff_from_latest(
@@ -487,6 +502,7 @@ def render_horizontal_lollipop_svg(
     rows: list[dict],
     value_key: str,
     accent: str,
+    label_href_map: dict[str, str] | None = None,
     width: int = 1120,
     row_height: int = 36,
 ) -> str:
@@ -526,9 +542,15 @@ def render_horizontal_lollipop_svg(
         y = top + row_step * index + row_step / 2
         x = axis_x + (max(value, 0.0) / max_value) * chart_span
         label = str(row.get("label") or row.get("top_label") or "Unknown")
-        parts.append(
+        label_markup = (
             f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{escape_html(label)}</text>'
         )
+        href = (label_href_map or {}).get(label)
+        if href:
+            label_markup = (
+                f'<a href="{escape_html(href)}" target="_self" rel="noopener">{label_markup}</a>'
+            )
+        parts.append(label_markup)
         parts.append(
             f'<line x1="{axis_x}" y1="{y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="{accent}" stroke-width="3" stroke-linecap="round" opacity="0.72"></line>'
         )
@@ -598,7 +620,7 @@ def fetch_sites() -> list[dict]:
 
 def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
     normalized_evidence_range = normalize_detail_range(evidence_range)
-    evidence_cutoff = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
+    evidence_window = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
     with get_db() as conn:
         with conn.cursor() as cur:
             has_window_volume = relation_has_column(
@@ -645,6 +667,10 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (lookup_wg_ip,),
             )
             birdnet_summary = cur.fetchone()
+            anchored_evidence_cutoff = window_cutoff_from_latest(
+                birdnet_summary[1] if birdnet_summary else None,
+                evidence_window,
+            )
             cur.execute(
                 """
                 SELECT count(*)::integer,
@@ -655,12 +681,12 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (lookup_wg_ip,),
             )
             i2c_summary = cur.fetchone()
-            if evidence_cutoff is None:
+            if anchored_evidence_cutoff is None:
                 cur.execute(
                     """
                     SELECT top_label,
                            count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
                            avg(top_score) AS average_score,
                            max(top_score) AS best_score,
                            max(processed_at) AS latest_processed_at
@@ -680,7 +706,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     """
                     SELECT top_label,
                            count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
                            avg(top_score) AS average_score,
                            max(top_score) AS best_score,
                            max(processed_at) AS latest_processed_at
@@ -694,7 +720,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                              top_label ASC
                     LIMIT 8;
                     """,
-                    (lookup_wg_ip, datetime.now(timezone.utc) - evidence_cutoff),
+                    (lookup_wg_ip, anchored_evidence_cutoff),
                 )
             top_birdnet_evidence = cur.fetchall()
             cur.execute(
@@ -926,6 +952,224 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
     }
 
 
+def fetch_site_status(site_id: str) -> dict:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT peer_uuid,
+                       wg_ip,
+                       network_name,
+                       note,
+                       site_label,
+                       is_active,
+                       registered_at,
+                       location_recorded_at,
+                       latitude,
+                       longitude,
+                       last_check_in,
+                       hostname,
+                       version,
+                       status_message,
+                       birdnet_detection_count,
+                       birdnet_source_count,
+                       latest_birdnet_result_at
+                FROM sensos.public_sites
+                WHERE peer_uuid = %s OR wg_ip = %s;
+                """,
+                (site_id, site_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Site not found.")
+    return {
+        "peer_uuid": row[0],
+        "site_id": row[0],
+        "wg_ip": row[1],
+        "network_name": row[2],
+        "note": row[3],
+        "site_label": row[4],
+        "is_active": row[5],
+        "registered_at": format_rfc3339_utc(row[6]),
+        "location_recorded_at": format_rfc3339_utc(row[7]),
+        "latitude": float(row[8]),
+        "longitude": float(row[9]),
+        "last_check_in": format_rfc3339_utc(row[10]),
+        "hostname": row[11],
+        "client_version": row[12],
+        "status_message": row[13],
+        "birdnet_detection_count": int(row[14]),
+        "birdnet_source_count": int(row[15]),
+        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
+        "public_url": f"/sites/{row[0]}",
+        "status_url": f"/sites/{row[0]}/status",
+    }
+
+
+def render_site_status_html(site: dict) -> str:
+    note_html = (
+        f'<p class="lede">{escape_html(site["note"])}</p>'
+        if site.get("note")
+        else '<p class="lede">Public status view sourced from the shared dashboard database.</p>'
+    )
+    infrastructure_rows = [
+        ("Site label", site["site_label"]),
+        ("Hostname", site.get("hostname") or "unknown"),
+        ("WireGuard IP", site["wg_ip"]),
+        ("Network", site["network_name"]),
+        ("Client version", site.get("client_version") or "unknown"),
+        ("Client active", "yes" if site.get("is_active") else "no"),
+        ("Status message", site.get("status_message") or "none"),
+        ("Coordinates", f"{site['latitude']:.6f}, {site['longitude']:.6f}"),
+        ("Registered at", render_local_time(site.get("registered_at"), "unknown")),
+        (
+            "Location updated",
+            render_local_time(site.get("location_recorded_at"), "unknown"),
+        ),
+        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown")),
+    ]
+    infra_cards = "".join(
+        f"""
+        <article class="row-card">
+          <div class="dim">{escape_html(label)}</div>
+          <div><strong>{escape_html(value)}</strong></div>
+        </article>
+        """
+        for label, value in infrastructure_rows
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(site['site_label'])} · Public Status</title>
+  <style>
+    :root {{
+      --bg: #eff3ea;
+      --ink: #17201d;
+      --muted: #61706a;
+      --panel: rgba(255,255,255,0.9);
+      --border: rgba(23,32,29,0.12);
+      --shadow: 0 20px 54px rgba(23,32,29,0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      background:
+        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
+        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
+        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
+    }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.9rem 1rem 1.2rem; }}
+    .masthead {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 0.75rem;
+    }}
+    h1 {{ margin: 0.2rem 0 0; font-size: clamp(2rem, 3.4vw, 3.1rem); letter-spacing: -0.05em; }}
+    .lede {{ color: var(--muted); max-width: 52rem; margin: 0.35rem 0 0; }}
+    .meta {{ color: var(--muted); font-size: 0.92rem; text-align: right; }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.8rem;
+      margin-bottom: 0.85rem;
+    }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 0.8rem 0.9rem;
+      min-width: 0;
+    }}
+    .metric-label {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .metric-value {{
+      margin-top: 0.25rem;
+      font-size: 1.35rem;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }}
+    .layout {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.8rem; }}
+    .section-title {{
+      margin: 0 0 0.65rem;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .list {{ display: grid; gap: 0.55rem; }}
+    .row-card {{
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.65rem 0.75rem;
+      background: rgba(255,255,255,0.66);
+    }}
+    .mono {{
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.86rem;
+      word-break: break-word;
+    }}
+    .dim {{ color: var(--muted); }}
+    .empty {{
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 0.8rem;
+      color: var(--muted);
+      background: rgba(255,255,255,0.45);
+    }}
+    a {{ color: #0c6d62; }}
+    @media (max-width: 1080px) {{
+      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .meta {{ text-align: left; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="masthead">
+      <div>
+        <div><a href="/">← Back to field sites</a></div>
+        <h1>{escape_html(site['site_label'])}</h1>
+        {note_html}
+      </div>
+      <div class="meta">
+        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
+      </div>
+    </div>
+    <div class="grid">
+      <section class="panel"><div class="metric-label">Client Status</div><div class="metric-value">{escape_html(site['status_message'] or ('Active' if site['is_active'] else 'Inactive'))}</div></section>
+      <section class="panel"><div class="metric-label">Hostname</div><div class="metric-value">{escape_html(site['hostname'] or 'unknown')}</div></section>
+      <section class="panel"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{escape_html(site['wg_ip'])}</div></section>
+      <section class="panel"><div class="metric-label">Last Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'No check-in yet')}</div></section>
+      <section class="panel"><div class="metric-label">Public Site</div><div class="metric-value"><a href="{escape_html(site['public_url'])}">Open site dashboard</a></div></section>
+    </div>
+    <div class="layout">
+      <section class="panel">
+        <h2 class="section-title">Infrastructure Details</h2>
+        <div class="list">{infra_cards}</div>
+      </section>
+    </div>
+  </div>
+{render_local_time_script()}
+</body>
+</html>"""
+
+
 def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
     site = fetch_site_detail(site_id)
     lookup_wg_ip = site["wg_ip"]
@@ -1145,7 +1389,7 @@ def fetch_site_birdnet_rankings(
                     f"""
                     SELECT top_label,
                            count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
                            max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                            max(top_score) AS max_score,
                            max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1176,7 +1420,7 @@ def fetch_site_birdnet_rankings(
                         f"""
                         SELECT top_label,
                                count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
                                max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1194,7 +1438,7 @@ def fetch_site_birdnet_rankings(
                         f"""
                         SELECT top_label,
                                count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
                                max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1233,8 +1477,250 @@ def fetch_site_birdnet_rankings(
     return site
 
 
+def fetch_site_birdnet_species(
+    site_id: str,
+    label: str,
+    range_key: str | None = None,
+) -> dict:
+    site = fetch_site_detail(site_id)
+    normalized_range = normalize_birdnet_ranking_range(range_key)
+    range_window = BIRDNET_RANKING_RANGES[normalized_range]
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT max(processed_at)
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                  AND top_label = %s;
+                """,
+                (site["wg_ip"], label),
+            )
+            latest_at = cur.fetchone()[0]
+            anchored_cutoff = window_cutoff_from_latest(latest_at, range_window)
+            if anchored_cutoff is None:
+                cur.execute(
+                    """
+                    SELECT processed_at,
+                           top_score,
+                           top_likely_score,
+                           start_sec,
+                           end_sec,
+                           source_path,
+                           channel_index
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_label = %s
+                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    """,
+                    (site["wg_ip"], label),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT processed_at,
+                           top_score,
+                           top_likely_score,
+                           start_sec,
+                           end_sec,
+                           source_path,
+                           channel_index
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_label = %s
+                      AND processed_at >= %s
+                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    """,
+                    (site["wg_ip"], label, anchored_cutoff),
+                )
+            rows = cur.fetchall()
+    score_points = []
+    occupancy_points = []
+    weighted_points = []
+    detections = []
+    for processed_at, top_score, top_likely_score, start_sec, end_sec, source_path, channel_index in rows:
+        processed_text = format_rfc3339_utc(processed_at)
+        if processed_text is None:
+            continue
+        score_value = float(top_score)
+        occupancy_value = float(top_likely_score) if top_likely_score is not None else score_value
+        duration_sec = max(float(end_sec) - float(start_sec), 0.0)
+        weighted_value = duration_sec * score_value * occupancy_value
+        score_points.append({"processed_at": processed_text, "value": score_value})
+        occupancy_points.append({"processed_at": processed_text, "value": occupancy_value})
+        weighted_points.append({"processed_at": processed_text, "activity": weighted_value})
+        detections.append(
+            {
+                "processed_at": processed_text,
+                "top_score": score_value,
+                "top_likely_score": float(top_likely_score) if top_likely_score is not None else None,
+                "start_sec": float(start_sec),
+                "end_sec": float(end_sec),
+                "source_path": source_path,
+                "channel_index": int(channel_index),
+            }
+        )
+    site["species_label"] = label
+    site["species_range"] = normalized_range
+    site["species_range_window"] = range_window
+    site["birdnet_species_url"] = birdnet_species_url(site["peer_uuid"], label, normalized_range)
+    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    site["species_score_series"] = downsample_points(score_points, 180)
+    site["species_occupancy_series"] = downsample_points(occupancy_points, 180)
+    site["species_weighted_series"] = downsample_points(weighted_points, 180)
+    site["species_detection_count"] = len(detections)
+    site["species_latest_at"] = (
+        detections[-1]["processed_at"] if detections else None
+    )
+    site["species_recent_detections"] = list(reversed(detections[-20:]))
+    return site
+
+
+def render_birdnet_species_html(site: dict) -> str:
+    selected_range = normalize_birdnet_ranking_range(site.get("species_range"))
+    range_links = "".join(
+        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key))}">{label}</a>'
+        for key, label in (
+            ("hour", "Hour"),
+            ("day", "Day"),
+            ("week", "Week"),
+            ("month", "Month"),
+            ("all", "All"),
+        )
+    )
+    score_chart = (
+        render_line_chart_svg(site["species_score_series"], "value", "#0c6d62")
+        if site["species_score_series"]
+        else ""
+    )
+    occupancy_chart = (
+        render_line_chart_svg(site["species_occupancy_series"], "value", "#2563eb")
+        if site["species_occupancy_series"]
+        else ""
+    )
+    weighted_chart = (
+        render_bar_chart_svg(site["species_weighted_series"], "activity", "#b45309")
+        if site["species_weighted_series"]
+        else ""
+    )
+    recent_cards = (
+        "".join(
+            f"""
+        <article class="record-card">
+          <div><strong>{escape_html(site['species_label'])}</strong> <span class="dim">score {item['top_score']:.2f} · occup {'n/a' if item['top_likely_score'] is None else f"{item['top_likely_score']:.2f}"}</span></div>
+          <div class="dim">{render_local_time(item['processed_at'])} · ch {item['channel_index']} · {item['start_sec']:.1f}s-{item['end_sec']:.1f}s</div>
+          <div class="mono">{escape_html(item['source_path'])}</div>
+        </article>
+        """
+            for item in site["species_recent_detections"]
+        )
+        or '<div class="empty">No detections for this species in the selected window.</div>'
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(site['site_label'])} · {escape_html(site['species_label'])} · BirdNET Series</title>
+  <style>
+    :root {{
+      --bg: #eff3ea;
+      --ink: #17201d;
+      --muted: #61706a;
+      --panel: rgba(255,255,255,0.9);
+      --border: rgba(23,32,29,0.12);
+      --shadow: 0 20px 54px rgba(23,32,29,0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      background:
+        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
+        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
+        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
+    }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.9rem 1rem 1.2rem; }}
+    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:0.75rem; }}
+    h1 {{ margin: 0.25rem 0 0; font-size: clamp(1.9rem, 3.2vw, 3rem); letter-spacing: -0.05em; }}
+    .lede {{ color: var(--muted); max-width: 56rem; margin-top: 0.35rem; }}
+    .meta {{ color: var(--muted); font-size: 0.92rem; }}
+    .panel {{ background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 0.85rem 0.95rem; }}
+    .stack {{ display:grid; gap: 0.8rem; }}
+    .summary-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem; }}
+    .metric {{ border:1px solid var(--border); border-radius: 14px; padding: 0.65rem 0.75rem; background: rgba(255,255,255,0.7); }}
+    .metric-label {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }}
+    .metric-value {{ margin-top: 0.2rem; font-size: 1.28rem; font-weight: 700; letter-spacing: -0.04em; }}
+    .section-title {{ margin: 0 0 0.6rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }}
+    .range-pills {{ display:inline-flex; gap: 0.4rem; flex-wrap: wrap; }}
+    .range-pill {{ display:inline-flex; align-items:center; padding:0.28rem 0.6rem; border-radius:999px; border:1px solid var(--border); background: rgba(255,255,255,0.8); color: var(--ink); text-decoration:none; font-size:0.82rem; }}
+    .range-pill.active {{ background:#0c6d62; color:white; border-color:#0c6d62; }}
+    .chart-wrap {{ min-height: 16rem; border:1px solid rgba(23,32,29,0.08); border-radius: 16px; overflow-x:auto; background: rgba(255,255,255,0.55); }}
+    .chart-wrap svg {{ width:100%; min-width:920px; display:block; }}
+    .record-list {{ display:grid; gap:0.6rem; }}
+    .record-card {{ border:1px solid var(--border); border-radius:14px; padding: 0.68rem 0.75rem; background: rgba(255,255,255,0.68); }}
+    .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.86rem; word-break: break-word; }}
+    .dim {{ color: var(--muted); }}
+    .empty {{ border:1px dashed var(--border); border-radius:14px; padding: 0.85rem; color: var(--muted); background: rgba(255,255,255,0.45); }}
+    a {{ color: #0c6d62; }}
+    @media (max-width: 980px) {{
+      .masthead {{ flex-direction: column; }}
+      .summary-grid {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="masthead">
+      <div>
+        <div><a href="{escape_html(site['public_url'])}">← Site page</a> · <a href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a></div>
+        <h1>{escape_html(site['species_label'])}</h1>
+        <div class="lede">Species-specific BirdNET score series for {escape_html(site['site_label'])}. Time windows are anchored to the latest timestamp for this species.</div>
+      </div>
+      <div class="meta">
+        <div>{escape_html(site['network_name'])}</div>
+        <div>{escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+      </div>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="range-pills">{range_links}</div>
+      </section>
+      <section class="panel">
+        <div class="summary-grid">
+          <div class="metric"><div class="metric-label">Detections</div><div class="metric-value">{site['species_detection_count']}</div></div>
+          <div class="metric"><div class="metric-label">Latest Detection</div><div class="metric-value">{render_local_time(site['species_latest_at'], 'No detections')}</div></div>
+          <div class="metric"><div class="metric-label">Time Window</div><div class="metric-value">{escape_html(selected_range.title())}</div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Top Score</h2>
+        <div class="chart-wrap">{score_chart or '<div class="empty">No score series available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Occupancy Score</h2>
+        <div class="chart-wrap">{occupancy_chart or '<div class="empty">No occupancy series available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Duration-Weighted Activity</h2>
+        <div class="chart-wrap">{weighted_chart or '<div class="empty">No activity series available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Recent Detections</h2>
+        <div class="record-list">{recent_cards}</div>
+      </section>
+    </div>
+  </div>
+{render_local_time_script()}
+</body>
+</html>"""
+
+
 def render_site_detail_html(site: dict) -> str:
     evidence_range = normalize_detail_range(site.get("evidence_range"))
+    species_href = lambda label: birdnet_species_url(site["peer_uuid"], str(label), evidence_range)
     evidence_range_links = "".join(
         f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site["public_url"])}?range={key}">{label}</a>'
         for key, label in (
@@ -1251,7 +1737,7 @@ def render_site_detail_html(site: dict) -> str:
         <article class="evidence-card">
           <div class="evidence-rank">{index}</div>
           <div>
-            <div><strong>{summary['label']}</strong></div>
+            <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong></div>
             <div class="dim">weight {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
             <div class="dim">avg score {summary['average_score']:.2f} · latest {render_local_time(summary['latest_processed_at'])}</div>
           </div>
@@ -1266,7 +1752,7 @@ def render_site_detail_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{detection['top_label']}</strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('volume') is None else f"{detection['volume']:.3f}"}</span></div>
+          <div><strong><a href="{escape_html(species_href(detection['top_label']))}">{escape_html(detection['top_label'])}</a></strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('volume') is None else f"{detection['volume']:.3f}"}</span></div>
           <div class="dim">{render_local_time(detection['processed_at'])} · ch {detection['channel_index']}</div>
           <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
           <div class="mono">{detection['source_path']}</div>
@@ -1295,7 +1781,7 @@ def render_site_detail_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{summary['label']}</strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
+          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
           <div class="dim">{summary['detection_count']} detections · latest {render_local_time(summary['latest_processed_at'])}</div>
         </article>
         """
@@ -1308,7 +1794,7 @@ def render_site_detail_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_score']:.2f}</span></div>
+          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best {summary['best_score']:.2f}</span></div>
           <div class="dim">avg score {summary['average_score']:.2f} · {summary['detection_count']} detections</div>
         </article>
         """
@@ -1321,7 +1807,7 @@ def render_site_detail_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{summary['label']}</strong> <span class="dim">best {summary['best_occupancy_score']:.2f}</span></div>
+          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best {summary['best_occupancy_score']:.2f}</span></div>
           <div class="dim">avg occupancy {summary['average_occupancy_score']:.2f} · {summary['detection_count']} detections</div>
         </article>
         """
@@ -1575,7 +2061,7 @@ def render_site_detail_html(site: dict) -> str:
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
             <div>
               <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weight Of Evidence</h2>
-              <div class="dim">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
+              <div class="dim">Ranked by summed clip duration × BirdNET score × occupancy score across retained detections at this site.</div>
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
@@ -1620,6 +2106,7 @@ def render_site_detail_html(site: dict) -> str:
 
 def render_synoptic_html(site: dict) -> str:
     range_key = normalize_synoptic_range(site.get("synoptic_range"))
+    species_href = lambda label: birdnet_species_url(site["peer_uuid"], str(label), range_key)
     range_links = "".join(
         f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(site["synoptic_url"])}?range={key}">{label}</a>'
         for key, label in (
@@ -1669,7 +2156,7 @@ def render_synoptic_html(site: dict) -> str:
         <section class="chart-card">
           <div class="chart-head">
             <div>
-              <strong>{escape_html(series['label'])}</strong>
+              <strong><a href="{escape_html(species_href(series['label']))}">{escape_html(series['label'])}</a></strong>
               <div class="dim">{series['event_count']} events · total activity {series['activity_total']:.2f}</div>
             </div>
           </div>
@@ -1859,9 +2346,15 @@ def render_birdnet_rankings_html(site: dict) -> str:
     plotted_species_count = sum(
         1 for item in site["birdnet_rankings"] if item.get(selected_metric) is not None
     )
+    species_href_map = {
+        str(item["label"]): birdnet_species_url(
+            site["peer_uuid"], str(item["label"]), selected_range
+        )
+        for item in site["birdnet_rankings"]
+    }
 
     plot_markup = (
-        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62")}</div>'
+        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62", species_href_map)}</div>'
         if plotted_species_count
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
@@ -1871,11 +2364,11 @@ def render_birdnet_rankings_html(site: dict) -> str:
             f"""
         <article class="rank-card">
           <div class="rank-main">
-            <strong>{escape_html(item['label'])}</strong>
+            <strong><a href="{escape_html(species_href_map[str(item['label'])])}">{escape_html(item['label'])}</a></strong>
             <span class="metric-pill">{escape_html(site['birdnet_ranking_metric_label'])}: {'n/a' if item.get(selected_metric) is None else _format_axis_value(float(item[selected_metric]))}</span>
           </div>
           <div class="dim">Detections {item['detection_count']} · max score {'n/a' if item['max_score'] is None else _format_axis_value(item['max_score'])} · max occup {'n/a' if item['max_occup'] is None else _format_axis_value(item['max_occup'])}</div>
-          <div class="dim">sum score x occup {'n/a' if item['sum_score_x_occup'] is None else _format_axis_value(item['sum_score_x_occup'])} · avg volume {'n/a' if item['avg_volume'] is None else _format_axis_value(item['avg_volume'])}</div>
+          <div class="dim">duration-weighted score x occup {'n/a' if item['sum_score_x_occup'] is None else _format_axis_value(item['sum_score_x_occup'])} · avg volume {'n/a' if item['avg_volume'] is None else _format_axis_value(item['avg_volume'])}</div>
           <div class="dim">latest {render_local_time(item['latest_processed_at'])}</div>
         </article>
         """
@@ -2159,37 +2652,37 @@ def render_index_html() -> str:
         radial-gradient(circle at top right, rgba(217,119,6,0.14), transparent 22rem),
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 1.25rem; }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.7rem 0.9rem; }}
     .masthead {{
-      display: flex; justify-content: space-between; align-items: flex-start;
-      gap: 1rem; margin-bottom: 1rem;
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 0.7rem; margin-bottom: 0.55rem;
     }}
-    h1 {{ margin: 0; font-size: clamp(2rem, 4vw, 3.4rem); letter-spacing: -0.05em; }}
+    h1 {{ margin: 0; font-size: clamp(1.35rem, 2.2vw, 1.9rem); letter-spacing: -0.03em; }}
     .subhead {{ color: var(--muted); max-width: 52rem; margin-top: 0.45rem; }}
-    .meta {{ color: var(--muted); font-size: 0.92rem; }}
+    .meta {{ color: var(--muted); font-size: 0.85rem; }}
     .layout {{
       display: grid;
-      grid-template-columns: minmax(0, 1.8fr) minmax(320px, 0.9fr);
+      grid-template-columns: minmax(0, 2.35fr) minmax(300px, 0.85fr);
       gap: 1rem;
-      min-height: calc(100vh - 8rem);
+      height: calc(100vh - 4.2rem);
     }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 24px;
+      border-radius: 20px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(18px);
       overflow: hidden;
     }}
     .map-wrap {{
       position: relative;
-      min-height: 72vh;
+      min-height: 100%;
       background: linear-gradient(180deg, #dfeae6 0%, #cedbd4 100%);
     }}
     .map-toolbar {{
       position: absolute;
-      top: 1rem;
-      left: 1rem;
+      top: 0.7rem;
+      left: 0.7rem;
       z-index: 4;
       display: flex;
       gap: 0.6rem;
@@ -2249,18 +2742,24 @@ def render_index_html() -> str:
     }}
     .map-caption {{
       position: absolute;
-      left: 1rem;
-      bottom: 1rem;
+      right: 0.7rem;
+      bottom: 0.7rem;
       z-index: 4;
       color: var(--muted);
-      font-size: 0.92rem;
-      max-width: 28rem;
+      font-size: 0.82rem;
+      max-width: 20rem;
+      text-align: right;
+      background: rgba(255,255,255,0.7);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.3rem 0.6rem;
     }}
     .sidebar {{
-      padding: 1rem;
+      padding: 0.75rem;
       display: grid;
-      gap: 1rem;
+      gap: 0.75rem;
       align-content: start;
+      overflow: auto;
     }}
     .sidebar h2 {{
       margin: 0;
@@ -2274,6 +2773,85 @@ def render_index_html() -> str:
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.7rem;
+    }}
+    .summary-link {{
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }}
+    .summary-link:hover .summary-card {{
+      border-color: rgba(12,109,98,0.45);
+      box-shadow: 0 10px 24px rgba(12,109,98,0.12);
+    }}
+    .summary-card {{
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 0.75rem 0.8rem;
+      background: rgba(255,255,255,0.72);
+      transition: box-shadow 140ms ease, border-color 140ms ease;
+    }}
+    .summary-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(3.8rem, auto);
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.42rem;
+    }}
+    .summary-row:last-child {{
+      margin-bottom: 0;
+    }}
+    .summary-label {{
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.9rem;
+    }}
+    .summary-bar {{
+      height: 0.46rem;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(12,109,98,0.92), rgba(217,119,6,0.85));
+      box-shadow: inset 0 0 0 1px rgba(23,32,29,0.08);
+    }}
+    .summary-value {{
+      text-align: right;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+    }}
+    .mini-plots {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.55rem;
+    }}
+    .mini-plot {{
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.45rem 0.5rem 0.5rem;
+      background: rgba(255,255,255,0.7);
+      min-height: 5.9rem;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 0.2rem;
+    }}
+    .mini-plot-title {{
+      font-size: 0.76rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0;
+      line-height: 1.1;
+    }}
+    .mini-plot-value {{
+      font-size: 0.96rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0;
+      line-height: 1.1;
+    }}
+    .mini-plot-svg {{
+      width: 100%;
+      height: 3.2rem;
+      display: block;
     }}
     .metric {{
       border: 1px solid var(--border);
@@ -2314,7 +2892,7 @@ def render_index_html() -> str:
     .record-list {{
       display: grid;
       gap: 0.65rem;
-      max-height: 20rem;
+      max-height: 12.5rem;
       overflow: auto;
     }}
     .record-card {{
@@ -2329,17 +2907,16 @@ def render_index_html() -> str:
     }}
     @media (max-width: 980px) {{
       .layout {{ grid-template-columns: 1fr; }}
-      .map-wrap {{ min-height: 56vh; }}
+      .layout {{ height: auto; }}
+      .map-wrap {{ min-height: 68vh; }}
+      .mini-plots {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
 <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <h1>Field Sites</h1>
-        <div class="subhead">All instrumented sites stay visible at every zoom level. Click a site to inspect it. If one click resolves multiple nearby sites, the map automatically zooms to that local group instead of collapsing points into a cluster.</div>
-      </div>
+      <div><h1>Field Sites</h1></div>
       <div class="meta">Public dashboard · version {current_version()}</div>
     </div>
     <div class="layout">
@@ -2355,22 +2932,29 @@ def render_index_html() -> str:
       </section>
       <aside class="panel sidebar">
         <div>
-          <div class="section-title">Selected Site</div>
-          <h2 id="siteTitle">Choose a site</h2>
-          <p id="siteSubtitle">Click a mapped point to open site details.</p>
+          <h2><a id="siteTitleLink" href="#" class="summary-link" style="display:inline;color:inherit;text-decoration:none;"><span id="siteTitle">Map</span></a></h2>
+          <p id="siteSubtitle"></p>
         </div>
+        <section>
+          <div class="section-title">Top Species (Weighted)</div>
+          <a id="birdnetSummaryLink" class="summary-link" href="#">
+            <div id="birdnetSummary" class="summary-card"></div>
+          </a>
+        </section>
+        <section>
+          <div id="sensorMiniPlots" class="mini-plots"></div>
+        </section>
         <div class="metric-grid" id="metricGrid"></div>
         <section>
-          <div class="section-title">Disambiguation</div>
-          <div id="chooserBlock" class="dim">When multiple nearby points are clicked together, the map will zoom to their local bounds. If they still overlap at max zoom, they appear here as an explicit list.</div>
+          <div id="chooserBlock" class="site-list"></div>
         </section>
         <section>
           <div class="section-title">Recent BirdNET Results</div>
-          <div id="birdnetList" class="record-list"><div class="dim">Select a site to inspect recent BirdNET detections.</div></div>
+          <div id="birdnetList" class="record-list"></div>
         </section>
         <section>
           <div class="section-title">Recent Sensor Data</div>
-          <div id="i2cList" class="record-list"><div class="dim">Select a site to inspect recent sensor readings.</div></div>
+          <div id="i2cList" class="record-list"></div>
         </section>
       </aside>
     </div>
@@ -2393,8 +2977,12 @@ def render_index_html() -> str:
     const markersLayer = document.getElementById("markersLayer");
     const mapCaption = document.getElementById("mapCaption");
     const resetViewButton = document.getElementById("resetViewButton");
+    const siteTitleLink = document.getElementById("siteTitleLink");
     const siteTitle = document.getElementById("siteTitle");
     const siteSubtitle = document.getElementById("siteSubtitle");
+    const birdnetSummaryLink = document.getElementById("birdnetSummaryLink");
+    const birdnetSummary = document.getElementById("birdnetSummary");
+    const sensorMiniPlots = document.getElementById("sensorMiniPlots");
     const metricGrid = document.getElementById("metricGrid");
     const chooserBlock = document.getElementById("chooserBlock");
     const birdnetList = document.getElementById("birdnetList");
@@ -2600,7 +3188,7 @@ def render_index_html() -> str:
     function render() {{
       drawMap();
       renderMarkers();
-      mapCaption.textContent = `${{sites.length}} mapped sites. Markers stay fixed in screen size so site visibility does not depend on zoom. Local overlap is intentional.`;
+      mapCaption.textContent = `${{sites.length}} sites`;
     }}
 
     function fitSites(targetSites) {{
@@ -2621,8 +3209,8 @@ def render_index_html() -> str:
     function setChooserSites(targetSites) {{
       chooserSites = targetSites;
       if (!targetSites.length) {{
-        chooserBlock.className = "dim";
-        chooserBlock.textContent = "When multiple nearby points are clicked together, the map will zoom to their local bounds. If they still overlap at max zoom, they appear here as an explicit list.";
+        chooserBlock.className = "site-list";
+        chooserBlock.innerHTML = "";
         return;
       }}
       chooserBlock.className = "site-list";
@@ -2657,6 +3245,108 @@ def render_index_html() -> str:
       window.location.assign(site.public_url);
     }}
 
+    function birdnetSpeciesUrl(site, label) {{
+      const range = site && site.evidence_range ? site.evidence_range : "day";
+      return `${{site.public_url}}/birdnet-species/${{encodeURIComponent(String(label || ""))}}?range=${{encodeURIComponent(range)}}`;
+    }}
+
+    function renderBirdnetSummary(site) {{
+      const rankingUrl = `${{site.public_url}}/birdnet-rankings?sort=sum_score_x_occup&range=${{encodeURIComponent(site.evidence_range || "day")}}`;
+      birdnetSummaryLink.href = rankingUrl;
+      const rows = Array.isArray(site.top_birdnet_evidence) ? site.top_birdnet_evidence.slice(0, 5) : [];
+      if (!rows.length) {{
+        birdnetSummary.innerHTML = '<div class="dim">No weighted BirdNET detections in this period.</div>';
+        return;
+      }}
+      const maxWeight = Math.max(...rows.map((row) => Number(row.evidence_weight) || 0), 0);
+      birdnetSummary.innerHTML = rows.map((row) => {{
+        const value = Number(row.evidence_weight) || 0;
+        const widthPct = maxWeight > 0 ? Math.max((value / maxWeight) * 100, 3) : 3;
+        const href = birdnetSpeciesUrl(site, row.label);
+        return `
+          <div class="summary-row">
+            <div>
+              <div class="summary-label"><a href="${{escapeHtml(href)}}">${{escapeHtml(row.label)}}</a></div>
+              <div class="summary-bar" style="width:${{widthPct.toFixed(1)}}%"></div>
+            </div>
+            <div class="summary-value">${{escapeHtml(formatNumber(value, 2))}}</div>
+          </div>
+        `;
+      }}).join("");
+    }}
+
+    function sensorSeriesFromRecentReadings(readings, kind) {{
+      const values = [];
+      const ordered = Array.isArray(readings) ? [...readings].reverse() : [];
+      for (const row of ordered) {{
+        const key = String(row.reading_key || "").toLowerCase();
+        const sensorType = String(row.sensor_type || "").toLowerCase();
+        const value = Number(row.reading_value);
+        if (!Number.isFinite(value)) continue;
+        if (kind === "temperature" && (key.includes("temp") || sensorType.includes("temp"))) {{
+          values.push(value);
+          continue;
+        }}
+        if (kind === "humidity" && (key.includes("humid") || sensorType.includes("humid") || key === "rh")) {{
+          values.push(value);
+          continue;
+        }}
+        if (kind === "co2" && (key.includes("co2") || key.includes("ppm") || sensorType.includes("co2"))) {{
+          values.push(value);
+          continue;
+        }}
+      }}
+      return values.slice(-20);
+    }}
+
+    function sparklineSvg(values) {{
+      const width = 180;
+      const height = 56;
+      const padX = 4;
+      const padY = 5;
+      if (!values.length) {{
+        return `<svg class="mini-plot-svg" viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none"></svg>`;
+      }}
+      const minV = Math.min(...values);
+      const maxV = Math.max(...values);
+      const span = Math.max(maxV - minV, 1e-9);
+      const xStep = values.length > 1 ? (width - padX * 2) / (values.length - 1) : 0;
+      const points = values.map((v, idx) => {{
+        const x = padX + idx * xStep;
+        const y = padY + (height - padY * 2) * (1 - ((v - minV) / span));
+        return `${{x.toFixed(2)}},${{y.toFixed(2)}}`;
+      }}).join(" ");
+      const last = values[values.length - 1];
+      const dotX = padX + (values.length - 1) * xStep;
+      const dotY = padY + (height - padY * 2) * (1 - ((last - minV) / span));
+      return `
+        <svg class="mini-plot-svg" viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none" aria-hidden="true">
+          <polyline fill="none" stroke="rgba(12,109,98,0.92)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" points="${{points}}"></polyline>
+          <circle cx="${{dotX.toFixed(2)}}" cy="${{dotY.toFixed(2)}}" r="2.6" fill="rgba(217,119,6,0.95)"></circle>
+        </svg>
+      `;
+    }}
+
+    function renderMiniPlots(site) {{
+      const metrics = [
+        {{ kind: "temperature", label: "Temperature", unit: "°", valueDigits: 1 }},
+        {{ kind: "humidity", label: "Humidity", unit: "%", valueDigits: 1 }},
+        {{ kind: "co2", label: "CO₂", unit: "ppm", valueDigits: 0 }},
+      ];
+      sensorMiniPlots.innerHTML = metrics.map((metric) => {{
+        const series = sensorSeriesFromRecentReadings(site.recent_i2c_readings, metric.kind);
+        const latest = series.length ? series[series.length - 1] : null;
+        const valueText = latest === null ? "n/a" : `${{formatNumber(latest, metric.valueDigits)}}${{metric.unit ? " " + metric.unit : ""}}`;
+        return `
+          <article class="mini-plot">
+            <p class="mini-plot-title">${{escapeHtml(metric.label)}}</p>
+            <p class="mini-plot-value">${{escapeHtml(valueText)}}</p>
+            ${{sparklineSvg(series)}}
+          </article>
+        `;
+      }}).join("");
+    }}
+
     async function loadSiteDetail(siteId) {{
       const response = await fetch(`/api/sites/${{encodeURIComponent(siteId)}}`);
       if (!response.ok) return;
@@ -2664,7 +3354,10 @@ def render_index_html() -> str:
       activeSiteId = site.site_id;
       setChooserSites([]);
       siteTitle.textContent = site.site_label;
+      siteTitleLink.href = `${site.public_url}/status`;
       siteSubtitle.innerHTML = `<a href="${{escapeHtml(site.public_url)}}" target="_blank" rel="noopener">Open public site page</a> · <span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
+      renderBirdnetSummary(site);
+      renderMiniPlots(site);
       metricGrid.innerHTML = `
         <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
         <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
@@ -2677,10 +3370,11 @@ def render_index_html() -> str:
         birdnetList.innerHTML = '<div class="dim">No BirdNET detections are visible yet for this site.</div>';
       }} else {{
         for (const detection of site.recent_birdnet_detections) {{
+          const labelHref = birdnetSpeciesUrl(site, detection.top_label);
           const card = document.createElement("div");
           card.className = "record-card";
           card.innerHTML = `
-            <div><strong>${{escapeHtml(detection.top_label)}}</strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.volume, 3))}}</span></div>
+            <div><strong><a href="${{escapeHtml(labelHref)}}">${{escapeHtml(detection.top_label)}}</a></strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.volume, 3))}}</span></div>
             <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
             <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s</div>
             <div class="mono">${{escapeHtml(detection.source_path)}}</div>
@@ -2765,11 +3459,15 @@ def render_index_html() -> str:
       currentView = {{ ...worldBounds }};
       activeSiteId = null;
       setChooserSites([]);
-      siteTitle.textContent = "Choose a site";
-      siteSubtitle.textContent = "Click a mapped point to open site details.";
+      siteTitle.textContent = "Map";
+      siteTitleLink.href = "#";
+      siteSubtitle.textContent = "";
+      birdnetSummaryLink.href = "#";
+      birdnetSummary.innerHTML = "";
+      sensorMiniPlots.innerHTML = "";
       metricGrid.innerHTML = "";
-      birdnetList.innerHTML = '<div class="dim">Select a site to inspect recent BirdNET detections.</div>';
-      i2cList.innerHTML = '<div class="dim">Select a site to inspect recent sensor readings.</div>';
+      birdnetList.innerHTML = "";
+      i2cList.innerHTML = "";
       render();
       if (sites.length) fitSites(sites);
     }});
@@ -2844,6 +3542,24 @@ def birdnet_rankings_site_page(site_id: str, request: Request):
             )
         )
     )
+
+
+@app.get("/sites/{site_id}/birdnet-species/{label}", response_class=HTMLResponse)
+def birdnet_species_site_page(site_id: str, label: str, request: Request):
+    return HTMLResponse(
+        render_birdnet_species_html(
+            fetch_site_birdnet_species(
+                site_id,
+                label,
+                request.query_params.get("range"),
+            )
+        )
+    )
+
+
+@app.get("/sites/{site_id}/status", response_class=HTMLResponse)
+def status_site_page(site_id: str):
+    return HTMLResponse(render_site_status_html(fetch_site_status(site_id)))
 
 
 @app.get("/", response_class=HTMLResponse)
