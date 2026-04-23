@@ -472,7 +472,7 @@ Local playback dependencies:
 Behavior:
 
 - requires the client helper `debug-audio-monitor` to be installed on the device
-- temporarily stops `sensos-arecord.service` on the client for the duration of the listen session
+- temporarily stops `sensos-record-audio.service` on the client for the duration of the listen session
 - prefers local playback through `play` and falls back to `aplay` when available
 - relies on the client helper to restart recording automatically when the session ends
 
