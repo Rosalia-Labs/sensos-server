@@ -44,44 +44,51 @@ DETAIL_EVIDENCE_RANGES = {
 BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
 
 BIRDNET_RANKING_SORTS = {
-    "detection_count": {
-        "label": "Detection frequency",
-        "metric_label": "Detections",
-        "description": "Counts retained BirdNET detections (runs), treating each detection interval as one occurrence.",
-        "order_sql": "detection_count DESC, sum_score_x_occup DESC NULLS LAST, max_score DESC NULLS LAST, top_label ASC",
-        "value_key": "detection_count",
+    "sum_score_x_likely": {
+        "label": "Weighted frequency",
+        "metric_label": "Weighted frequency",
+        "description": "Summed BirdNET score multiplied by occupancy score across detections in the selected window.",
+        "order_sql": "sum_score_x_likely DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "sum_score_x_likely",
     },
     "sum_score_x_occup": {
-        "label": "Duration-weighted bn score x occup",
-        "metric_label": "Duration-weighted score x occup",
+        "label": "Weighted duration",
+        "metric_label": "Weighted duration",
         "description": "Summed clip duration multiplied by BirdNET score and occupancy score across detections in the selected window.",
         "order_sql": "sum_score_x_occup DESC NULLS LAST, max_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
         "value_key": "sum_score_x_occup",
     },
-    "max_score_x_occup": {
-        "label": "Max bn score x occup",
-        "metric_label": "Max score x occup",
-        "description": "Largest single BirdNET score multiplied by occupancy score observed in the selected window.",
-        "order_sql": "max_score_x_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "max_score_x_occup",
+    "detection_count": {
+        "label": "Frequency",
+        "metric_label": "Frequency",
+        "description": "Counts retained BirdNET detections (runs), treating each detection interval as one occurrence.",
+        "order_sql": "detection_count DESC, sum_score_x_occup DESC NULLS LAST, max_score DESC NULLS LAST, top_label ASC",
+        "value_key": "detection_count",
+    },
+    "duration_sec": {
+        "label": "Duration",
+        "metric_label": "Duration",
+        "description": "Summed clip duration across detections in the selected window.",
+        "order_sql": "duration_sec DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
+        "value_key": "duration_sec",
     },
     "max_score": {
-        "label": "Max bn score",
-        "metric_label": "Max score",
+        "label": "Max. birdnet score",
+        "metric_label": "Max. birdnet score",
         "description": "Largest BirdNET score observed in the selected window.",
         "order_sql": "max_score DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
         "value_key": "max_score",
     },
     "max_occup": {
-        "label": "Max occup",
-        "metric_label": "Max occupancy",
+        "label": "Max. prob. presense",
+        "metric_label": "Max. prob. presense",
         "description": "Largest occupancy score observed in the selected window.",
         "order_sql": "max_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
         "value_key": "max_occup",
     },
     "avg_volume": {
-        "label": "Avg volume",
-        "metric_label": "Avg volume",
+        "label": "Average volume",
+        "metric_label": "Average volume",
         "description": "Average retained BirdNET window volume observed in the selected window.",
         "order_sql": "avg_volume DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
         "value_key": "avg_volume",
@@ -198,8 +205,8 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_sort(value: str | None) -> str:
-    candidate = (value or "sum_score_x_occup").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_occup"
+    candidate = (value or "sum_score_x_likely").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_likely"
 
 
 def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
@@ -982,6 +989,27 @@ def fetch_site_status(site_id: str) -> dict:
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Site not found.")
+            lookup_wg_ip = row[1]
+            cur.execute(
+                """
+                SELECT top_label,
+                       count(*)::integer AS detection_count,
+                       sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                       avg(top_score) AS average_score,
+                       max(top_score) AS best_score,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                WHERE wg_ip = %s
+                GROUP BY top_label
+                ORDER BY evidence_weight DESC,
+                         best_score DESC,
+                         detection_count DESC,
+                         top_label ASC
+                LIMIT 5;
+                """,
+                (lookup_wg_ip,),
+            )
+            top_birdnet_evidence = cur.fetchall()
     return {
         "peer_uuid": row[0],
         "site_id": row[0],
@@ -1003,6 +1031,20 @@ def fetch_site_status(site_id: str) -> dict:
         "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
         "status_url": f"/sites/{row[0]}/status",
+        "birdnet_rankings_url": f"/sites/{row[0]}/birdnet-rankings",
+        "top_birdnet_evidence": [
+            {
+                "label": summary[0],
+                "detection_count": int(summary[1]),
+                "evidence_weight": (
+                    float(summary[2]) if summary[2] is not None else None
+                ),
+                "average_score": float(summary[3]) if summary[3] is not None else None,
+                "best_score": float(summary[4]) if summary[4] is not None else None,
+                "latest_processed_at": format_rfc3339_utc(summary[5]),
+            }
+            for summary in top_birdnet_evidence
+        ],
     }
 
 
@@ -1036,6 +1078,22 @@ def render_site_status_html(site: dict) -> str:
         </article>
         """
         for label, value in infrastructure_rows
+    )
+    top_species_cards = (
+        "".join(
+            f"""
+            <div class="summary-row">
+              <div>
+                <div class="summary-label">{escape_html(summary["label"])}</div>
+                <div class="summary-bar" style="width:{max((float(summary.get("evidence_weight") or 0.0) / max(float(site["top_birdnet_evidence"][0].get("evidence_weight") or 0.0), 1e-9)) * 100.0, 3.0):.1f}%"></div>
+              </div>
+              <div class="summary-value">{escape_html(f"{float(summary.get('evidence_weight') or 0.0):.2f}")}</div>
+            </div>
+            """
+            for summary in site["top_birdnet_evidence"]
+        )
+        if site.get("top_birdnet_evidence")
+        else '<div class="empty">No weighted BirdNET detections are available yet.</div>'
     )
 
     return f"""<!doctype html>
@@ -1122,6 +1180,38 @@ def render_site_status_html(site: dict) -> str:
       font-size: 0.86rem;
       word-break: break-word;
     }}
+    .summary-card {{
+      display: grid;
+      gap: 0.6rem;
+      margin-top: 0.5rem;
+    }}
+    .summary-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.58rem 0.72rem;
+      background: rgba(255,255,255,0.66);
+    }}
+    .summary-label {{
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.35rem;
+    }}
+    .summary-bar {{
+      height: 0.4rem;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0c6d62, #1d8b78);
+    }}
+    .summary-value {{
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #0c6d62;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }}
     .dim {{ color: var(--muted); }}
     .empty {{
       border: 1px dashed var(--border);
@@ -1159,6 +1249,11 @@ def render_site_status_html(site: dict) -> str:
       <section class="panel"><div class="metric-label">Public Site</div><div class="metric-value"><a href="{escape_html(site['public_url'])}">Open site dashboard</a></div></section>
     </div>
     <div class="layout">
+      <section class="panel">
+        <h2 class="section-title">Top 5 Species (Weighted)</h2>
+        <div class="dim"><a href="{escape_html(site['birdnet_rankings_url'])}">Open full BirdNET rankings</a></div>
+        <div class="summary-card">{top_species_cards}</div>
+      </section>
       <section class="panel">
         <h2 class="section-title">Infrastructure Details</h2>
         <div class="list">{infra_cards}</div>
@@ -1389,7 +1484,9 @@ def fetch_site_birdnet_rankings(
                     f"""
                     SELECT top_label,
                            count(*)::integer AS detection_count,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
                            sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                           sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
                            max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                            max(top_score) AS max_score,
                            max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1420,7 +1517,9 @@ def fetch_site_birdnet_rankings(
                         f"""
                         SELECT top_label,
                                count(*)::integer AS detection_count,
+                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
                                sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
                                max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1438,7 +1537,9 @@ def fetch_site_birdnet_rankings(
                         f"""
                         SELECT top_label,
                                count(*)::integer AS detection_count,
+                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
                                sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
+                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
                                max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
@@ -1465,12 +1566,14 @@ def fetch_site_birdnet_rankings(
         {
             "label": row[0],
             "detection_count": int(row[1]),
-            "sum_score_x_occup": float(row[2]) if row[2] is not None else None,
-            "max_score_x_occup": float(row[3]) if row[3] is not None else None,
-            "max_score": float(row[4]) if row[4] is not None else None,
-            "max_occup": float(row[5]) if row[5] is not None else None,
-            "avg_volume": float(row[6]) if row[6] is not None else None,
-            "latest_processed_at": format_rfc3339_utc(row[7]),
+            "sum_score_x_likely": float(row[2]) if row[2] is not None else None,
+            "sum_score_x_occup": float(row[3]) if row[3] is not None else None,
+            "duration_sec": float(row[4]) if row[4] is not None else None,
+            "max_score_x_occup": float(row[5]) if row[5] is not None else None,
+            "max_score": float(row[6]) if row[6] is not None else None,
+            "max_occup": float(row[7]) if row[7] is not None else None,
+            "avg_volume": float(row[8]) if row[8] is not None else None,
+            "latest_processed_at": format_rfc3339_utc(row[9]),
         }
         for row in ranking_rows
     ]
@@ -2460,7 +2563,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     .controls {{
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 220px)) 1fr;
+      grid-template-columns: minmax(480px, 2.3fr) minmax(220px, 1fr);
       gap: 0.8rem;
       align-items: end;
     }}
@@ -2480,30 +2583,6 @@ def render_birdnet_rankings_html(site: dict) -> str:
       background: rgba(255,255,255,0.88);
       color: var(--ink);
       font: inherit;
-    }}
-    .summary-grid {{
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 0.8rem;
-    }}
-    .metric {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.85rem 0.9rem;
-      background: rgba(255,255,255,0.74);
-    }}
-    .metric-label {{
-      color: var(--muted);
-      font-size: 0.82rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }}
-    .metric-value {{
-      margin-top: 0.25rem;
-      font-size: 1.45rem;
-      font-weight: 700;
-      letter-spacing: -0.05em;
-      overflow-wrap: anywhere;
     }}
     .section-title {{
       margin: 0 0 0.6rem;
@@ -2555,7 +2634,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     @media (max-width: 980px) {{
       .masthead {{ flex-direction: column; }}
-      .controls, .summary-grid {{ grid-template-columns: 1fr; }}
+      .controls {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -2590,15 +2669,6 @@ def render_birdnet_rankings_html(site: dict) -> str:
             <select name="range" onchange="submitBirdnetRankingControls()">{range_options}</select>
           </label>
         </form>
-      </section>
-      <section class="panel">
-        <div class="summary-grid">
-          <div class="metric"><div class="metric-label">Selected Metric</div><div class="metric-value">{escape_html(site['birdnet_ranking_sort_label'])}</div></div>
-          <div class="metric"><div class="metric-label">Time Window</div><div class="metric-value">{escape_html(selected_range.title())}</div></div>
-          <div class="metric"><div class="metric-label">Species Ranked</div><div class="metric-value">{len(site['birdnet_rankings'])}</div></div>
-          <div class="metric"><div class="metric-label">Species Plotted</div><div class="metric-value">{plotted_species_count}</div></div>
-          <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
-        </div>
       </section>
       <section class="panel">
         <h2 class="section-title">Rankings</h2>
@@ -3251,7 +3321,7 @@ def render_index_html() -> str:
     }}
 
     function renderBirdnetSummary(site) {{
-      const rankingUrl = `${{site.public_url}}/birdnet-rankings?sort=sum_score_x_occup&range=${{encodeURIComponent(site.evidence_range || "day")}}`;
+      const rankingUrl = `${{site.public_url}}/birdnet-rankings?sort=sum_score_x_likely&range=${{encodeURIComponent(site.evidence_range || "day")}}`;
       birdnetSummaryLink.href = rankingUrl;
       const rows = Array.isArray(site.top_birdnet_evidence) ? site.top_birdnet_evidence.slice(0, 5) : [];
       if (!rows.length) {{
