@@ -490,12 +490,12 @@ def render_event_timeline_svg(
         {"x": right, "utc": points[-1][time_key]},
     ]
     guides = [_render_axes(bounds, 0.0, 1.0, x_labels)]
+    marker_radius = 2.2
     for ts, value, point in zip(timestamps, values, points):
         x = left + ((ts - min_ts).total_seconds() / total_seconds) * (right - left)
         y = bottom - value * (bottom - top)
-        radius = 3.5 + value * 4.5
         circles.append(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="{stroke}" opacity="0.82"><title>{escape_html(point[time_key])} · {value:.2f}</title></circle>'
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{marker_radius:.2f}" fill="{stroke}" opacity="0.9"><title>{escape_html(point[time_key])} · {value:.2f}</title></circle>'
         )
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
@@ -693,7 +693,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     """
                     SELECT top_label,
                            count(*)::integer AS detection_count,
-                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
                            avg(top_score) AS average_score,
                            max(top_score) AS best_score,
                            max(processed_at) AS latest_processed_at
@@ -713,7 +713,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     """
                     SELECT top_label,
                            count(*)::integer AS detection_count,
-                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
                            avg(top_score) AS average_score,
                            max(top_score) AS best_score,
                            max(processed_at) AS latest_processed_at
@@ -1894,7 +1894,7 @@ def render_site_detail_html(site: dict) -> str:
           <div class="evidence-rank">{index}</div>
           <div>
             <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong></div>
-            <div class="dim">weight {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
+            <div class="dim">weighted frequency {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
             <div class="dim">avg score {summary['average_score']:.2f} · latest {render_local_time(summary['latest_processed_at'])}</div>
           </div>
         </article>
@@ -2204,20 +2204,10 @@ def render_site_detail_html(site: dict) -> str:
     <div class="layout">
       <main class="stack">
         <section class="panel">
-          <div class="summary-strip">
-            <div class="metric"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{site['wg_ip']}</div></div>
-            <div class="metric"><div class="metric-label">Latest Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'Never')}</div></div>
-            <div class="metric"><div class="metric-label">BirdNET Detections</div><div class="metric-value">{site['birdnet_detection_count']}</div></div>
-            <div class="metric"><div class="metric-label">Sensor Readings</div><div class="metric-value">{site['i2c_reading_count']}</div></div>
-            <div class="metric"><div class="metric-label">BirdNET Sources</div><div class="metric-value">{site['birdnet_source_count']}</div></div>
-            <div class="metric"><div class="metric-label">Status</div><div class="metric-value">{site['status_message'] or ('Active' if site['is_active'] else 'Inactive')}</div></div>
-          </div>
-        </section>
-        <section class="panel">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
             <div>
-              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weight Of Evidence</h2>
-              <div class="dim">Ranked by summed clip duration × BirdNET score × occupancy score across retained detections at this site.</div>
+              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weighted Frequency</h2>
+              <div class="dim">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
