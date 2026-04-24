@@ -1590,6 +1590,12 @@ def fetch_site_birdnet_species(
     range_window = BIRDNET_RANKING_RANGES[normalized_range]
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_window_volume = relation_has_column(
+                cur,
+                "sensos",
+                "public_site_birdnet_detections",
+                "volume",
+            )
             cur.execute(
                 """
                 SELECT max(processed_at)
@@ -1603,37 +1609,74 @@ def fetch_site_birdnet_species(
             anchored_cutoff = window_cutoff_from_latest(latest_at, range_window)
             if anchored_cutoff is None:
                 cur.execute(
-                    """
+                    (
+                        """
                     SELECT processed_at,
                            top_score,
                            top_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
-                           channel_index
+                           channel_index,
+                           volume
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
                       AND top_label = %s
                     ORDER BY processed_at ASC, channel_index, start_sec;
-                    """,
-                    (site["wg_ip"], label),
-                )
-            else:
-                cur.execute(
                     """
+                        if has_window_volume
+                        else """
                     SELECT processed_at,
                            top_score,
                            top_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
-                           channel_index
+                           channel_index,
+                           NULL::double precision AS volume
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_label = %s
+                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    """
+                    ),
+                    (site["wg_ip"], label),
+                )
+            else:
+                cur.execute(
+                    (
+                        """
+                    SELECT processed_at,
+                           top_score,
+                           top_likely_score,
+                           start_sec,
+                           end_sec,
+                           source_path,
+                           channel_index,
+                           volume
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
                       AND top_label = %s
                       AND processed_at >= %s
                     ORDER BY processed_at ASC, channel_index, start_sec;
-                    """,
+                    """
+                        if has_window_volume
+                        else """
+                    SELECT processed_at,
+                           top_score,
+                           top_likely_score,
+                           start_sec,
+                           end_sec,
+                           source_path,
+                           channel_index,
+                           NULL::double precision AS volume
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_label = %s
+                      AND processed_at >= %s
+                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    """
+                    ),
                     (site["wg_ip"], label, anchored_cutoff),
                 )
             rows = cur.fetchall()
@@ -1641,7 +1684,16 @@ def fetch_site_birdnet_species(
     occupancy_points = []
     weighted_points = []
     detections = []
-    for processed_at, top_score, top_likely_score, start_sec, end_sec, source_path, channel_index in rows:
+    for (
+        processed_at,
+        top_score,
+        top_likely_score,
+        start_sec,
+        end_sec,
+        source_path,
+        channel_index,
+        volume,
+    ) in rows:
         processed_text = format_rfc3339_utc(processed_at)
         if processed_text is None:
             continue
@@ -1661,6 +1713,7 @@ def fetch_site_birdnet_species(
                 "end_sec": float(end_sec),
                 "source_path": source_path,
                 "channel_index": int(channel_index),
+                "volume": float(volume) if volume is not None else None,
             }
         )
     site["species_label"] = label
@@ -1692,7 +1745,7 @@ def render_birdnet_species_html(site: dict) -> str:
         )
     )
     score_chart = (
-        render_line_chart_svg(site["species_score_series"], "value", "#0c6d62")
+        render_event_timeline_svg(site["species_score_series"], "value", "#0c6d62")
         if site["species_score_series"]
         else ""
     )
@@ -1710,7 +1763,7 @@ def render_birdnet_species_html(site: dict) -> str:
         "".join(
             f"""
         <article class="record-card">
-          <div><strong>{escape_html(site['species_label'])}</strong> <span class="dim">score {item['top_score']:.2f} · occup {'n/a' if item['top_likely_score'] is None else f"{item['top_likely_score']:.2f}"}</span></div>
+          <div><strong>{escape_html(site['species_label'])}</strong> <span class="dim">score {item['top_score']:.2f} · occup {'n/a' if item['top_likely_score'] is None else f"{item['top_likely_score']:.2f}"} · vol {'n/a' if item.get('volume') is None else f"{item['volume']:.3f}"}</span></div>
           <div class="dim">{render_local_time(item['processed_at'])} · ch {item['channel_index']} · {item['start_sec']:.1f}s-{item['end_sec']:.1f}s</div>
           <div class="mono">{escape_html(item['source_path'])}</div>
         </article>
@@ -1799,8 +1852,8 @@ def render_birdnet_species_html(site: dict) -> str:
         </div>
       </section>
       <section class="panel">
-        <h2 class="section-title">Top Score</h2>
-        <div class="chart-wrap">{score_chart or '<div class="empty">No score series available.</div>'}</div>
+        <h2 class="section-title">Detection Score Timeline</h2>
+        <div class="chart-wrap">{score_chart or '<div class="empty">No score timeline available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Occupancy Score</h2>
@@ -2648,7 +2701,6 @@ def render_birdnet_rankings_html(site: dict) -> str:
           <span class="nav-link">BirdNET rankings</span>
         </div>
         <h1>{escape_html(site['site_label'])}</h1>
-        <div class="lede">{escape_html(site['birdnet_ranking_description'])} The plot is ordered from largest at the top to smallest at the bottom, with species labels placed to the left of the y-axis.</div>
       </div>
       <div class="meta">
         <div>{escape_html(site['network_name'])}</div>
