@@ -718,22 +718,21 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.wireguard_ip::text,
+                SELECT r.wireguard_ip::text,
                        p.note,
                        n.name,
-                       b.hostname,
-                       b.client_version,
-                       b.batch_id,
-                       b.ownership_mode,
-                       b.reading_count,
-                       b.first_recorded_at,
-                       b.last_recorded_at,
-                       b.server_received_at,
-                       b.receipt_id::text
-                FROM sensos.i2c_reading_batches b
-                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = b.wireguard_ip
+                       r.hostname,
+                       r.client_version,
+                       r.recorded_at,
+                       r.device_address,
+                       r.sensor_type,
+                       r.reading_key,
+                       r.reading_value,
+                       r.server_received_at
+                FROM sensos.i2c_readings r
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = r.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
-                ORDER BY b.server_received_at DESC
+                ORDER BY r.server_received_at DESC, r.recorded_at DESC, r.id DESC
                 LIMIT %s;
                 """,
                 (limit,),
@@ -746,13 +745,12 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
             "network_name": row[2] or "—",
             "hostname": row[3] or "—",
             "client_version": row[4] or "—",
-            "batch_id": row[5],
-            "ownership_mode": row[6],
-            "reading_count": row[7],
-            "first_recorded_at": row[8],
-            "last_recorded_at": row[9],
+            "recorded_at": row[5],
+            "device_address": row[6],
+            "sensor_type": row[7],
+            "reading_key": row[8],
+            "reading_value": row[9],
             "server_received_at": row[10],
-            "receipt_id": row[11],
         }
         for row in rows
     ]
@@ -761,16 +759,13 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
 def fetch_sensor_overview() -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM sensos.i2c_reading_batches;")
-            batch_count = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM sensos.i2c_readings;")
             reading_count = cur.fetchone()[0]
             cur.execute(
-                "SELECT max(server_received_at) FROM sensos.i2c_reading_batches;"
+                "SELECT max(server_received_at) FROM sensos.i2c_readings;"
             )
             latest_upload = cur.fetchone()[0]
     return {
-        "batch_count": batch_count,
         "reading_count": reading_count,
         "latest_upload": latest_upload,
     }
@@ -1277,15 +1272,14 @@ def sensors_page(request: Request, flash: str | None = None):
     rows = fetch_sensor_rows()
     body = f"""
 <div class="grid">
-  {stat_card("Uploads", str(overview["batch_count"]), "Accepted sensor uploads stored on the server.")}
   {stat_card("Readings", str(overview["reading_count"]), "Individual sensor readings received by the server.")}
   {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent sensor upload was accepted.")}
 </div>
 <section class="panel">
-  <h2 class="section-title">Recent sensor uploads</h2>
+  <h2 class="section-title">Recent sensor readings</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Ownership</th><th>Readings</th><th>Recorded window</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Sensor</th><th>Reading</th><th>Recorded</th><th>Received</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1293,13 +1287,13 @@ def sensors_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td>{html.escape(row['ownership_mode'])}</td>"
-          f"<td>{row['reading_count']}</td>"
-          f"<td><div>{html.escape(format_timestamp(row['first_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
+          f"<td><div>{html.escape(row['sensor_type'])}</div><div class='dim'>{html.escape(row['device_address'])}</div></td>"
+          f"<td><div>{html.escape(row['reading_key'])}</div><div class='dim'>{row['reading_value']:.3f}</div></td>"
+          f"<td>{html.escape(format_timestamp(row['recorded_at']))}</td>"
           f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
           "</tr>"
           for row in rows
-      ) or '<tr><td colspan="7" class="dim">No sensor uploads stored yet.</td></tr>'}
+      ) or '<tr><td colspan="7" class="dim">No sensor readings stored yet.</td></tr>'}
     </tbody>
   </table>
 </section>

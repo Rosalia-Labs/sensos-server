@@ -120,47 +120,15 @@ class I2CReadingUploadEntry(BaseModel):
 
 
 class I2CReadingsUploadRequest(BaseModel):
-    schema_version: Literal[1]
     hostname: str
     client_version: str
-    batch_id: int = Field(ge=0)
     sent_at: datetime
-    ownership_mode: Literal["client-retains", "server-owns"]
-    reading_count: int = Field(ge=1)
-    first_reading_id: int = Field(ge=0)
-    last_reading_id: int = Field(ge=0)
-    first_recorded_at: datetime
-    last_recorded_at: datetime
     readings: list[I2CReadingUploadEntry] = Field(min_length=1)
 
-    @field_validator("sent_at", "first_recorded_at", "last_recorded_at")
+    @field_validator("sent_at")
     @classmethod
     def validate_timestamps(cls, value: datetime) -> datetime:
         return _validate_utc_timestamp(value)
-
-    @model_validator(mode="after")
-    def validate_batch_metadata(self):
-        readings = self.readings
-        if self.reading_count != len(readings):
-            raise ValueError("reading_count must equal the number of readings")
-
-        reading_ids = [reading.id for reading in readings]
-        recorded_times = [reading.timestamp for reading in readings]
-        if self.first_reading_id != min(reading_ids):
-            raise ValueError("first_reading_id must match the minimum reading id")
-        if self.last_reading_id != max(reading_ids):
-            raise ValueError("last_reading_id must match the maximum reading id")
-        if self.first_recorded_at != min(recorded_times):
-            raise ValueError(
-                "first_recorded_at must match the earliest reading timestamp"
-            )
-        if self.last_recorded_at != max(recorded_times):
-            raise ValueError(
-                "last_recorded_at must match the latest reading timestamp"
-            )
-        if self.first_recorded_at > self.last_recorded_at:
-            raise ValueError("first_recorded_at must not be after last_recorded_at")
-        return self
 
 
 class BirdNETDetectionUploadEntry(BaseModel):

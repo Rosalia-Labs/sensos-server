@@ -257,7 +257,7 @@ def upload_birdnet_results(
         )
 
 
-@router.post("/peer/i2c-readings/batches")
+@router.post("/peer/i2c-readings")
 def upload_i2c_readings(
     upload: I2CReadingsUploadRequest,
     peer: dict = Depends(authenticate_peer),

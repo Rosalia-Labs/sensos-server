@@ -826,10 +826,8 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             detections = cur.fetchall()
             cur.execute(
                 """
-                SELECT receipt_id,
-                       hostname,
+                SELECT hostname,
                        client_version,
-                       batch_id,
                        recorded_at,
                        device_address,
                        sensor_type,
@@ -943,16 +941,14 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         ],
         "recent_i2c_readings": [
             {
-                "receipt_id": reading[0],
-                "hostname": reading[1],
-                "client_version": reading[2],
-                "batch_id": reading[3],
-                "recorded_at": format_rfc3339_utc(reading[4]),
-                "device_address": reading[5],
-                "sensor_type": reading[6],
-                "reading_key": reading[7],
-                "reading_value": float(reading[8]),
-                "server_received_at": format_rfc3339_utc(reading[9]),
+                "hostname": reading[0],
+                "client_version": reading[1],
+                "recorded_at": format_rfc3339_utc(reading[2]),
+                "device_address": reading[3],
+                "sensor_type": reading[4],
+                "reading_key": reading[5],
+                "reading_value": float(reading[6]),
+                "server_received_at": format_rfc3339_utc(reading[7]),
             }
             for reading in readings
         ],

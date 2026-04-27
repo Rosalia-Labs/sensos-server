@@ -251,7 +251,7 @@ WITH target_peers AS (
     JOIN sensos.networks n ON n.id = p.network_id
     WHERE n.name = {sql_quote(network_name)}
 )
-DELETE FROM sensos.i2c_reading_batches
+DELETE FROM sensos.i2c_readings
 WHERE wireguard_ip::text IN (SELECT wg_ip FROM target_peers);
 
 DELETE FROM sensos.networks
@@ -383,17 +383,9 @@ def build_i2c_payloads(
                 )
         payloads.append(
             {
-                "schema_version": 1,
                 "hostname": peer.hostname,
                 "client_version": DEFAULT_CLIENT_VERSION,
-                "batch_id": batch_index + 1,
                 "sent_at": iso_utc(batch_time + timedelta(minutes=4)),
-                "ownership_mode": rng.choice(["client-retains", "server-owns"]),
-                "reading_count": len(readings),
-                "first_reading_id": readings[0]["id"],
-                "last_reading_id": readings[-1]["id"],
-                "first_recorded_at": readings[0]["timestamp"],
-                "last_recorded_at": readings[-1]["timestamp"],
                 "readings": readings,
             }
         )
@@ -519,7 +511,7 @@ def seed_peer(base_url: str, peer: PeerSeed, args: argparse.Namespace, rng: rand
     for payload in build_i2c_payloads(peer, args.i2c_batches_per_client, rng):
         api_call(
             "POST",
-            f"{base_url}/api/v1/client/peer/i2c-readings/batches",
+            f"{base_url}/api/v1/client/peer/i2c-readings",
             payload,
             peer.peer_uuid,
             peer.peer_password,

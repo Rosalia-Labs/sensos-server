@@ -420,25 +420,17 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
         lambda conn, upload, wireguard_ip: {
             "status": "ok",
             "receipt_id": "receipt-123",
-            "accepted_count": upload.reading_count,
+            "accepted_count": len(upload.readings),
             "server_received_at": "2026-04-07T12:00:00Z",
         },
     )
 
     resp = client.post(
-        "/api/v1/client/peer/i2c-readings/batches",
+        "/api/v1/client/peer/i2c-readings",
         json={
-            "schema_version": 1,
             "hostname": "sensor-node",
             "client_version": "1.2.3",
-            "batch_id": 41,
             "sent_at": "2026-04-07T11:59:00Z",
-            "ownership_mode": "client-retains",
-            "reading_count": 2,
-            "first_reading_id": 100,
-            "last_reading_id": 101,
-            "first_recorded_at": "2026-04-07T11:58:00Z",
-            "last_recorded_at": "2026-04-07T11:58:05Z",
             "readings": [
                 {
                     "id": 100,
@@ -478,7 +470,7 @@ def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
         lambda conn, upload, wireguard_ip: {
             "status": "ok",
             "receipt_id": "receipt-456",
-            "accepted_count": upload.source_count,
+            "accepted_count": len(upload.detections),
             "server_received_at": "2026-04-07T12:00:00Z",
         },
     )
@@ -486,31 +478,22 @@ def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
     resp = client.post(
         "/api/v1/client/peer/birdnet/batches",
         json={
-            "schema_version": 1,
+            "schema_version": 2,
             "hostname": "sensor-node",
             "client_version": "1.2.3",
-            "batch_id": 41,
             "sent_at": "2026-04-07T11:59:00Z",
-            "ownership_mode": "client-retains",
-            "source_count": 1,
-            "first_source_path": "audio_recordings/compressed/a.flac",
-            "last_source_path": "audio_recordings/compressed/a.flac",
-            "first_processed_at": "2026-04-07T11:58:00Z",
-            "last_processed_at": "2026-04-07T11:58:00Z",
-            "processed_files": [
+            "detections": [
                 {
                     "source_path": "audio_recordings/compressed/a.flac",
-                    "sample_rate": 48000,
-                    "channels": 1,
-                    "frames": 144000,
-                    "started_at": "2026-04-07T11:57:00Z",
-                    "processed_at": "2026-04-07T11:58:00Z",
-                    "status": "done",
-                    "error": None,
-                    "output_dir": "2026/04/07",
-                    "deleted_source": True,
-                    "detections": [],
-                    "flac_runs": [],
+                    "channel_index": 0,
+                    "window_index": 0,
+                    "max_score_start_frame": 0,
+                    "label": "Bird",
+                    "score": 0.91,
+                    "likely_score": 0.75,
+                    "volume": 0.2,
+                    "clip_start_time": "2026-04-07T11:57:00Z",
+                    "clip_end_time": "2026-04-07T11:58:00Z",
                 }
             ],
         },
@@ -525,86 +508,18 @@ def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
     }
 
 
-def test_i2c_readings_upload_validates_metadata(client):
+def test_i2c_readings_upload_validates_readings_required(client):
     resp = client.post(
-        "/api/v1/client/peer/i2c-readings/batches",
+        "/api/v1/client/peer/i2c-readings",
         json={
-            "schema_version": 1,
             "hostname": "sensor-node",
             "client_version": "1.2.3",
-            "batch_id": 41,
             "sent_at": "2026-04-07T11:59:00Z",
-            "ownership_mode": "client-retains",
-            "reading_count": 3,
-            "first_reading_id": 100,
-            "last_reading_id": 101,
-            "first_recorded_at": "2026-04-07T11:58:00Z",
-            "last_recorded_at": "2026-04-07T11:58:05Z",
-            "readings": [
-                {
-                    "id": 100,
-                    "timestamp": "2026-04-07T11:58:00Z",
-                    "device_address": "0x76",
-                    "sensor_type": "BME280",
-                    "key": "temperature_c",
-                    "value": 23.5,
-                },
-                {
-                    "id": 101,
-                    "timestamp": "2026-04-07T11:58:05Z",
-                    "device_address": "0x76",
-                    "sensor_type": "BME280",
-                    "key": "humidity_pct",
-                    "value": 51.2,
-                },
-            ],
+            "readings": [],
         },
     )
 
     assert resp.status_code == 422
-    assert "reading_count must equal the number of readings" in resp.text
-
-
-def test_i2c_readings_upload_returns_conflict_for_payload_mismatch(monkeypatch, client):
-    fake_conn = mock.MagicMock()
-    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
-
-    def fail_store(conn, upload, wireguard_ip):
-        raise RuntimeError("batch retry payload does not match the previously stored batch")
-
-    monkeypatch.setattr(client_api, "store_i2c_readings_upload", fail_store)
-
-    resp = client.post(
-        "/api/v1/client/peer/i2c-readings/batches",
-        json={
-            "schema_version": 1,
-            "hostname": "sensor-node",
-            "client_version": "1.2.3",
-            "batch_id": 41,
-            "sent_at": "2026-04-07T11:59:00Z",
-            "ownership_mode": "client-retains",
-            "reading_count": 1,
-            "first_reading_id": 100,
-            "last_reading_id": 100,
-            "first_recorded_at": "2026-04-07T11:58:00Z",
-            "last_recorded_at": "2026-04-07T11:58:00Z",
-            "readings": [
-                {
-                    "id": 100,
-                    "timestamp": "2026-04-07T11:58:00Z",
-                    "device_address": "0x76",
-                    "sensor_type": "BME280",
-                    "key": "temperature_c",
-                    "value": 23.5,
-                }
-            ],
-        },
-    )
-
-    assert resp.status_code == 409
-    assert resp.json() == {
-        "error": "batch retry payload does not match the previously stored batch"
-    }
 
 
 def test_get_defined_networks_requires_authentication(monkeypatch):
@@ -623,19 +538,11 @@ def test_i2c_readings_upload_requires_peer_auth(monkeypatch):
     client = TestClient(app)
 
     resp = client.post(
-        "/api/v1/client/peer/i2c-readings/batches",
+        "/api/v1/client/peer/i2c-readings",
         json={
-            "schema_version": 1,
             "hostname": "sensor-node",
             "client_version": "1.2.3",
-            "batch_id": 41,
             "sent_at": "2026-04-07T11:59:00Z",
-            "ownership_mode": "client-retains",
-            "reading_count": 1,
-            "first_reading_id": 100,
-            "last_reading_id": 100,
-            "first_recorded_at": "2026-04-07T11:58:00Z",
-            "last_recorded_at": "2026-04-07T11:58:00Z",
             "readings": [
                 {
                     "id": 100,

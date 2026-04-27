@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Config
-MODULE_FILES=("../../docker/controller/core.py" "../../docker/controller/wireguard.py" "../../docker/controller/api.py" "../../docker/controller/models.py")
+MODULE_FILES=("../../docker/controller/core.py" "../../docker/controller/wireguard.py" "../../docker/controller/api.py" "../../docker/controller/admin_api.py" "../../docker/controller/admin_ui.py" "../../docker/controller/client_api.py" "../../docker/controller/models.py")
 TEST_FILE="test.py"
 WORKDIR="$(mktemp -d)"
 
