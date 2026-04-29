@@ -270,12 +270,15 @@ def render_local_time_script() -> str:
 
     function localizeUtcElements(root) {
       const scope = root || document;
+      const twoDigits = (num) => String(num).padStart(2, "0");
       for (const node of scope.querySelectorAll("[data-utc]")) {
         const utcValue = node.getAttribute("data-utc");
         const mode = node.getAttribute("data-time-style") || "full";
         if (mode === "tick") {
+          const parsed = new Date(utcValue || "");
+          if (Number.isNaN(parsed.getTime())) continue;
           const timeText = formatLocalTimestamp(utcValue, { hour: "2-digit", minute: "2-digit" });
-          const dateText = formatLocalTimestamp(utcValue, { year: "numeric", month: "2-digit", day: "2-digit" });
+          const dateText = `${twoDigits(parsed.getMonth() + 1)}/${twoDigits(parsed.getDate())}/${parsed.getFullYear()}`;
           if ((node.namespaceURI || "").includes("svg")) {
             const x = node.getAttribute("x") || "0";
             while (node.firstChild) node.removeChild(node.firstChild);
