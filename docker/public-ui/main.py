@@ -340,8 +340,8 @@ def _chart_bounds(width: int, height: int) -> dict:
     return {
         "left": 58,
         "right": width - 18,
-        "top": 14,
-        "bottom": height - 42,
+        "top": 10,
+        "bottom": height - 34,
     }
 
 
@@ -1909,17 +1909,20 @@ def render_site_detail_html(site: dict) -> str:
         row_height=26,
     )
     sensor_plot_series = site.get("sensor_plot_series") or []
+    synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
+    synoptic_range_url = f"{synoptic_url}?range={evidence_range}"
     sensor_cards_html = "".join(
         f"""
             <article class="sensor-focus-card">
               <h3 class="sensor-focus-title">{escape_html(series['label'])}</h3>
-              <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62', width=560, height=206) or '<div class="empty">No data in this range.</div>'}</div>
+              <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
+                <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62', width=560, height=186) or '<div class="empty">No data in this range.</div>'}</div>
+              </a>
             </article>
         """
         for series in sensor_plot_series
     )
 
-    synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
 
@@ -2066,6 +2069,11 @@ def render_site_detail_html(site: dict) -> str:
       background: rgba(255,255,255,0.62);
       min-width: 0;
     }}
+    .sensor-focus-link {{
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }}
     .sensor-focus-title {{
       margin: 0 0 0.3rem;
       color: var(--muted);
@@ -2074,7 +2082,7 @@ def render_site_detail_html(site: dict) -> str:
       letter-spacing: 0.08em;
     }}
     .sensor-focus-chart {{
-      min-height: 12rem;
+      height: 10.8rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 12px;
       overflow: hidden;
@@ -2082,6 +2090,7 @@ def render_site_detail_html(site: dict) -> str:
     }}
     .sensor-focus-chart svg {{
       width: 100%;
+      height: 100%;
       display: block;
     }}
     .detail-grid {{
