@@ -703,6 +703,7 @@ def render_horizontal_lollipop_svg(
     label_href_map: dict[str, str] | None = None,
     width: int = 1120,
     row_height: int = 36,
+    label_font_size: int = 12,
 ) -> str:
     plot_rows = [row for row in rows if row.get(value_key) is not None]
     if not plot_rows:
@@ -711,7 +712,16 @@ def render_horizontal_lollipop_svg(
     if not values:
         return ""
     height = max(180, 68 + len(plot_rows) * row_height)
-    label_width = 290
+    trimmed_labels = []
+    for row in plot_rows:
+        label = str(row.get("label") or row.get("top_label") or "Unknown")
+        # Keep full canonical label for links/keys, but shorten displayed plot label.
+        label_display = re.sub(r"\s+\([^)]*\)\s*$", "", label).strip() or label
+        trimmed_labels.append(label_display)
+
+    max_label_chars = max((len(label) for label in trimmed_labels), default=0)
+    # Dynamic label gutter prevents excess whitespace after trimming BirdNET parentheticals.
+    label_width = min(max(120, int(max_label_chars * (label_font_size * 0.6))), 290)
     right_pad = 72
     top = 28
     bottom = height - 34
@@ -740,17 +750,16 @@ def render_horizontal_lollipop_svg(
         y = top + row_step * index + row_step / 2
         x = axis_x + (max(value, 0.0) / max_value) * chart_span
         label = str(row.get("label") or row.get("top_label") or "Unknown")
-        # Keep full canonical label for links/keys, but shorten displayed plot label.
-        label_display = re.sub(r"\s+\([^)]*\)\s*$", "", label).strip() or label
+        label_display = trimmed_labels[index]
         label_text = escape_html(label_display)
         label_markup = (
-            f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{label_text}</text>'
+            f'<text x="{axis_x - 12}" y="{y + (label_font_size * 0.33):.2f}" text-anchor="end" font-size="{label_font_size}" fill="rgba(23,32,29,0.88)">{label_text}</text>'
         )
         href = (label_href_map or {}).get(label)
         if href:
             label_markup = (
                 f'<a href="{escape_html(href)}" target="_self" rel="noopener">'
-                f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="{_plot_color("accent")}" text-decoration="underline">{label_text}</text>'
+                f'<text x="{axis_x - 12}" y="{y + (label_font_size * 0.33):.2f}" text-anchor="end" font-size="{label_font_size}" fill="{_plot_color("accent")}" text-decoration="underline">{label_text}</text>'
                 f"</a>"
             )
         parts.append(label_markup)
@@ -2680,7 +2689,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }
 
     plot_markup = (
-        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, _plot_color("accent"), species_href_map, row_height=26)}</div>'
+        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, _plot_color("accent"), species_href_map, row_height=32, label_font_size=14)}</div>'
         if plotted_species_count
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
@@ -2746,7 +2755,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
     a {{ color: var(--accent); }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
+    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.95rem 1.1rem 1.2rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
@@ -2776,34 +2785,34 @@ def render_birdnet_rankings_html(site: dict) -> str:
       font-size: 0.96rem;
     }}
     .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
-    .stack {{ display: grid; gap: 1rem; }}
+    .stack {{ display: grid; gap: 1.2rem; }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 24px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(18px);
-      padding: 1rem;
+      padding: 1.15rem;
     }}
     .panel.rankings-panel {{
-      padding-top: 0.65rem;
-      padding-bottom: 0.8rem;
+      padding-top: 0.8rem;
+      padding-bottom: 0.95rem;
     }}
     .controls {{
       display: grid;
       grid-template-columns: minmax(340px, 2.3fr) minmax(180px, 1fr);
-      gap: 0.5rem;
+      gap: 0.65rem;
       align-items: center;
     }}
     select {{
       width: 100%;
-      padding: 0.46rem 0.7rem;
+      padding: 0.58rem 0.82rem;
       border-radius: 12px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.88);
       color: var(--ink);
       font: inherit;
-      font-size: 0.9rem;
+      font-size: 1.05rem;
       line-height: 1.2;
     }}
     .section-title {{
@@ -2818,18 +2827,18 @@ def render_birdnet_rankings_html(site: dict) -> str:
       justify-content: space-between;
       align-items: center;
       gap: 0.45rem;
-      margin-bottom: 0.35rem;
+      margin-bottom: 0.55rem;
       flex-wrap: wrap;
     }}
     .plot-shell {{
-      min-height: 16rem;
+      min-height: 19rem;
       border-radius: 18px;
       border: 1px solid rgba(23,32,29,0.08);
       background: linear-gradient(180deg, rgba(247,244,237,0.92), rgba(237,241,234,0.72));
       overflow-x: auto;
       overflow-y: hidden;
     }}
-    .plot-shell svg {{ width: 100%; min-width: 980px; display: block; }}
+    .plot-shell svg {{ width: 100%; min-width: 1120px; display: block; }}
     .rank-list {{ display: grid; gap: 0.7rem; }}
     .rank-card {{
       border: 1px solid var(--border);
