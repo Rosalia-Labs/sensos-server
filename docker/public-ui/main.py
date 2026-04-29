@@ -1533,7 +1533,7 @@ def render_site_status_html(site: dict) -> str:
     .nav-link {{
       color: var(--muted);
       text-decoration: none;
-      font-size: 0.96rem;
+      font-size: 1.08rem;
     }}
     .nav-link-inline {{
       color: #0c6d62;
