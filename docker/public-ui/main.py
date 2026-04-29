@@ -1892,79 +1892,6 @@ def render_site_detail_html(site: dict) -> str:
         row_height=32,
     )
 
-    birdnet_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong><a href="{escape_html(species_href(detection['top_label']))}">{escape_html(detection['top_label'])}</a></strong> <span class="dim">score {detection['top_score']:.2f} · vol {'n/a' if detection.get('volume') is None else f"{detection['volume']:.3f}"}</span></div>
-          <div class="dim">{render_local_time(detection['processed_at'])} · ch {detection['channel_index']}</div>
-          <div class="dim">{detection['start_sec']:.1f}s to {detection['end_sec']:.1f}s</div>
-          <div class="mono">{detection['source_path']}</div>
-        </article>
-        """
-            for detection in site["recent_birdnet_detections"]
-        )
-        or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
-    )
-
-    i2c_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong>{reading['sensor_type']}</strong> <span class="dim">{reading['reading_key']}</span></div>
-          <div class="dim">value {reading['reading_value']:.3f} · {render_local_time(reading['recorded_at'])}</div>
-          <div class="mono">{reading['device_address']}</div>
-        </article>
-        """
-            for reading in site["recent_i2c_readings"]
-        )
-        or '<div class="empty">No sensor readings are visible yet for this site.</div>'
-    )
-
-    top_birdnet_summary_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best score {summary['best_score']:.2f}</span></div>
-          <div class="dim">{summary['detection_count']} detections · latest {render_local_time(summary['latest_processed_at'])}</div>
-        </article>
-        """
-            for summary in site["top_birdnet_summaries"]
-        )
-        or '<div class="empty">No BirdNET summary labels are visible yet for this site.</div>'
-    )
-
-    top_birdnet_score_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best {summary['best_score']:.2f}</span></div>
-          <div class="dim">avg score {summary['average_score']:.2f} · {summary['detection_count']} detections</div>
-        </article>
-        """
-            for summary in site["top_birdnet_score_summaries"]
-        )
-        or '<div class="empty">No BirdNET score summaries are visible yet for this site.</div>'
-    )
-
-    top_birdnet_occupancy_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong> <span class="dim">best {summary['best_occupancy_score']:.2f}</span></div>
-          <div class="dim">avg occupancy {summary['average_occupancy_score']:.2f} · {summary['detection_count']} detections</div>
-        </article>
-        """
-            for summary in site["top_birdnet_occupancy_summaries"]
-        )
-        or '<div class="empty">No BirdNET occupancy summaries are visible yet for this site.</div>'
-    )
-
-    note_html = (
-        f"<p class='lede'>{site['note']}</p>"
-        if (site.get("note") or "").strip()
-        else ""
-    )
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
@@ -2171,13 +2098,11 @@ def render_site_detail_html(site: dict) -> str:
           <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
         </div>
         <h1>{site['site_label']}</h1>
-        {note_html}
       </div>
       <div class="meta">
         <div><a href="/">Back to all field sites</a></div>
         <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
         <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
-        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
       </div>
     </div>
     <div class="layout">
@@ -2186,7 +2111,6 @@ def render_site_detail_html(site: dict) -> str:
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
             <div>
               <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weighted Frequency</h2>
-              <div class="dim">Ranked by summed BirdNET score × occupancy score across retained detections at this site.</div>
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
@@ -2194,26 +2118,6 @@ def render_site_detail_html(site: dict) -> str:
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
           </a>
         </section>
-        <div class="detail-grid">
-          <section class="panel">
-            <h2 class="section-title">Recent BirdNET Detections</h2>
-            <div class="record-list">{birdnet_cards}</div>
-          </section>
-          <div class="stack">
-            <section class="panel">
-              <h2 class="section-title">Top Detection Scores</h2>
-              <div class="record-list">{top_birdnet_score_cards}</div>
-            </section>
-            <section class="panel">
-              <h2 class="section-title">Recent Sensor Readings</h2>
-              <div class="record-list">{i2c_cards}</div>
-            </section>
-            <section class="panel">
-              <h2 class="section-title">Species Detection Counts</h2>
-              <div class="record-list">{top_birdnet_summary_cards}</div>
-            </section>
-          </div>
-        </div>
       </main>
     </div>
   </div>
