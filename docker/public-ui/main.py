@@ -588,7 +588,9 @@ def render_horizontal_lollipop_svg(
         y = top + row_step * index + row_step / 2
         x = axis_x + (max(value, 0.0) / max_value) * chart_span
         label = str(row.get("label") or row.get("top_label") or "Unknown")
-        label_text = escape_html(label)
+        # Keep full canonical label for links/keys, but shorten displayed plot label.
+        label_display = re.sub(r"\s+\([^)]*\)\s*$", "", label).strip() or label
+        label_text = escape_html(label_display)
         label_markup = (
             f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{label_text}</text>'
         )
@@ -2684,7 +2686,7 @@ def render_index_html() -> str:
     .meta {{ color: var(--muted); font-size: 0.85rem; }}
     .layout {{
       display: grid;
-      grid-template-columns: minmax(0, 2.35fr) minmax(300px, 0.85fr);
+      grid-template-columns: 1fr;
       gap: 1rem;
       height: calc(100vh - 4.2rem);
     }}
@@ -2782,6 +2784,7 @@ def render_index_html() -> str:
       gap: 0.75rem;
       align-content: start;
       overflow: auto;
+      display: none;
     }}
     .sidebar h2 {{
       margin: 0;
