@@ -1968,26 +1968,27 @@ def render_site_detail_html(site: dict) -> str:
         "value",
         "#b45309",
         width=560,
-        height=140,
+        height=172,
     )
     humidity_chart = render_line_chart_svg(
         sensor_focus_series.get("humidity", []),
         "value",
         "#0c6d62",
         width=560,
-        height=140,
+        height=172,
     )
     pressure_chart = render_line_chart_svg(
         sensor_focus_series.get("pressure", []),
         "value",
         "#2563eb",
         width=560,
-        height=140,
+        height=172,
     )
 
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
+    synoptic_range_url = f"{synoptic_url}?range={evidence_range}"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -2132,6 +2133,15 @@ def render_site_detail_html(site: dict) -> str:
       background: rgba(255,255,255,0.62);
       min-width: 0;
     }}
+    .sensor-focus-link {{
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }}
+    .sensor-focus-link:hover .sensor-focus-card {{
+      border-color: rgba(12,109,98,0.45);
+      box-shadow: 0 8px 18px rgba(12,109,98,0.10);
+    }}
     .sensor-focus-title {{
       margin: 0 0 0.3rem;
       color: var(--muted);
@@ -2140,7 +2150,7 @@ def render_site_detail_html(site: dict) -> str:
       letter-spacing: 0.08em;
     }}
     .sensor-focus-chart {{
-      min-height: 8.5rem;
+      min-height: 10.25rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 12px;
       overflow-x: auto;
@@ -2217,7 +2227,6 @@ def render_site_detail_html(site: dict) -> str:
       <div>
         <div class="nav-row">
           <a class="nav-link" href="/" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
-          <span class="nav-link">SensOS Public Site</span>
           <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
           <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
         </div>
@@ -2241,21 +2250,25 @@ def render_site_detail_html(site: dict) -> str:
           <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
           </a>
-        </section>
-        <section class="panel">
-          <div class="sensor-focus-grid">
-            <article class="sensor-focus-card">
-              <h3 class="sensor-focus-title">Temperature</h3>
-              <div class="sensor-focus-chart">{temp_chart or '<div class="empty">No temperature data in this range.</div>'}</div>
-            </article>
-            <article class="sensor-focus-card">
-              <h3 class="sensor-focus-title">Humidity</h3>
-              <div class="sensor-focus-chart">{humidity_chart or '<div class="empty">No humidity data in this range.</div>'}</div>
-            </article>
-            <article class="sensor-focus-card">
-              <h3 class="sensor-focus-title">Pressure</h3>
-              <div class="sensor-focus-chart">{pressure_chart or '<div class="empty">No pressure data in this range.</div>'}</div>
-            </article>
+          <div class="sensor-focus-grid" style="margin-top:0.6rem;">
+            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
+              <article class="sensor-focus-card">
+                <h3 class="sensor-focus-title">Temperature</h3>
+                <div class="sensor-focus-chart">{temp_chart or '<div class="empty">No temperature data in this range.</div>'}</div>
+              </article>
+            </a>
+            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
+              <article class="sensor-focus-card">
+                <h3 class="sensor-focus-title">Humidity</h3>
+                <div class="sensor-focus-chart">{humidity_chart or '<div class="empty">No humidity data in this range.</div>'}</div>
+              </article>
+            </a>
+            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
+              <article class="sensor-focus-card">
+                <h3 class="sensor-focus-title">Pressure</h3>
+                <div class="sensor-focus-chart">{pressure_chart or '<div class="empty">No pressure data in this range.</div>'}</div>
+              </article>
+            </a>
           </div>
         </section>
       </main>
@@ -2365,29 +2378,35 @@ def render_synoptic_html(site: dict) -> str:
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
     a {{ color: #0c6d62; }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.8rem 1rem 1.1rem; }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
       gap: 1rem;
       align-items: flex-start;
-      margin-bottom: 0.65rem;
+      margin-bottom: 0.5rem;
     }}
-    .back-button {{
+    .nav-row {{
       display: inline-flex;
       align-items: center;
-      gap: 0.45rem;
-      padding: 0.45rem 0.75rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.78);
-      color: var(--ink);
-      font: inherit;
-      cursor: pointer;
-      box-shadow: 0 10px 24px rgba(27,36,32,0.08);
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 0.2rem;
     }}
-    h1 {{ margin: 0.25rem 0 0; font-size: clamp(2rem, 3.5vw, 3.2rem); letter-spacing: -0.05em; line-height: 0.96; }}
-    .lede {{ color: var(--muted); max-width: 46rem; margin-top: 0.35rem; margin-bottom: 0; font-size: 0.98rem; }}
+    .nav-link {{
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.96rem;
+    }}
+    .nav-link strong {{ color: var(--ink); }}
+    .nav-link-inline {{
+      color: #0c6d62;
+      text-decoration: underline;
+      text-underline-offset: 0.16em;
+      text-decoration-thickness: 0.08em;
+      font-size: 0.96rem;
+    }}
+    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
     .meta {{ color: var(--muted); font-size: 0.95rem; }}
     .stack {{ display: grid; gap: 1rem; }}
     .panel {{
@@ -2468,14 +2487,17 @@ def render_synoptic_html(site: dict) -> str:
   <div class="shell">
     <div class="masthead">
       <div>
-        <button class="back-button" type="button" onclick="goBack()">← Return to previous view</button>
+        <div class="nav-row">
+          <a class="nav-link" href="{escape_html(site['public_url'])}" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
+          <span class="nav-link">Time series</span>
+          <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
+        </div>
         <h1>{escape_html(site['site_label'])}</h1>
-        <div class="lede">Synoptic view highlighting environmental sensor patterns, overall bird activity intensity, and discrete event timelines for dominant species at this site.</div>
       </div>
       <div class="meta">
-        <div><a href="{escape_html(site['public_url'])}">Back to client dashboard</a></div>
+        <div><a href="/">Back to all field sites</a></div>
         <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
+        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
       </div>
     </div>
     <div class="stack">
@@ -2496,15 +2518,6 @@ def render_synoptic_html(site: dict) -> str:
       </section>
     </div>
   </div>
-  <script>
-    function goBack() {{
-      if (window.history.length > 1) {{
-        window.history.back();
-        return;
-      }}
-      window.location.assign("{escape_html(site['public_url'])}");
-    }}
-  </script>
 {render_local_time_script()}
 </body>
 </html>"""
@@ -2591,34 +2604,36 @@ def render_birdnet_rankings_html(site: dict) -> str:
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
     a {{ color: var(--accent); }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 1rem; }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
       gap: 1rem;
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }}
     .nav-row {{
-      display: flex;
-      gap: 0.55rem;
+      display: inline-flex;
+      gap: 0.65rem;
       align-items: center;
       flex-wrap: wrap;
-      margin-bottom: 0.55rem;
+      margin-bottom: 0.2rem;
     }}
-    .nav-link, .nav-link-inline {{
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.42rem 0.72rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.78);
-      color: var(--ink);
+    .nav-link {{
+      color: var(--muted);
       text-decoration: none;
+      font-size: 0.96rem;
     }}
-    h1 {{ margin: 0; font-size: clamp(2rem, 3.8vw, 3.4rem); letter-spacing: -0.05em; }}
-    .lede {{ color: var(--muted); max-width: 54rem; margin-top: 0.4rem; }}
+    .nav-link strong {{ color: var(--ink); }}
+    .nav-link-inline {{
+      color: var(--accent);
+      text-decoration: none;
+      text-decoration: underline;
+      text-underline-offset: 0.16em;
+      text-decoration-thickness: 0.08em;
+      font-size: 0.96rem;
+    }}
+    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
     .meta {{ color: var(--muted); font-size: 0.95rem; }}
     .stack {{ display: grid; gap: 1rem; }}
     .panel {{
@@ -2711,17 +2726,16 @@ def render_birdnet_rankings_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link" href="{escape_html(site['public_url'])}">← <strong>Site page</strong></a>
+          <a class="nav-link" href="{escape_html(site['public_url'])}" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
           <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
           <span class="nav-link">BirdNET rankings</span>
         </div>
         <h1>{escape_html(site['site_label'])}</h1>
       </div>
       <div class="meta">
-        <div>{escape_html(site['network_name'])}</div>
-        <div>{escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div><a href="/">Back to all field sites</a></div>
+        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
         <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
-        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
       </div>
     </div>
     <div class="stack">

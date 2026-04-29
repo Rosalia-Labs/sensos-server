@@ -852,17 +852,17 @@ def overview_page(request: Request, flash: str | None = None):
     </table>
   </section>
   <section class="panel">
-    <h2 class="section-title">Recent networks</h2>
+    <h2 class="section-title">Networks</h2>
     <table>
       <thead>
-        <tr><th>Name</th><th>CIDR</th><th>Endpoint</th><th>Peers</th></tr>
+        <tr><th>Name</th><th>CIDR</th><th>Endpoint</th></tr>
       </thead>
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(row['name'])}</td><td class='mono'>{html.escape(row['ip_range'])}</td>"
-            f"<td class='mono' title='{html.escape(format_endpoint(row['wg_public_ip'], row['wg_port']))}'>{html.escape(truncate_middle(format_endpoint(row['wg_public_ip'], row['wg_port']), 28))}</td><td>{row['peer_count']}</td></tr>"
+            f"<td class='mono' title='{html.escape(format_endpoint(row['wg_public_ip'], row['wg_port']))}'>{html.escape(truncate_middle(format_endpoint(row['wg_public_ip'], row['wg_port']), 28))}</td></tr>"
             for row in networks
-        ) or '<tr><td colspan="4" class="dim">No networks defined.</td></tr>'}
+        ) or '<tr><td colspan="3" class="dim">No networks defined.</td></tr>'}
       </tbody>
     </table>
   </section>
