@@ -1887,12 +1887,9 @@ def render_site_detail_html(site: dict) -> str:
         site["top_birdnet_evidence"],
         "evidence_weight",
         "#0c6d62",
-        {
-            str(summary["label"]): species_href(summary["label"])
-            for summary in site["top_birdnet_evidence"]
-        },
-        width=1160,
-        row_height=42,
+        None,
+        width=1080,
+        row_height=32,
     )
 
     birdnet_cards = (
@@ -1970,6 +1967,7 @@ def render_site_detail_html(site: dict) -> str:
     )
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -2085,16 +2083,21 @@ def render_site_detail_html(site: dict) -> str:
       grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 0.7rem;
     }}
+    .evidence-chart-link {{
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }}
     .evidence-chart-wrap {{
-      min-height: 16rem;
+      min-height: 12rem;
       border: 1px solid rgba(23,32,29,0.08);
-      border-radius: 16px;
+      border-radius: 14px;
       overflow-x: auto;
       background: rgba(255,255,255,0.55);
     }}
     .evidence-chart-wrap svg {{
       width: 100%;
-      min-width: 920px;
+      min-width: 860px;
       display: block;
     }}
     .detail-grid {{
@@ -2187,7 +2190,9 @@ def render_site_detail_html(site: dict) -> str:
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
-          <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
+          <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
+            <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
+          </a>
         </section>
         <div class="detail-grid">
           <section class="panel">
