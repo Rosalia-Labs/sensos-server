@@ -558,22 +558,64 @@ def render_line_chart_svg(
             {"x": coords[index][0], "utc": points[index][time_key]}
             for index in tick_indexes
         ]
-    path = " ".join(
-        ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
-        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
+    segment_bounds: list[tuple[int, int]] = []
+    if timestamps and len(timestamps) >= 2:
+        deltas = [
+            max((timestamps[idx] - timestamps[idx - 1]).total_seconds(), 0.0)
+            for idx in range(1, len(timestamps))
+        ]
+        positive_deltas = sorted(delta for delta in deltas if delta > 0)
+        if positive_deltas:
+            mid = len(positive_deltas) // 2
+            if len(positive_deltas) % 2 == 0:
+                median_delta = (positive_deltas[mid - 1] + positive_deltas[mid]) / 2.0
+            else:
+                median_delta = positive_deltas[mid]
+            # Split on unusually large gaps so discontinuous data does not appear continuous.
+            gap_break_threshold = median_delta * 1.1
+            start_idx = 0
+            for idx in range(1, len(timestamps)):
+                gap_sec = (timestamps[idx] - timestamps[idx - 1]).total_seconds()
+                if gap_sec > gap_break_threshold:
+                    if idx - start_idx >= 2:
+                        segment_bounds.append((start_idx, idx))
+                    start_idx = idx
+            if len(timestamps) - start_idx >= 2:
+                segment_bounds.append((start_idx, len(timestamps)))
+    if not segment_bounds:
+        segment_bounds = [(0, len(coords))]
+
+    line_paths = []
+    area_paths = []
+    for start_idx, end_idx in segment_bounds:
+        segment_coords = coords[start_idx:end_idx]
+        if len(segment_coords) < 2:
+            continue
+        line_paths.append(
+            " ".join(
+                ["M {:.2f} {:.2f}".format(segment_coords[0][0], segment_coords[0][1])]
+                + ["L {:.2f} {:.2f}".format(x, y) for x, y in segment_coords[1:]]
+            )
+        )
+        area_paths.append(
+            " ".join(
+                ["M {:.2f} {:.2f}".format(segment_coords[0][0], bottom)]
+                + ["L {:.2f} {:.2f}".format(x, y) for x, y in segment_coords]
+                + ["L {:.2f} {:.2f} Z".format(segment_coords[-1][0], bottom)]
+            )
+        )
+    svg_body = (
+        _render_axes(bounds, min_value, max_value, x_labels)
+        + "".join(
+            f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
+            for area in area_paths
+        )
+        + "".join(
+            f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
+            for path in line_paths
+        )
     )
-    area = " ".join(
-        ["M {:.2f} {:.2f}".format(coords[0][0], bottom)]
-        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords]
-        + ["L {:.2f} {:.2f} Z".format(coords[-1][0], bottom)]
-    )
-    return (
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
-        f"{_render_axes(bounds, min_value, max_value, x_labels)}"
-        f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
-        f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
-        f"</svg>"
-    )
+    return f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">{svg_body}</svg>'
 
 
 def render_bar_chart_svg(
