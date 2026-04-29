@@ -213,6 +213,12 @@ def render_page(
       gap: 1rem;
       margin-bottom: 1rem;
     }}
+    .split.overview-split {{
+      grid-template-columns: minmax(0, 1.2fr) minmax(420px, 1fr);
+    }}
+    .split.compact > .panel {{
+      padding: 0.9rem 1rem;
+    }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.92rem; }}
     ul.clean {{ margin: 0; padding-left: 1.1rem; }}
     @media (max-width: 900px) {{
@@ -467,7 +473,7 @@ def handshake_bucket(last_handshake: str, age_seconds: int | None) -> str:
 
 
 def is_infra_wg_ip(value: str | None) -> bool:
-    text = (value or "").strip()
+    text = (extract_allowed_ip(value or "") or "").strip()
     parts = text.split(".")
     if len(parts) != 4:
         return False
@@ -709,7 +715,9 @@ def fetch_runtime_rows() -> list[dict]:
 
 def fetch_wireguard_peer_health_rows() -> list[dict]:
     peers = fetch_peer_rows()
-    peer_by_ip = {row["wg_ip"]: row for row in peers}
+    peer_by_ip = {
+        (extract_allowed_ip(row["wg_ip"]) or row["wg_ip"]): row for row in peers
+    }
 
     runtime_rows = fetch_runtime_rows()
     health_rows: list[dict] = []
@@ -1049,8 +1057,8 @@ def overview_page(request: Request, flash: str | None = None):
 
     overview = fetch_dashboard_overview()
     networks = fetch_network_rows()[:5]
-    all_peers = fetch_peer_rows()
-    peers = all_peers[:8]
+    all_peers = fetch_peer_rows(sort_by="checkin", direction="desc")
+    peers = [row for row in all_peers if row["last_check_in"] is not None][:8]
     active_peer_count = sum(1 for row in all_peers if row["is_active"])
     reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
     latest_check_in = max(
@@ -1064,19 +1072,19 @@ def overview_page(request: Request, flash: str | None = None):
   {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
 </div>
-<div class="split">
+<div class="split compact overview-split">
   <section class="panel">
-    <h2 class="section-title">Recent client peers</h2>
+    <h2 class="section-title">Latest peer check-ins</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Host</th><th>Last check-in</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Last check-in</th></tr>
       </thead>
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(peer_display_label(row))}</td><td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
-        ) or '<tr><td colspan="4" class="dim">No peers registered.</td></tr>'}
+        ) or '<tr><td colspan="4" class="dim">No peer check-ins reported yet.</td></tr>'}
       </tbody>
     </table>
   </section>
@@ -1096,16 +1104,18 @@ def overview_page(request: Request, flash: str | None = None):
     </table>
   </section>
 </div>
-<section class="panel" style="margin-top: 1rem;">
-  <h2 class="section-title">Build metadata</h2>
-  <ul class="clean">
-    <li><span class="mono">version</span>: {html.escape(current_server_version())}</li>
-    <li><span class="mono">git_commit</span>: {html.escape(GIT_COMMIT)}</li>
-    <li><span class="mono">git_branch</span>: {html.escape(GIT_BRANCH)}</li>
-    <li><span class="mono">git_tag</span>: {html.escape(GIT_TAG)}</li>
-    <li><span class="mono">git_dirty</span>: {html.escape(GIT_DIRTY)}</li>
-  </ul>
-</section>
+<div class="stack">
+  <section class="panel">
+    <h2 class="section-title">Build metadata</h2>
+    <ul class="clean">
+      <li><span class="mono">version</span>: {html.escape(current_server_version())}</li>
+      <li><span class="mono">git_commit</span>: {html.escape(GIT_COMMIT)}</li>
+      <li><span class="mono">git_branch</span>: {html.escape(GIT_BRANCH)}</li>
+      <li><span class="mono">git_tag</span>: {html.escape(GIT_TAG)}</li>
+      <li><span class="mono">git_dirty</span>: {html.escape(GIT_DIRTY)}</li>
+    </ul>
+  </section>
+</div>
 """
     return render_page(
         title="Overview",
@@ -1152,7 +1162,6 @@ def networks_page(request: Request, flash: str | None = None):
       <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820"></label>
       <button type="submit">Create or reconcile network</button>
     </form>
-    <p class="help">These fields start blank. Placeholder text is only an example, not the current saved endpoint.</p>
     <p class="help">This reuses the same network-creation path as the CLI and waits for the generated WireGuard public key when needed.</p>
   </section>
 </div>
@@ -1252,8 +1261,8 @@ def peers_page(
     request: Request,
     flash: str | None = None,
     network: str | None = None,
-    sort: str = "network",
-    direction: str = "asc",
+    sort: str = "checkin",
+    direction: str = "desc",
 ):
     redirect = require_session(request)
     if redirect:
@@ -1261,9 +1270,9 @@ def peers_page(
 
     selected_network = (network or "").strip() or None
     sort = (
-        sort if sort in {"network", "host", "checkin", "state", "client"} else "network"
+        sort if sort in {"network", "host", "checkin", "state", "client"} else "checkin"
     )
-    direction = direction if direction in {"asc", "desc"} else "asc"
+    direction = direction if direction in {"asc", "desc"} else "desc"
     rows = fetch_peer_rows(selected_network, sort, direction)
     network_names = fetch_network_names()
     body_rows = []
@@ -1309,7 +1318,7 @@ def peers_page(
     <select name="sort" onchange="this.form.submit()">
       <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
       <option value="client"{' selected' if sort == 'client' else ''}>Client</option>
-      <option value="host"{' selected' if sort == 'host' else ''}>Host</option>
+      <option value="host"{' selected' if sort == 'host' else ''}>Client host</option>
       <option value="checkin"{' selected' if sort == 'checkin' else ''}>Last check-in</option>
       <option value="state"{' selected' if sort == 'state' else ''}>State</option>
     </select>
@@ -1328,7 +1337,7 @@ def peers_page(
   {filter_form}
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {''.join(body_rows) or '<tr><td colspan="7" class="dim">No peers registered.</td></tr>'}
@@ -1401,24 +1410,18 @@ def wireguard_page(request: Request, flash: str | None = None):
     warm_count = sum(1 for row in rows if row["handshake_bucket"] == "warm")
     stale_count = sum(1 for row in rows if row["handshake_bucket"] == "stale")
     never_count = sum(1 for row in rows if row["handshake_bucket"] == "never")
-    latest_runtime_update = max(
-        (row["runtime_updated_at"] for row in rows if row["runtime_updated_at"] is not None),
-        default=None,
-    )
-
     body = f"""
 <div class="grid">
   {stat_card("Client peers", str(len(rows)), "Operator client peers visible in WireGuard runtime (infra peers excluded).")}
   {stat_card("Recent handshakes", str(recent_count), "Handshake age <= 5 minutes.")}
   {stat_card("Warm handshakes", str(warm_count), "Handshake age between 5 minutes and 1 hour.")}
   {stat_card("Stale / Never", f'{stale_count} / {never_count}', "Stale >1 hour or never observed.")}
-  {stat_card("Runtime updated", summarize_age(latest_runtime_update), "Freshness of WireGuard runtime status snapshot.")}
 </div>
 <section class="panel">
   <h2 class="section-title">WireGuard peer health</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client host</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1491,9 +1494,9 @@ def runtime_page(request: Request, flash: str | None = None):
 """
         )
     body = (
-        "".join(sections)
+        f"<div class='stack'>{''.join(sections)}</div>"
         if sections
-        else '<section class="panel"><p class="dim">No runtime WireGuard status rows exist yet.</p></section>'
+        else "<div class='stack'><section class='panel'><p class='dim'>No runtime WireGuard status rows exist yet.</p></section></div>"
     )
     return render_page(
         title="Runtime",
@@ -1519,20 +1522,6 @@ def birdnet_page(request: Request, flash: str | None = None):
         (row["last_clip_end"] for row in client_rows if row["last_clip_end"] is not None),
         default=None,
     )
-    top_labels: dict[str, int] = {}
-    for row in rows:
-        label = (row.get("label") or "").strip()
-        if label:
-            top_labels[label] = top_labels.get(label, 0) + 1
-    top_label_markup = (
-        "".join(
-            f"<li>{html.escape(label)} <span class='dim'>({count})</span></li>"
-            for label, count in sorted(
-                top_labels.items(), key=lambda kv: (-kv[1], kv[0])
-            )[:8]
-        )
-        or "<li class='dim'>No BirdNET labels available yet.</li>"
-    )
     body = f"""
 <div class="grid">
   {stat_card("Detections", str(len(rows)), "Recent retained BirdNET detections from client peers (infra peers excluded).")}
@@ -1540,31 +1529,29 @@ def birdnet_page(request: Request, flash: str | None = None):
   {stat_card("Sources", str(unique_sources), "Distinct source files represented in recent client BirdNET detections.")}
   {stat_card("Latest Detection", summarize_age(latest_detection), "Time since the most recent client BirdNET clip end time.")}
 </div>
-<section class="panel">
-  <h2 class="section-title">Top detected species (recent)</h2>
-  <ul class="clean">{top_label_markup}</ul>
-</section>
-<section class="panel">
-  <h2 class="section-title">Client BirdNET activity summary</h2>
-  <table>
-    <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
-    </thead>
-    <tbody>
-      {''.join(
-          "<tr>"
-          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
-          f"<td>{html.escape(row['network_name'])}</td>"
-          f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td>{row['detection_count']}</td>"
-          f"<td><div>{html.escape(row['top_label'])}</div><div class='dim'>{row['top_label_count']} detections</div></td>"
-          f"<td><div>{html.escape(summarize_age(row['last_clip_end']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_clip_end']))}</div></td>"
-          "</tr>"
-          for row in client_rows
-      ) or '<tr><td colspan="6" class="dim">No BirdNET detections stored yet.</td></tr>'}
-    </tbody>
-  </table>
-</section>
+<div class="stack">
+  <section class="panel">
+    <h2 class="section-title">Client BirdNET activity summary</h2>
+    <table>
+      <thead>
+        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
+      </thead>
+      <tbody>
+        {''.join(
+            "<tr>"
+            f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
+            f"<td>{html.escape(row['network_name'])}</td>"
+            f"<td>{html.escape(row['hostname'])}</td>"
+            f"<td>{row['detection_count']}</td>"
+            f"<td><div>{html.escape(row['top_label'])}</div><div class='dim'>{row['top_label_count']} detections</div></td>"
+            f"<td><div>{html.escape(summarize_age(row['last_clip_end']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_clip_end']))}</div></td>"
+            "</tr>"
+            for row in client_rows
+        ) or '<tr><td colspan="6" class="dim">No BirdNET detections stored yet.</td></tr>'}
+      </tbody>
+    </table>
+  </section>
+</div>
 """
     return render_page(
         title="BirdNET",
@@ -1593,28 +1580,30 @@ def sensors_page(request: Request, flash: str | None = None):
   {stat_card("Reporting clients", str(reporting_clients), "Distinct client peers with recent sensor uploads.")}
   {stat_card("Latest upload", summarize_age(latest_upload), "Time since the most recent client sensor upload was accepted.")}
 </div>
-<section class="panel">
-  <h2 class="section-title">Client sensor freshness summary</h2>
-  <table>
-    <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
-    </thead>
-    <tbody>
-      {''.join(
-          "<tr>"
-          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
-          f"<td>{html.escape(row['network_name'])}</td>"
-          f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td>{row['reading_count']}</td>"
-          f"<td><div class='dim'>temp {row['signals'].get('temp', '—') if row['signals'].get('temp', '—') == '—' else format(row['signals'].get('temp'), '.2f')}</div><div class='dim'>humidity {row['signals'].get('humidity', '—') if row['signals'].get('humidity', '—') == '—' else format(row['signals'].get('humidity'), '.2f')} · pressure {row['signals'].get('pressure', '—') if row['signals'].get('pressure', '—') == '—' else format(row['signals'].get('pressure'), '.2f')} · co2 {row['signals'].get('co2', '—') if row['signals'].get('co2', '—') == '—' else format(row['signals'].get('co2'), '.1f')}</div></td>"
-          f"<td><div>{html.escape(summarize_age(row['last_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
-          f"<td><div>{html.escape(summarize_age(row['last_received_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_received_at']))}</div></td>"
-          "</tr>"
-          for row in client_rows
-      ) or '<tr><td colspan="7" class="dim">No sensor readings stored yet.</td></tr>'}
-    </tbody>
-  </table>
-</section>
+<div class="stack">
+  <section class="panel">
+    <h2 class="section-title">Client sensor freshness summary</h2>
+    <table>
+      <thead>
+        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
+      </thead>
+      <tbody>
+        {''.join(
+            "<tr>"
+            f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
+            f"<td>{html.escape(row['network_name'])}</td>"
+            f"<td>{html.escape(row['hostname'])}</td>"
+            f"<td>{row['reading_count']}</td>"
+            f"<td><div class='dim'>temp {row['signals'].get('temp', '—') if row['signals'].get('temp', '—') == '—' else format(row['signals'].get('temp'), '.2f')}</div><div class='dim'>humidity {row['signals'].get('humidity', '—') if row['signals'].get('humidity', '—') == '—' else format(row['signals'].get('humidity'), '.2f')} · pressure {row['signals'].get('pressure', '—') if row['signals'].get('pressure', '—') == '—' else format(row['signals'].get('pressure'), '.2f')} · co2 {row['signals'].get('co2', '—') if row['signals'].get('co2', '—') == '—' else format(row['signals'].get('co2'), '.1f')}</div></td>"
+            f"<td><div>{html.escape(summarize_age(row['last_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
+            f"<td><div>{html.escape(summarize_age(row['last_received_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_received_at']))}</div></td>"
+            "</tr>"
+            for row in client_rows
+        ) or '<tr><td colspan="7" class="dim">No sensor readings stored yet.</td></tr>'}
+      </tbody>
+    </table>
+  </section>
+</div>
 """
     return render_page(
         title="Sensors",
