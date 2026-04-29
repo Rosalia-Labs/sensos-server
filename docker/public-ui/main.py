@@ -102,30 +102,36 @@ def _theme_override_css() -> str:
         return ""
     return """
     :root {
-      --bg: #1e1e1e;
-      --panel: rgba(37,37,38,0.92);
+      --bg: #0f1115;
+      --panel: rgba(30,34,40,0.94);
       --ink: #d4d4d4;
-      --muted: #9da3a9;
-      --accent: #569cd6;
-      --accent-2: #d7ba7d;
-      --border: rgba(255,255,255,0.14);
-      --shadow: 0 24px 60px rgba(0,0,0,0.4);
-      --marker: #569cd6;
-      --marker-active: #d7ba7d;
+      --muted: #a7adb5;
+      --accent: #4ec9b0;
+      --accent-2: #ce9178;
+      --border: rgba(255,255,255,0.16);
+      --shadow: 0 24px 60px rgba(0,0,0,0.52);
+      --marker: #4ec9b0;
+      --marker-active: #d19a66;
     }
     body {
       background:
-        radial-gradient(circle at top left, rgba(86,156,214,0.14), transparent 28rem),
-        radial-gradient(circle at top right, rgba(197,134,192,0.12), transparent 24rem),
-        linear-gradient(180deg, #111315 0%, var(--bg) 100%);
+        radial-gradient(circle at top left, rgba(78,201,176,0.12), transparent 28rem),
+        radial-gradient(circle at top right, rgba(209,154,102,0.1), transparent 24rem),
+        linear-gradient(180deg, #0a0c10 0%, var(--bg) 100%);
     }
     a, .nav-link-inline { color: var(--accent); }
-    .range-pill.active { background: var(--accent); border-color: var(--accent); color: #111315; }
-    .summary-bar { background: linear-gradient(90deg, #569cd6, #4ec9b0); }
-    .metric-pill { background: rgba(86,156,214,0.2); color: #9cdcfe; }
+    .panel { background: var(--panel); }
+    select {
+      background: rgba(24,27,33,0.95);
+      border-color: rgba(255,255,255,0.2);
+      color: #d4d4d4;
+    }
+    .range-pill.active { background: var(--accent); border-color: var(--accent); color: #0a0c10; }
+    .summary-bar { background: linear-gradient(90deg, #4ec9b0, #d19a66); }
+    .metric-pill { background: rgba(78,201,176,0.16); color: #7fe6d2; }
     .plot-shell {
-      background: linear-gradient(180deg, rgba(30,30,30,0.95), rgba(24,24,24,0.9));
-      border-color: rgba(255,255,255,0.12);
+      background: linear-gradient(180deg, rgba(17,19,24,0.96), rgba(12,14,18,0.93));
+      border-color: rgba(255,255,255,0.14);
     }
     """
 
@@ -134,10 +140,10 @@ def _plot_color(name: str) -> str:
     theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
     if theme == "vscode-dark":
         palette = {
-            "accent": "#569cd6",      # VS Code blue
-            "occupancy": "#c586c0",   # VS Code purple
-            "weighted": "#dcdcaa",    # VS Code yellow
-            "alt": "#4ec9b0",         # VS Code cyan
+            "accent": "#4ec9b0",      # VS Code-style green/cyan
+            "occupancy": "#9cdcfe",   # VS Code light blue
+            "weighted": "#d19a66",    # VS Code orange
+            "alt": "#b5cea8",         # VS Code soft green
         }
         return palette.get(name, palette["accent"])
     palette = {
@@ -2558,24 +2564,30 @@ def render_birdnet_rankings_html(site: dict) -> str:
       backdrop-filter: blur(18px);
       padding: 1rem;
     }}
+    .panel.rankings-panel {{
+      padding-top: 0.65rem;
+      padding-bottom: 0.8rem;
+    }}
     .controls {{
       display: grid;
       grid-template-columns: minmax(340px, 2.3fr) minmax(180px, 1fr);
-      gap: 0.7rem;
+      gap: 0.5rem;
       align-items: center;
     }}
     select {{
       width: 100%;
-      padding: 0.72rem 0.85rem;
-      border-radius: 14px;
+      padding: 0.46rem 0.7rem;
+      border-radius: 12px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.88);
       color: var(--ink);
       font: inherit;
+      font-size: 0.9rem;
+      line-height: 1.2;
     }}
     .section-title {{
       margin: 0;
-      font-size: 1rem;
+      font-size: 0.88rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--muted);
@@ -2584,8 +2596,8 @@ def render_birdnet_rankings_html(site: dict) -> str:
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 0.7rem;
-      margin-bottom: 0.6rem;
+      gap: 0.45rem;
+      margin-bottom: 0.35rem;
       flex-wrap: wrap;
     }}
     .plot-shell {{
@@ -2649,7 +2661,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
       </div>
     </div>
     <div class="stack">
-      <section class="panel">
+      <section class="panel rankings-panel">
         <div class="section-bar">
           <h2 class="section-title">Rankings</h2>
           <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
