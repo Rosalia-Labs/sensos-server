@@ -22,6 +22,10 @@ DEFAULT_DB_CONTAINER = "sensos-database"
 DEFAULT_NETWORK_PREFIX = "fake-seed"
 DEFAULT_CLIENT_VERSION = "fake-client/0.1.0"
 DEFAULT_POSTGRES_PASSWORD = "sensos"
+DEFAULT_CENTER_LAT = 29.15
+DEFAULT_CENTER_LON = -91.8
+DEFAULT_LAT_JITTER = 0.28
+DEFAULT_LON_JITTER = 0.38
 
 BIRD_SPECIES = [
     "Northern Cardinal",
@@ -76,7 +80,7 @@ class PeerSeed:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Seed fake SensOS clients, locations, I2C, and BirdNET data."
+        description="Seed fake SensOS clients, locations, I2C uploads, and BirdNET detections."
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--db-container", default=DEFAULT_DB_CONTAINER)
@@ -95,13 +99,37 @@ def parse_args() -> argparse.Namespace:
         "--client-count", type=int, default=4, help="Number of fake clients to create."
     )
     parser.add_argument(
+        "--center-lat",
+        type=float,
+        default=DEFAULT_CENTER_LAT,
+        help=f"Center latitude for synthetic site placement (default: {DEFAULT_CENTER_LAT}).",
+    )
+    parser.add_argument(
+        "--center-lon",
+        type=float,
+        default=DEFAULT_CENTER_LON,
+        help=f"Center longitude for synthetic site placement (default: {DEFAULT_CENTER_LON}).",
+    )
+    parser.add_argument(
+        "--lat-jitter",
+        type=float,
+        default=DEFAULT_LAT_JITTER,
+        help=f"Max +/- latitude jitter in degrees (default: {DEFAULT_LAT_JITTER}).",
+    )
+    parser.add_argument(
+        "--lon-jitter",
+        type=float,
+        default=DEFAULT_LON_JITTER,
+        help=f"Max +/- longitude jitter in degrees (default: {DEFAULT_LON_JITTER}).",
+    )
+    parser.add_argument(
         "--i2c-batches-per-client", type=int, default=3, help="I2C upload batches per client."
     )
     parser.add_argument(
         "--birdnet-batches-per-client",
         type=int,
         default=2,
-        help="BirdNET upload batches per client.",
+        help="BirdNET detection upload batches per client.",
     )
     parser.add_argument(
         "--cleanup",
@@ -242,7 +270,7 @@ WITH target_peers AS (
     JOIN sensos.networks n ON n.id = p.network_id
     WHERE n.name = {sql_quote(network_name)}
 )
-DELETE FROM sensos.birdnet_result_batches
+DELETE FROM sensos.birdnet_detections
 WHERE wireguard_ip::text IN (SELECT wg_ip FROM target_peers);
 
 WITH target_peers AS (
@@ -269,10 +297,16 @@ def create_network_and_peers(
     client_count: int,
     second_octet: int,
     rng: random.Random,
+    center_lat: float,
+    center_lon: float,
+    lat_jitter: float,
+    lon_jitter: float,
 ) -> list[PeerSeed]:
     peers: list[PeerSeed] = []
     for index in range(client_count):
         client_num = index + 1
+        latitude = round(center_lat + rng.uniform(-lat_jitter, lat_jitter), 6)
+        longitude = round(center_lon + rng.uniform(-lon_jitter, lon_jitter), 6)
         peers.append(
             PeerSeed(
                 hostname=f"{network_name}-client-{client_num:02d}",
@@ -280,8 +314,8 @@ def create_network_and_peers(
                 wg_ip=f"10.{second_octet}.1.{client_num}",
                 peer_uuid=str(uuid.uuid4()),
                 peer_password=secrets.token_urlsafe(24),
-                latitude=round(29.15 + rng.uniform(-4.2, 4.2), 6),
-                longitude=round(-91.8 + rng.uniform(-6.5, 6.5), 6),
+                latitude=max(-90.0, min(90.0, latitude)),
+                longitude=max(-180.0, min(180.0, longitude)),
             )
         )
 
@@ -400,16 +434,12 @@ def build_birdnet_payloads(
     payloads: list[dict] = []
     now = datetime.now(timezone.utc)
     for batch_index in range(batch_count):
-        processed_files = []
         batch_time = now - timedelta(hours=(batch_count - batch_index) * 6)
+        detections = []
         file_count = rng.randint(2, 4)
         for file_index in range(file_count):
             started_at = batch_time + timedelta(minutes=file_index * 11)
-            processed_at = started_at + timedelta(minutes=2, seconds=rng.randint(10, 70))
             sample_rate = 48_000
-            frames = sample_rate * 12
-            detections = []
-            flac_runs = []
             detection_count = rng.randint(2, 5)
             for detection_index in range(detection_count):
                 start_sec = round(detection_index * 2.4 + rng.uniform(0.0, 0.8), 3)
@@ -421,73 +451,28 @@ def build_birdnet_payloads(
                 end_frame = int(end_sec * sample_rate)
                 detections.append(
                     {
+                        "source_path": (
+                            f"/var/lib/sensos/audio/{peer.hostname}/"
+                            f"batch-{batch_index + 1:02d}-clip-{file_index + 1:02d}.wav"
+                        ),
                         "channel_index": 0,
                         "window_index": detection_index,
-                        "start_frame": start_frame,
-                        "end_frame": end_frame,
-                        "start_sec": start_sec,
-                        "end_sec": end_sec,
-                        "window_volume": round(rng.uniform(0.005, 0.2), 4),
-                        "top_label": label,
-                        "top_score": top_score,
-                        "top_likely_score": likely_score,
-                    }
-                )
-                flac_runs.append(
-                    {
-                        "channel_index": 0,
-                        "run_index": detection_index,
+                        "max_score_start_frame": start_frame,
                         "label": label,
-                        "label_dir": label.lower().replace(" ", "_"),
-                        "start_frame": start_frame,
-                        "end_frame": end_frame,
-                        "start_sec": start_sec,
-                        "end_sec": end_sec,
-                        "peak_score": top_score,
-                        "peak_likely_score": likely_score,
-                        "flac_path": (
-                            f"/var/lib/sensos/birdnet/snippets/{peer.hostname}/"
-                            f"batch-{batch_index + 1:02d}-file-{file_index + 1:02d}-"
-                            f"run-{detection_index + 1:02d}.flac"
-                        ),
-                        "deleted_at": None,
+                        "score": top_score,
+                        "likely_score": likely_score,
+                        "volume": round(rng.uniform(0.005, 0.2), 4),
+                        "clip_start_time": iso_utc(started_at + timedelta(seconds=start_sec)),
+                        "clip_end_time": iso_utc(started_at + timedelta(seconds=end_sec)),
                     }
                 )
-            processed_files.append(
-                {
-                    "source_path": (
-                        f"/var/lib/sensos/audio/{peer.hostname}/"
-                        f"batch-{batch_index + 1:02d}-clip-{file_index + 1:02d}.wav"
-                    ),
-                    "sample_rate": sample_rate,
-                    "channels": 1,
-                    "frames": frames,
-                    "started_at": iso_utc(started_at),
-                    "processed_at": iso_utc(processed_at),
-                    "status": "done",
-                    "error": None,
-                    "output_dir": f"/var/lib/sensos/birdnet/out/{peer.hostname}",
-                    "deleted_source": rng.choice([True, False]),
-                    "detections": detections,
-                    "flac_runs": flac_runs,
-                }
-            )
-        source_paths = sorted(item["source_path"] for item in processed_files)
-        processed_times = sorted(item["processed_at"] for item in processed_files)
         payloads.append(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "hostname": peer.hostname,
                 "client_version": DEFAULT_CLIENT_VERSION,
-                "batch_id": batch_index + 1,
                 "sent_at": iso_utc(batch_time + timedelta(minutes=5)),
-                "ownership_mode": rng.choice(["client-retains", "server-owns"]),
-                "source_count": len(processed_files),
-                "first_source_path": source_paths[0],
-                "last_source_path": source_paths[-1],
-                "first_processed_at": processed_times[0],
-                "last_processed_at": processed_times[-1],
-                "processed_files": processed_files,
+                "detections": detections,
             }
         )
     return payloads
@@ -535,6 +520,18 @@ def main() -> int:
     )
     if args.client_count < 1:
         raise SystemExit("--client-count must be at least 1")
+    if not (-90.0 <= args.center_lat <= 90.0):
+        raise SystemExit("--center-lat must be between -90 and 90")
+    if not (-180.0 <= args.center_lon <= 180.0):
+        raise SystemExit("--center-lon must be between -180 and 180")
+    if args.lat_jitter < 0:
+        raise SystemExit("--lat-jitter must be >= 0")
+    if args.lon_jitter < 0:
+        raise SystemExit("--lon-jitter must be >= 0")
+    if args.i2c_batches_per_client < 0:
+        raise SystemExit("--i2c-batches-per-client must be >= 0")
+    if args.birdnet_batches_per_client < 0:
+        raise SystemExit("--birdnet-batches-per-client must be >= 0")
 
     tag = args.tag or secrets.token_hex(4)
     network_name = f"{args.network_prefix}-{tag}"
@@ -561,6 +558,10 @@ def main() -> int:
         args.client_count,
         second_octet,
         rng,
+        args.center_lat,
+        args.center_lon,
+        args.lat_jitter,
+        args.lon_jitter,
     )
     for peer in peers:
         seed_peer(args.base_url.rstrip("/"), peer, args, rng)
