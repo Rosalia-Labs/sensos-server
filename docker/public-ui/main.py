@@ -275,7 +275,7 @@ def render_local_time_script() -> str:
         const mode = node.getAttribute("data-time-style") || "full";
         if (mode === "tick") {
           const timeText = formatLocalTimestamp(utcValue, { hour: "2-digit", minute: "2-digit" });
-          const dateText = formatLocalTimestamp(utcValue, { month: "2-digit", day: "2-digit" });
+          const dateText = formatLocalTimestamp(utcValue, { year: "numeric", month: "2-digit", day: "2-digit" });
           if ((node.namespaceURI || "").includes("svg")) {
             const x = node.getAttribute("x") || "0";
             while (node.firstChild) node.removeChild(node.firstChild);
@@ -516,16 +516,40 @@ def render_line_chart_svg(
     min_value = min(values)
     max_value = max(values)
     span = max(max_value - min_value, 1e-9)
+    time_key = None
+    if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
+        time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
+    timestamps: list[datetime] = []
+    if time_key is not None:
+        try:
+            timestamps = [
+                datetime.fromisoformat(str(point[time_key]).replace("Z", "+00:00"))
+                for point in points
+            ]
+        except Exception:
+            timestamps = []
+    min_ts = min(timestamps) if timestamps else None
+    max_ts = max(timestamps) if timestamps else None
+    total_seconds = (
+        max((max_ts - min_ts).total_seconds(), 1.0)
+        if min_ts is not None and max_ts is not None
+        else None
+    )
     step_x = (right - left) / max(1, len(points) - 1)
     coords = []
     for index, point in enumerate(points):
         value = float(point[value_key])
-        x = left + index * step_x
+        if timestamps and min_ts is not None and total_seconds is not None:
+            x = left + (
+                ((timestamps[index] - min_ts).total_seconds() / total_seconds)
+                * (right - left)
+            )
+        else:
+            x = left + index * step_x
         y = bottom - ((value - min_value) / span) * (bottom - top)
         coords.append((x, y))
     x_labels = []
-    if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
-        time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
+    if time_key is not None:
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
         x_labels = [
             {"x": coords[index][0], "utc": points[index][time_key]}
@@ -571,13 +595,40 @@ def render_bar_chart_svg(
     max_value = max(values)
     if max_value <= 0:
         max_value = 1.0
-    bar_width = max(6, (right - left) / max(1, len(points)) - 4)
+    timestamps: list[datetime] = []
+    if points and "processed_at" in points[0]:
+        try:
+            timestamps = [
+                datetime.fromisoformat(str(point["processed_at"]).replace("Z", "+00:00"))
+                for point in points
+            ]
+        except Exception:
+            timestamps = []
+    min_ts = min(timestamps) if timestamps else None
+    max_ts = max(timestamps) if timestamps else None
+    total_seconds = (
+        max((max_ts - min_ts).total_seconds(), 1.0)
+        if min_ts is not None and max_ts is not None
+        else None
+    )
     step_x = (right - left) / max(1, len(points))
+    bar_width = max(6, step_x - 4)
     rects = []
+    x_centers: list[float] = []
     for index, point in enumerate(points):
         value = float(point[value_key])
         bar_height = (value / max_value) * (bottom - top)
-        x = left + index * step_x + max(1, (step_x - bar_width) / 2)
+        if timestamps and min_ts is not None and total_seconds is not None:
+            center_x = left + (
+                ((timestamps[index] - min_ts).total_seconds() / total_seconds)
+                * (right - left)
+            )
+            x_centers.append(center_x)
+            x = center_x - (bar_width / 2)
+        else:
+            center_x = left + index * step_x + step_x / 2
+            x_centers.append(center_x)
+            x = left + index * step_x + max(1, (step_x - bar_width) / 2)
         y = bottom - bar_height
         rects.append(
             f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fill}" opacity="0.82"></rect>'
@@ -587,7 +638,7 @@ def render_bar_chart_svg(
         tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
         x_labels = [
             {
-                "x": left + index * step_x + step_x / 2,
+                "x": x_centers[index],
                 "utc": points[index]["processed_at"],
             }
             for index in tick_indexes
