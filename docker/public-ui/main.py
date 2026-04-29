@@ -1140,6 +1140,7 @@ def fetch_site_status(site_id: str) -> dict:
         "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
         "status_url": f"/sites/{row[0]}/status",
+        "synoptic_url": f"/sites/{row[0]}/synoptic",
         "birdnet_rankings_url": f"/sites/{row[0]}/birdnet-rankings",
         "top_birdnet_evidence": [
             {
@@ -1158,11 +1159,6 @@ def fetch_site_status(site_id: str) -> dict:
 
 
 def render_site_status_html(site: dict) -> str:
-    note_html = (
-        f'<p class="lede">{escape_html(site["note"])}</p>'
-        if site.get("note")
-        else '<p class="lede">Public status view sourced from the shared dashboard database.</p>'
-    )
     infrastructure_rows = [
         ("Site label", site["site_label"]),
         ("Hostname", site.get("hostname") or "unknown"),
@@ -1234,12 +1230,29 @@ def render_site_status_html(site: dict) -> str:
     .masthead {{
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 1rem;
-      margin-bottom: 0.75rem;
+      margin-bottom: 0.3rem;
     }}
-    h1 {{ margin: 0.2rem 0 0; font-size: clamp(2rem, 3.4vw, 3.1rem); letter-spacing: -0.05em; }}
-    .lede {{ color: var(--muted); max-width: 52rem; margin: 0.35rem 0 0; }}
+    .nav-row {{
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 0;
+    }}
+    .nav-link {{
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.96rem;
+    }}
+    .nav-link-inline {{
+      color: #0c6d62;
+      text-decoration: underline;
+      text-underline-offset: 0.16em;
+      text-decoration-thickness: 0.08em;
+      font-size: 0.96rem;
+    }}
     .meta {{ color: var(--muted); font-size: 0.92rem; text-align: right; }}
     .grid {{
       display: grid;
@@ -1339,15 +1352,13 @@ def render_site_status_html(site: dict) -> str:
 <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <div><a href="/">← Back to field sites</a></div>
-        <h1>{escape_html(site['site_label'])}</h1>
-        {note_html}
+      <div class="nav-row">
+        <span class="nav-link">Overview</span>
+        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
       </div>
       <div class="meta">
-        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
-        <div>Times shown in <span data-browser-timezone>your browser timezone</span></div>
+        <a href="/">Back to all field sites</a>
       </div>
     </div>
     <div class="grid">
@@ -1799,13 +1810,13 @@ def render_birdnet_species_html(site: dict) -> str:
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
     .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
-    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:0.5rem; }}
+    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:0.3rem; }}
     .nav-row {{
       display: inline-flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 0.65rem;
-      margin-bottom: 0.2rem;
+      margin-bottom: 0;
     }}
     .nav-link {{
       color: var(--muted);
@@ -1820,8 +1831,7 @@ def render_birdnet_species_html(site: dict) -> str:
       text-decoration-thickness: 0.08em;
       font-size: 0.96rem;
     }}
-    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; display:grid; gap:0.25rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
     .panel {{ background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 0.85rem 0.95rem; }}
     .stack {{ display:grid; gap: 0.8rem; }}
     .summary-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem; }}
@@ -1849,18 +1859,13 @@ def render_birdnet_species_html(site: dict) -> str:
 <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-          <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
-          <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
-        </div>
-        <h1>{escape_html(site['species_label'])}</h1>
+      <div class="nav-row">
+        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
+        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
       </div>
       <div class="meta">
-        <div><a href="/">Back to all field sites</a></div>
-        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <a href="/">Back to all field sites</a>
       </div>
     </div>
     <div class="stack">
@@ -1961,15 +1966,15 @@ def render_site_detail_html(site: dict) -> str:
       display: flex;
       justify-content: space-between;
       gap: 1rem;
-      align-items: flex-start;
-      margin-bottom: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.3rem;
     }}
     .nav-row {{
       display: inline-flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 0.65rem;
-      margin-bottom: 0.2rem;
+      margin-bottom: 0;
     }}
     .nav-link {{
       color: var(--muted);
@@ -2009,19 +2014,10 @@ def render_site_detail_html(site: dict) -> str:
       border-color: #0c6d62;
       color: #f7f4ed;
     }}
-    h1 {{
-      margin: 0;
-      font-size: clamp(1.9rem, 3.0vw, 3rem);
-      letter-spacing: -0.05em;
-      line-height: 0.95;
-    }}
-    .lede {{ color: var(--muted); max-width: 44rem; margin: 0.35rem 0 0; }}
     .meta {{
       color: var(--muted);
       font-size: 0.95rem;
       text-align: right;
-      display: grid;
-      gap: 0.25rem;
     }}
     .layout {{
       display: grid;
@@ -2158,18 +2154,13 @@ def render_site_detail_html(site: dict) -> str:
   <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <div class="nav-row">
-          <span class="nav-link">Overview</span>
-          <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
-          <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
-        </div>
-        <h1>{site['site_label']}</h1>
+      <div class="nav-row">
+        <span class="nav-link">Overview</span>
+        <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
+        <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
       </div>
       <div class="meta">
-        <div><a href="/">Back to all field sites</a></div>
-        <div>{site['network_name']} · {site['client_version'] or 'unknown client version'}</div>
-        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <a href="/">Back to all field sites</a>
       </div>
     </div>
     <div class="layout">
@@ -2264,15 +2255,15 @@ def render_synoptic_html(site: dict) -> str:
       display: flex;
       justify-content: space-between;
       gap: 1rem;
-      align-items: flex-start;
-      margin-bottom: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.3rem;
     }}
     .nav-row {{
       display: inline-flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 0.65rem;
-      margin-bottom: 0.2rem;
+      margin-bottom: 0;
     }}
     .nav-link {{
       color: var(--muted);
@@ -2287,8 +2278,7 @@ def render_synoptic_html(site: dict) -> str:
       text-decoration-thickness: 0.08em;
       font-size: 0.96rem;
     }}
-    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
     .stack {{ display: grid; gap: 1rem; }}
     .panel {{
       background: var(--panel);
@@ -2367,18 +2357,13 @@ def render_synoptic_html(site: dict) -> str:
 <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-          <span class="nav-link">Time series</span>
-          <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
-        </div>
-        <h1>{escape_html(site['site_label'])}</h1>
+      <div class="nav-row">
+        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
+        <span class="nav-link">Time series</span>
+        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
       </div>
       <div class="meta">
-        <div><a href="/">Back to all field sites</a></div>
-        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <a href="/">Back to all field sites</a>
       </div>
     </div>
     <div class="stack">
@@ -2481,16 +2466,16 @@ def render_birdnet_rankings_html(site: dict) -> str:
     .masthead {{
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 1rem;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.3rem;
     }}
     .nav-row {{
       display: inline-flex;
       gap: 0.65rem;
       align-items: center;
       flex-wrap: wrap;
-      margin-bottom: 0.2rem;
+      margin-bottom: 0;
     }}
     .nav-link {{
       color: var(--muted);
@@ -2506,8 +2491,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
       text-decoration-thickness: 0.08em;
       font-size: 0.96rem;
     }}
-    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
     .stack {{ display: grid; gap: 1rem; }}
     .panel {{
       background: var(--panel);
@@ -2597,18 +2581,13 @@ def render_birdnet_rankings_html(site: dict) -> str:
 <body>
   <div class="shell">
     <div class="masthead">
-      <div>
-        <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-          <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
-          <span class="nav-link">BirdNET rankings</span>
-        </div>
-        <h1>{escape_html(site['site_label'])}</h1>
+      <div class="nav-row">
+        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
+        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+        <span class="nav-link">BirdNET rankings</span>
       </div>
       <div class="meta">
-        <div><a href="/">Back to all field sites</a></div>
-        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
-        <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
+        <a href="/">Back to all field sites</a>
       </div>
     </div>
     <div class="stack">
