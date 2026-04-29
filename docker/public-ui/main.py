@@ -811,18 +811,39 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             lookup_wg_ip = row[1]
             cur.execute(
                 """
-                SELECT count(*)::integer,
-                       max(processed_at)
+                SELECT max(processed_at)
                 FROM sensos.public_site_birdnet_detections
                 WHERE wg_ip = %s;
                 """,
                 (lookup_wg_ip,),
             )
-            birdnet_summary = cur.fetchone()
+            latest_birdnet_at = cur.fetchone()[0]
             anchored_evidence_cutoff = window_cutoff_from_latest(
-                birdnet_summary[1] if birdnet_summary else None,
+                latest_birdnet_at,
                 evidence_window,
             )
+            if anchored_evidence_cutoff is None:
+                cur.execute(
+                    """
+                    SELECT count(*)::integer,
+                           max(processed_at)
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s;
+                    """,
+                    (lookup_wg_ip,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT count(*)::integer,
+                           max(processed_at)
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s;
+                    """,
+                    (lookup_wg_ip, anchored_evidence_cutoff),
+                )
+            birdnet_summary = cur.fetchone()
             cur.execute(
                 """
                 SELECT count(*)::integer,
@@ -876,52 +897,113 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 )
             top_birdnet_evidence = cur.fetchall()
             cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       max(top_score) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                GROUP BY top_label
-                ORDER BY detection_count DESC, best_score DESC, top_label ASC
-                LIMIT 10;
-                """,
-                (lookup_wg_ip,),
+                (
+                    """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           max(top_score) AS best_score,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                    GROUP BY top_label
+                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
+                    LIMIT 10;
+                    """
+                    if anchored_evidence_cutoff is None
+                    else """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           max(top_score) AS best_score,
+                           max(processed_at) AS latest_processed_at
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    GROUP BY top_label
+                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
+                    LIMIT 10;
+                    """
+                ),
+                (
+                    (lookup_wg_ip,)
+                    if anchored_evidence_cutoff is None
+                    else (lookup_wg_ip, anchored_evidence_cutoff)
+                ),
             )
             top_birdnet_labels = cur.fetchall()
             cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       avg(top_score) AS average_score,
-                       max(top_score) AS best_score
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                GROUP BY top_label
-                ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
-                LIMIT 10;
-                """,
-                (lookup_wg_ip,),
+                (
+                    """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           avg(top_score) AS average_score,
+                           max(top_score) AS best_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                    GROUP BY top_label
+                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
+                    LIMIT 10;
+                    """
+                    if anchored_evidence_cutoff is None
+                    else """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           avg(top_score) AS average_score,
+                           max(top_score) AS best_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    GROUP BY top_label
+                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
+                    LIMIT 10;
+                    """
+                ),
+                (
+                    (lookup_wg_ip,)
+                    if anchored_evidence_cutoff is None
+                    else (lookup_wg_ip, anchored_evidence_cutoff)
+                ),
             )
             top_birdnet_scores = cur.fetchall()
             cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       avg(top_likely_score) AS average_occupancy_score,
-                       max(top_likely_score) AS best_occupancy_score
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                  AND top_likely_score IS NOT NULL
-                GROUP BY top_label
-                ORDER BY best_occupancy_score DESC,
-                         average_occupancy_score DESC,
-                         detection_count DESC,
-                         top_label ASC
-                LIMIT 10;
-                """,
-                (lookup_wg_ip,),
+                (
+                    """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           avg(top_likely_score) AS average_occupancy_score,
+                           max(top_likely_score) AS best_occupancy_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_likely_score IS NOT NULL
+                    GROUP BY top_label
+                    ORDER BY best_occupancy_score DESC,
+                             average_occupancy_score DESC,
+                             detection_count DESC,
+                             top_label ASC
+                    LIMIT 10;
+                    """
+                    if anchored_evidence_cutoff is None
+                    else """
+                    SELECT top_label,
+                           count(*)::integer AS detection_count,
+                           avg(top_likely_score) AS average_occupancy_score,
+                           max(top_likely_score) AS best_occupancy_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND top_likely_score IS NOT NULL
+                      AND processed_at >= %s
+                    GROUP BY top_label
+                    ORDER BY best_occupancy_score DESC,
+                             average_occupancy_score DESC,
+                             detection_count DESC,
+                             top_label ASC
+                    LIMIT 10;
+                    """
+                ),
+                (
+                    (lookup_wg_ip,)
+                    if anchored_evidence_cutoff is None
+                    else (lookup_wg_ip, anchored_evidence_cutoff)
+                ),
             )
             top_birdnet_occupancy = cur.fetchall()
             cur.execute(
@@ -942,8 +1024,29 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                            top_likely_score
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
-                      AND detection_rank <= 12
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame;
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
+                    LIMIT 12;
+                    """
+                    if has_window_volume and anchored_evidence_cutoff is None
+                    else """
+                    SELECT hostname,
+                           client_version,
+                           source_path,
+                           processed_at,
+                           clip_end_time,
+                           channel_index,
+                           max_score_start_frame,
+                           start_sec,
+                           end_sec,
+                           volume,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
+                    LIMIT 12;
                     """
                     if has_window_volume
                     else """
@@ -962,11 +1065,36 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                            top_likely_score
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
-                      AND detection_rank <= 12
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame;
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
+                    LIMIT 12;
+                    """
+                    if anchored_evidence_cutoff is None
+                    else """
+                    SELECT hostname,
+                           client_version,
+                           source_path,
+                           processed_at,
+                           clip_end_time,
+                           channel_index,
+                           max_score_start_frame,
+                           start_sec,
+                           end_sec,
+                           NULL::double precision AS volume,
+                           top_label,
+                           top_score,
+                           top_likely_score
+                    FROM sensos.public_site_birdnet_detections
+                    WHERE wg_ip = %s
+                      AND processed_at >= %s
+                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
+                    LIMIT 12;
                     """
                 ),
-                (lookup_wg_ip,),
+                (
+                    (lookup_wg_ip,)
+                    if anchored_evidence_cutoff is None
+                    else (lookup_wg_ip, anchored_evidence_cutoff)
+                ),
             )
             detections = cur.fetchall()
             cur.execute(
@@ -3243,8 +3371,12 @@ def render_index_html() -> str:
       const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
       const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
       const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      const scaleX = rect.width / worldWidth;
-      const scaleY = rect.height / worldHeight;
+      // Use one shared scale so imagery keeps true aspect ratio (no X/Y warping).
+      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
+      const drawWidth = worldWidth * scale;
+      const drawHeight = worldHeight * scale;
+      const offsetX = (rect.width - drawWidth) / 2;
+      const offsetY = (rect.height - drawHeight) / 2;
 
       const xStart = Math.floor(topLeft.x / tileSize);
       const xEnd = Math.floor(bottomRight.x / tileSize);
@@ -3253,10 +3385,10 @@ def render_index_html() -> str:
 
       for (let tileX = xStart; tileX <= xEnd; tileX += 1) {{
         for (let tileY = yStart; tileY <= yEnd; tileY += 1) {{
-          const screenX = (tileX * tileSize - topLeft.x) * scaleX;
-          const screenY = (tileY * tileSize - topLeft.y) * scaleY;
-          const screenW = tileSize * scaleX;
-          const screenH = tileSize * scaleY;
+          const screenX = offsetX + (tileX * tileSize - topLeft.x) * scale;
+          const screenY = offsetY + (tileY * tileSize - topLeft.y) * scale;
+          const screenW = tileSize * scale;
+          const screenH = tileSize * scale;
           const tile = requestTile(zoom, tileX, tileY);
 
           if (tile && tile.status === "ready") {{
