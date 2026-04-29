@@ -100,50 +100,92 @@ def _theme_override_css() -> str:
     theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
     if theme != "vscode-dark":
         return ""
+    tokens = _vscode_dark_theme_tokens()
     return """
     :root {
-      --bg: #0f1115;
-      --panel: rgba(30,34,40,0.94);
-      --ink: #d4d4d4;
-      --muted: #a7adb5;
-      --accent: #4ec9b0;
-      --accent-2: #ce9178;
-      --border: rgba(255,255,255,0.16);
-      --shadow: 0 24px 60px rgba(0,0,0,0.52);
-      --marker: #4ec9b0;
-      --marker-active: #d19a66;
+      --bg: %(bg)s;
+      --panel: %(panel)s;
+      --ink: %(ink)s;
+      --muted: %(muted)s;
+      --accent: %(accent)s;
+      --accent-2: %(accent_2)s;
+      --border: %(border)s;
+      --shadow: %(shadow)s;
+      --marker: %(marker)s;
+      --marker-active: %(marker_active)s;
     }
     body {
       background:
-        radial-gradient(circle at top left, rgba(78,201,176,0.12), transparent 28rem),
-        radial-gradient(circle at top right, rgba(209,154,102,0.1), transparent 24rem),
-        linear-gradient(180deg, #0a0c10 0%, var(--bg) 100%);
+        radial-gradient(circle at top left, %(bg_glow_1)s, transparent 28rem),
+        radial-gradient(circle at top right, %(bg_glow_2)s, transparent 24rem),
+        linear-gradient(180deg, %(bg_top)s 0%%, var(--bg) 100%%);
     }
     a, .nav-link-inline { color: var(--accent); }
     .panel { background: var(--panel); }
     select {
-      background: rgba(24,27,33,0.95);
-      border-color: rgba(255,255,255,0.2);
-      color: #d4d4d4;
+      background: %(control_bg)s;
+      border-color: %(control_border)s;
+      color: %(ink)s;
     }
-    .range-pill.active { background: var(--accent); border-color: var(--accent); color: #0a0c10; }
-    .summary-bar { background: linear-gradient(90deg, #4ec9b0, #d19a66); }
-    .metric-pill { background: rgba(78,201,176,0.16); color: #7fe6d2; }
+    .range-pill.active { background: var(--accent); border-color: var(--accent); color: %(bg_top)s; }
+    .summary-bar { background: linear-gradient(90deg, %(accent)s, %(weighted)s); }
+    .metric-pill { background: %(metric_pill_bg)s; color: %(metric_pill_fg)s; }
     .plot-shell {
-      background: linear-gradient(180deg, rgba(17,19,24,0.96), rgba(12,14,18,0.93));
-      border-color: rgba(255,255,255,0.14);
+      background: linear-gradient(180deg, %(plot_bg_top)s, %(plot_bg_bottom)s);
+      border-color: %(plot_border)s;
     }
-    """
+    """ % tokens
+
+
+def _vscode_dark_theme_tokens() -> dict[str, str]:
+    tokens = {
+        "bg": "#0f1115",
+        "panel": "rgba(30,34,40,0.94)",
+        "ink": "#d4d4d4",
+        "muted": "#a7adb5",
+        "accent": "#4ec9b0",
+        "accent_2": "#ce9178",
+        "border": "rgba(255,255,255,0.16)",
+        "shadow": "0 24px 60px rgba(0,0,0,0.52)",
+        "marker": "#4ec9b0",
+        "marker_active": "#d19a66",
+        "bg_glow_1": "rgba(78,201,176,0.12)",
+        "bg_glow_2": "rgba(209,154,102,0.1)",
+        "bg_top": "#0a0c10",
+        "control_bg": "rgba(24,27,33,0.95)",
+        "control_border": "rgba(255,255,255,0.2)",
+        "weighted": "#d19a66",
+        "metric_pill_bg": "rgba(78,201,176,0.16)",
+        "metric_pill_fg": "#7fe6d2",
+        "plot_bg_top": "rgba(17,19,24,0.96)",
+        "plot_bg_bottom": "rgba(12,14,18,0.93)",
+        "plot_border": "rgba(255,255,255,0.14)",
+        "occupancy": "#9cdcfe",
+        "alt": "#b5cea8",
+    }
+    raw = (os.getenv("SENSOS_UI_THEME_VSCODE_DARK_TOKENS", "") or "").strip()
+    if not raw:
+        return tokens
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in tokens and isinstance(value, str) and value.strip():
+                    tokens[key] = value.strip()
+    except Exception:
+        pass
+    return tokens
 
 
 def _plot_color(name: str) -> str:
     theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
     if theme == "vscode-dark":
+        tokens = _vscode_dark_theme_tokens()
         palette = {
-            "accent": "#4ec9b0",      # VS Code-style green/cyan
-            "occupancy": "#9cdcfe",   # VS Code light blue
-            "weighted": "#d19a66",    # VS Code orange
-            "alt": "#b5cea8",         # VS Code soft green
+            "accent": tokens["accent"],
+            "occupancy": tokens["occupancy"],
+            "weighted": tokens["weighted"],
+            "alt": tokens["alt"],
         }
         return palette.get(name, palette["accent"])
     palette = {

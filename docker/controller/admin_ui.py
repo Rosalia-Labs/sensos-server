@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Rosalia Labs LLC
 
 import base64
+import json
 import hashlib
 import hmac
 import html
@@ -45,19 +46,62 @@ def _theme_override_css() -> str:
     theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
     if theme != "vscode-dark":
         return ""
+    tokens = _vscode_dark_theme_tokens()
     return """
     :root {
-      --bg: #1e1e1e;
-      --panel: rgba(37,37,38,0.92);
-      --ink: #d4d4d4;
-      --muted: #9da3a9;
-      --accent: #569cd6;
-      --accent-2: #d7ba7d;
-      --border: rgba(255,255,255,0.14);
+      --bg: %(bg)s;
+      --panel: %(panel)s;
+      --ink: %(ink)s;
+      --muted: %(muted)s;
+      --accent: %(accent)s;
+      --accent-2: %(accent_2)s;
+      --border: %(border)s;
       --danger: #f14c4c;
-      --shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+      --shadow: %(shadow)s;
     }
-    """
+    body {
+      background:
+        radial-gradient(circle at top left, %(bg_glow_1)s, transparent 28rem),
+        radial-gradient(circle at top right, %(bg_glow_2)s, transparent 24rem),
+        linear-gradient(180deg, %(bg_top)s 0%%, var(--bg) 100%%);
+    }
+    a { color: var(--accent); }
+    input, select, textarea {
+      background: %(control_bg)s;
+      border-color: %(control_border)s;
+      color: %(ink)s;
+    }
+    """ % tokens
+
+
+def _vscode_dark_theme_tokens() -> dict[str, str]:
+    tokens = {
+        "bg": "#0f1115",
+        "panel": "rgba(30,34,40,0.94)",
+        "ink": "#d4d4d4",
+        "muted": "#a7adb5",
+        "accent": "#4ec9b0",
+        "accent_2": "#ce9178",
+        "border": "rgba(255,255,255,0.16)",
+        "shadow": "0 24px 60px rgba(0,0,0,0.52)",
+        "bg_glow_1": "rgba(78,201,176,0.12)",
+        "bg_glow_2": "rgba(209,154,102,0.1)",
+        "bg_top": "#0a0c10",
+        "control_bg": "rgba(24,27,33,0.95)",
+        "control_border": "rgba(255,255,255,0.2)",
+    }
+    raw = (os.getenv("SENSOS_UI_THEME_VSCODE_DARK_TOKENS", "") or "").strip()
+    if not raw:
+        return tokens
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in tokens and isinstance(value, str) and value.strip():
+                    tokens[key] = value.strip()
+    except Exception:
+        pass
+    return tokens
 
 
 def issue_session_token() -> str:
