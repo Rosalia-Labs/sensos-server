@@ -1132,6 +1132,7 @@ def create_i2c_readings_table(cur):
         """
         CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
             id BIGSERIAL PRIMARY KEY,
+            peer_id INTEGER NOT NULL REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             wireguard_ip INET NOT NULL,
             hostname TEXT NOT NULL,
             client_version TEXT NOT NULL,
@@ -1149,14 +1150,14 @@ def create_i2c_readings_table(cur):
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_i2c_readings_site_recorded_at
-        ON sensos.i2c_readings (wireguard_ip, recorded_at DESC, id DESC);
+        ON sensos.i2c_readings (peer_id, recorded_at DESC, id DESC);
         """
     )
     cur.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_i2c_readings_dedupe
         ON sensos.i2c_readings (
-            wireguard_ip,
+            peer_id,
             client_reading_id,
             recorded_at,
             device_address,
@@ -1172,6 +1173,7 @@ def create_birdnet_detections_table(cur):
         """
         CREATE TABLE IF NOT EXISTS sensos.birdnet_detections (
             id BIGSERIAL PRIMARY KEY,
+            peer_id INTEGER NOT NULL REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             wireguard_ip INET NOT NULL,
             hostname TEXT NOT NULL,
             client_version TEXT NOT NULL,
@@ -1194,14 +1196,14 @@ def create_birdnet_detections_table(cur):
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
-        ON sensos.birdnet_detections (wireguard_ip, clip_start_time DESC, channel_index, window_index);
+        ON sensos.birdnet_detections (peer_id, clip_start_time DESC, channel_index, window_index);
         """
     )
     cur.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_birdnet_detections_dedupe
         ON sensos.birdnet_detections (
-            wireguard_ip,
+            peer_id,
             channel_index,
             clip_start_time,
             clip_end_time
@@ -1410,11 +1412,13 @@ def format_rfc3339_utc(value: datetime) -> str:
 def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
     received_at = datetime.now(timezone.utc)
     receipt_id = str(uuid4())
+    peer_id = lookup_peer_id(conn, wireguard_ip)
     with conn.transaction():
         with conn.cursor() as cur:
             cur.executemany(
                 """
                 INSERT INTO sensos.i2c_readings (
+                    peer_id,
                     wireguard_ip,
                     hostname,
                     client_version,
@@ -1426,9 +1430,9 @@ def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
                     sensor_type,
                     reading_key,
                     reading_value
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (
-                    wireguard_ip,
+                    peer_id,
                     client_reading_id,
                     recorded_at,
                     device_address,
@@ -1438,6 +1442,7 @@ def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
                 """,
                 [
                     (
+                        peer_id,
                         wireguard_ip,
                         upload.hostname,
                         upload.client_version,
@@ -1465,11 +1470,13 @@ def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
 def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
     received_at = datetime.now(timezone.utc)
     receipt_id = str(uuid4())
+    peer_id = lookup_peer_id(conn, wireguard_ip)
     with conn.transaction():
         with conn.cursor() as cur:
             cur.executemany(
                 """
                 INSERT INTO sensos.birdnet_detections (
+                    peer_id,
                     wireguard_ip,
                     hostname,
                     client_version,
@@ -1486,9 +1493,9 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                     clip_start_time,
                     clip_end_time,
                     clip_path
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (
-                    wireguard_ip,
+                    peer_id,
                     channel_index,
                     clip_start_time,
                     clip_end_time
@@ -1496,6 +1503,7 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                 """,
                 [
                     (
+                        peer_id,
                         wireguard_ip,
                         upload.hostname,
                         upload.client_version,

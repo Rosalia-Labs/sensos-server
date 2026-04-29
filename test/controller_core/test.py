@@ -139,6 +139,29 @@ def test_delete_network_success(mock_get_db):
 
 
 @mock.patch("core.get_db")
+def test_delete_peer_success_relies_on_fk_cascade(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (42,)
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    assert core.delete_peer("10.0.1.7") is True
+    fake_cur.execute.assert_any_call(
+        "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
+        ("10.0.1.7",),
+    )
+    fake_cur.execute.assert_any_call(
+        "DELETE FROM sensos.wireguard_peers WHERE id = %s;",
+        (42,),
+    )
+    executed_sql = [call.args[0] for call in fake_cur.execute.call_args_list]
+    assert all("sensos.i2c_readings" not in sql for sql in executed_sql)
+    assert all("sensos.birdnet_detections" not in sql for sql in executed_sql)
+    mock_conn.commit.assert_called_once()
+
+
+@mock.patch("core.get_db")
 def test_delete_network_not_found(mock_get_db):
     fake_cur = mock.MagicMock()
     fake_cur.fetchone.return_value = None
