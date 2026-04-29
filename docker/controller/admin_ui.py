@@ -416,6 +416,18 @@ def normalize_handshake(text: str) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def is_infra_wg_ip(value: str | None) -> bool:
+    text = (value or "").strip()
+    parts = text.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(part) for part in parts]
+    except ValueError:
+        return False
+    return octets[2] == 0
+
+
 def fetch_dashboard_overview() -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -572,6 +584,8 @@ def fetch_peer_rows(
         for row in rows
     ]
 
+    peers = [row for row in peers if not is_infra_wg_ip(row["wg_ip"])]
+
     sorters = {
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
         "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
@@ -644,6 +658,7 @@ def fetch_runtime_rows() -> list[dict]:
 
 
 def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
+    fetch_limit = max(limit * 5, limit)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -670,10 +685,10 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
                          d.id DESC
                 LIMIT %s;
                 """,
-                (limit,),
+                (fetch_limit,),
             )
             rows = cur.fetchall()
-    return [
+    filtered = [
         {
             "wg_ip": row[0],
             "note": row[1],
@@ -690,7 +705,9 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
             "server_received_at": row[12],
         }
         for row in rows
+        if not is_infra_wg_ip(row[0])
     ]
+    return filtered[:limit]
 
 
 def fetch_birdnet_overview() -> dict:
@@ -714,6 +731,7 @@ def fetch_birdnet_overview() -> dict:
 
 
 def fetch_sensor_rows(limit: int = 100) -> list[dict]:
+    fetch_limit = max(limit * 5, limit)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -735,10 +753,10 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
                 ORDER BY r.server_received_at DESC, r.recorded_at DESC, r.id DESC
                 LIMIT %s;
                 """,
-                (limit,),
+                (fetch_limit,),
             )
             rows = cur.fetchall()
-    return [
+    filtered = [
         {
             "wg_ip": row[0],
             "note": row[1],
@@ -753,7 +771,9 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
             "server_received_at": row[10],
         }
         for row in rows
+        if not is_infra_wg_ip(row[0])
     ]
+    return filtered[:limit]
 
 
 def fetch_sensor_overview() -> dict:
@@ -769,6 +789,101 @@ def fetch_sensor_overview() -> dict:
         "reading_count": reading_count,
         "latest_upload": latest_upload,
     }
+
+
+def summarize_sensor_clients(rows: list[dict]) -> list[dict]:
+    by_client: dict[str, dict] = {}
+    for row in rows:
+        key = row["wg_ip"]
+        entry = by_client.setdefault(
+            key,
+            {
+                "wg_ip": row["wg_ip"],
+                "note": row["note"],
+                "network_name": row["network_name"],
+                "hostname": row["hostname"],
+                "client_version": row["client_version"],
+                "last_recorded_at": row["recorded_at"],
+                "last_received_at": row["server_received_at"],
+                "reading_count": 0,
+                "signals": {},
+            },
+        )
+        entry["reading_count"] += 1
+        if row["recorded_at"] and (
+            entry["last_recorded_at"] is None or row["recorded_at"] > entry["last_recorded_at"]
+        ):
+            entry["last_recorded_at"] = row["recorded_at"]
+        if row["server_received_at"] and (
+            entry["last_received_at"] is None or row["server_received_at"] > entry["last_received_at"]
+        ):
+            entry["last_received_at"] = row["server_received_at"]
+
+        reading_key = str(row.get("reading_key") or "").lower()
+        normalized_signal = None
+        if "temp" in reading_key:
+            normalized_signal = "temp"
+        elif "humid" in reading_key:
+            normalized_signal = "humidity"
+        elif "press" in reading_key:
+            normalized_signal = "pressure"
+        elif "co2" in reading_key:
+            normalized_signal = "co2"
+        if normalized_signal and normalized_signal not in entry["signals"]:
+            entry["signals"][normalized_signal] = float(row["reading_value"])
+
+    items = list(by_client.values())
+    items.sort(
+        key=lambda item: item["last_received_at"]
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return items
+
+
+def summarize_birdnet_clients(rows: list[dict]) -> list[dict]:
+    by_client: dict[str, dict] = {}
+    for row in rows:
+        key = row["wg_ip"]
+        entry = by_client.setdefault(
+            key,
+            {
+                "wg_ip": row["wg_ip"],
+                "note": row["note"],
+                "network_name": row["network_name"],
+                "hostname": row["hostname"],
+                "client_version": row["client_version"],
+                "last_clip_end": row["clip_end_time"],
+                "detection_count": 0,
+                "labels": {},
+            },
+        )
+        entry["detection_count"] += 1
+        if row["clip_end_time"] and (
+            entry["last_clip_end"] is None or row["clip_end_time"] > entry["last_clip_end"]
+        ):
+            entry["last_clip_end"] = row["clip_end_time"]
+        label = (row.get("label") or "").strip()
+        if label:
+            entry["labels"][label] = entry["labels"].get(label, 0) + 1
+
+    items = list(by_client.values())
+    for item in items:
+        if item["labels"]:
+            top_label, top_count = sorted(
+                item["labels"].items(), key=lambda kv: (-kv[1], kv[0])
+            )[0]
+            item["top_label"] = top_label
+            item["top_label_count"] = top_count
+        else:
+            item["top_label"] = "—"
+            item["top_label_count"] = 0
+    items.sort(
+        key=lambda item: item["last_clip_end"]
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return items
 
 
 def stat_card(label: str, value: str, help_text: str) -> str:
@@ -827,17 +942,24 @@ def overview_page(request: Request, flash: str | None = None):
 
     overview = fetch_dashboard_overview()
     networks = fetch_network_rows()[:5]
-    peers = fetch_peer_rows()[:8]
+    all_peers = fetch_peer_rows()
+    peers = all_peers[:8]
+    active_peer_count = sum(1 for row in all_peers if row["is_active"])
+    reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
+    latest_check_in = max(
+        (row["last_check_in"] for row in all_peers if row["last_check_in"] is not None),
+        default=None,
+    )
     body = f"""
 <div class="grid">
   {stat_card("Networks", str(overview["network_count"]), "Defined client network ranges.")}
-  {stat_card("Peers", str(overview["peer_count"]), f'{overview["active_peer_count"]} currently active.')}
-  {stat_card("Reporting clients", str(overview["reporting_clients"]), f'Last check-in {summarize_age(overview["latest_check_in"])}.')}
+  {stat_card("Peers", str(len(all_peers)), f'{active_peer_count} currently active.')}
+  {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
 </div>
 <div class="split">
   <section class="panel">
-    <h2 class="section-title">Recent peers</h2>
+    <h2 class="section-title">Recent client peers</h2>
     <table>
       <thead>
         <tr><th>Client</th><th>Network</th><th>Host</th><th>Last check-in</th></tr>
@@ -1224,19 +1346,46 @@ def birdnet_page(request: Request, flash: str | None = None):
     if redirect:
         return redirect
 
-    overview = fetch_birdnet_overview()
-    rows = fetch_birdnet_rows()
+    rows = fetch_birdnet_rows(limit=600)
+    client_rows = summarize_birdnet_clients(rows)
+    unique_clients = len({row["wg_ip"] for row in rows})
+    unique_sources = len(
+        {row["source_path"] for row in rows if (row.get("source_path") or "").strip() and row.get("source_path") != "—"}
+    )
+    latest_detection = max(
+        (row["last_clip_end"] for row in client_rows if row["last_clip_end"] is not None),
+        default=None,
+    )
+    top_labels: dict[str, int] = {}
+    for row in rows:
+        label = (row.get("label") or "").strip()
+        if label:
+            top_labels[label] = top_labels.get(label, 0) + 1
+    top_label_markup = (
+        "".join(
+            f"<li>{html.escape(label)} <span class='dim'>({count})</span></li>"
+            for label, count in sorted(
+                top_labels.items(), key=lambda kv: (-kv[1], kv[0])
+            )[:8]
+        )
+        or "<li class='dim'>No BirdNET labels available yet.</li>"
+    )
     body = f"""
 <div class="grid">
-  {stat_card("Detections", str(overview["detection_count"]), "BirdNET detections stored on the server.")}
-  {stat_card("Sources", str(overview["source_count"]), "Distinct source files represented in BirdNET detections.")}
-  {stat_card("Latest Detection", summarize_age(overview["latest_detection"]), "Time since the most recent BirdNET clip end time.")}
+  {stat_card("Detections", str(len(rows)), "Recent retained BirdNET detections from client peers (infra peers excluded).")}
+  {stat_card("Reporting clients", str(unique_clients), "Distinct client peers with recent BirdNET detections.")}
+  {stat_card("Sources", str(unique_sources), "Distinct source files represented in recent client BirdNET detections.")}
+  {stat_card("Latest Detection", summarize_age(latest_detection), "Time since the most recent client BirdNET clip end time.")}
 </div>
 <section class="panel">
-  <h2 class="section-title">Recent BirdNET detections</h2>
+  <h2 class="section-title">Top detected species (recent)</h2>
+  <ul class="clean">{top_label_markup}</ul>
+</section>
+<section class="panel">
+  <h2 class="section-title">Client BirdNET activity summary</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Detection</th><th>Clip Window</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1244,11 +1393,11 @@ def birdnet_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td><div>{html.escape(row['label'])}</div><div class='dim'>score {row['score']:.3f} · ch {row['channel_index']} · win {row['window_index']}</div><div class='dim mono'>{html.escape(row['source_path'])}</div></td>"
-          f"<td><div>{html.escape(format_timestamp(row['clip_start_time']))}</div><div class='dim'>{html.escape(format_timestamp(row['clip_end_time']))}</div></td>"
-          f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
+          f"<td>{row['detection_count']}</td>"
+          f"<td><div>{html.escape(row['top_label'])}</div><div class='dim'>{row['top_label_count']} detections</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_clip_end']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_clip_end']))}</div></td>"
           "</tr>"
-          for row in rows
+          for row in client_rows
       ) or '<tr><td colspan="6" class="dim">No BirdNET detections stored yet.</td></tr>'}
     </tbody>
   </table>
@@ -1268,18 +1417,24 @@ def sensors_page(request: Request, flash: str | None = None):
     if redirect:
         return redirect
 
-    overview = fetch_sensor_overview()
-    rows = fetch_sensor_rows()
+    rows = fetch_sensor_rows(limit=800)
+    client_rows = summarize_sensor_clients(rows)
+    reporting_clients = len(client_rows)
+    latest_upload = max(
+        (row["last_received_at"] for row in client_rows if row["last_received_at"] is not None),
+        default=None,
+    )
     body = f"""
 <div class="grid">
-  {stat_card("Readings", str(overview["reading_count"]), "Individual sensor readings received by the server.")}
-  {stat_card("Latest upload", summarize_age(overview["latest_upload"]), "Time since the most recent sensor upload was accepted.")}
+  {stat_card("Readings", str(len(rows)), "Recent sensor readings from client peers (infra peers excluded).")}
+  {stat_card("Reporting clients", str(reporting_clients), "Distinct client peers with recent sensor uploads.")}
+  {stat_card("Latest upload", summarize_age(latest_upload), "Time since the most recent client sensor upload was accepted.")}
 </div>
 <section class="panel">
-  <h2 class="section-title">Recent sensor readings</h2>
+  <h2 class="section-title">Client sensor freshness summary</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Host</th><th>Sensor</th><th>Reading</th><th>Recorded</th><th>Received</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1287,12 +1442,12 @@ def sensors_page(request: Request, flash: str | None = None):
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
-          f"<td><div>{html.escape(row['sensor_type'])}</div><div class='dim'>{html.escape(row['device_address'])}</div></td>"
-          f"<td><div>{html.escape(row['reading_key'])}</div><div class='dim'>{row['reading_value']:.3f}</div></td>"
-          f"<td>{html.escape(format_timestamp(row['recorded_at']))}</td>"
-          f"<td><div>{html.escape(format_timestamp(row['server_received_at']))}</div><div class='dim'>{html.escape(row['client_version'])}</div></td>"
+          f"<td>{row['reading_count']}</td>"
+          f"<td><div class='dim'>temp {row['signals'].get('temp', '—') if row['signals'].get('temp', '—') == '—' else format(row['signals'].get('temp'), '.2f')}</div><div class='dim'>humidity {row['signals'].get('humidity', '—') if row['signals'].get('humidity', '—') == '—' else format(row['signals'].get('humidity'), '.2f')} · pressure {row['signals'].get('pressure', '—') if row['signals'].get('pressure', '—') == '—' else format(row['signals'].get('pressure'), '.2f')} · co2 {row['signals'].get('co2', '—') if row['signals'].get('co2', '—') == '—' else format(row['signals'].get('co2'), '.1f')}</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_received_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_received_at']))}</div></td>"
           "</tr>"
-          for row in rows
+          for row in client_rows
       ) or '<tr><td colspan="7" class="dim">No sensor readings stored yet.</td></tr>'}
     </tbody>
   </table>

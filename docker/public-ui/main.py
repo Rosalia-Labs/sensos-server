@@ -1382,55 +1382,6 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
                     (lookup_wg_ip, sensor_cutoff),
                 )
             sensor_rows = cur.fetchall()
-            cur.execute(
-                """
-                SELECT max(processed_at)
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            latest_birdnet_at = cur.fetchone()[0]
-            birdnet_cutoff = window_cutoff_from_latest(
-                latest_birdnet_at,
-                SYNOPTIC_RANGES[normalized_range],
-            )
-            cur.execute(
-                (
-                    """
-                    SELECT source_path,
-                           processed_at,
-                           start_sec,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    ORDER BY processed_at DESC
-                    LIMIT 12000;
-                    """
-                    if birdnet_cutoff is None
-                    else """
-                    SELECT source_path,
-                           processed_at,
-                           start_sec,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at DESC
-                    LIMIT 12000;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if birdnet_cutoff is None
-                    else (lookup_wg_ip, birdnet_cutoff)
-                ),
-            )
-            birdnet_rows = cur.fetchall()
 
     sensor_series_map: dict[str, list[dict]] = {}
     for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_rows):
@@ -1456,70 +1407,10 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
         reverse=True,
     )[:6]
 
-    activity_buckets: dict[str, float] = {}
-    species_activity: dict[str, float] = {}
-    species_events: dict[str, list[dict]] = {}
-    for (
-        source_path,
-        processed_at,
-        start_sec,
-        top_label,
-        top_score,
-        top_likely_score,
-    ) in reversed(birdnet_rows):
-        event_ts = detection_event_timestamp(source_path, start_sec, processed_at)
-        event_at = format_rfc3339_utc(event_ts)
-        processed = format_rfc3339_utc(processed_at)
-        occupancy = (
-            float(top_likely_score)
-            if top_likely_score is not None
-            else float(top_score)
-        )
-        quality = float(top_score)
-        activity = quality * occupancy
-        bucket = bucket_birdnet_timestamp(event_ts, normalized_range)
-        bucket_key = format_rfc3339_utc(bucket)
-        activity_buckets[bucket_key] = activity_buckets.get(bucket_key, 0.0) + activity
-        species_activity[top_label] = species_activity.get(top_label, 0.0) + activity
-        species_events.setdefault(top_label, []).append(
-            {
-                "event_at": event_at,
-                "processed_at": processed,
-                "activity": activity,
-                "top_score": quality,
-                "occupancy_score": occupancy,
-            }
-        )
-
-    birdnet_activity_series = [
-        {"processed_at": timestamp, "activity": value}
-        for timestamp, value in sorted(activity_buckets.items())
-    ]
-
-    dominant_species = [
-        label
-        for label, _ in sorted(
-            species_activity.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )[:5]
-    ]
-    dominant_species_timelines = [
-        {
-            "label": label,
-            "points": downsample_points(species_events[label], 120),
-            "activity_total": species_activity[label],
-            "event_count": len(species_events[label]),
-        }
-        for label in dominant_species
-        if species_events.get(label)
-    ]
-
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
+    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     site["synoptic_range"] = normalized_range
     site["sensor_series"] = sensor_series
-    site["birdnet_activity_series"] = downsample_points(birdnet_activity_series, 120)
-    site["dominant_species_timelines"] = dominant_species_timelines
     return site
 
 
@@ -1865,11 +1756,30 @@ def render_birdnet_species_html(site: dict) -> str:
         radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.9rem 1rem 1.2rem; }}
-    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:0.75rem; }}
-    h1 {{ margin: 0.25rem 0 0; font-size: clamp(1.9rem, 3.2vw, 3rem); letter-spacing: -0.05em; }}
-    .lede {{ color: var(--muted); max-width: 56rem; margin-top: 0.35rem; }}
-    .meta {{ color: var(--muted); font-size: 0.92rem; }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
+    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:0.5rem; }}
+    .nav-row {{
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 0.2rem;
+    }}
+    .nav-link {{
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.96rem;
+    }}
+    .nav-link strong {{ color: var(--ink); }}
+    .nav-link-inline {{
+      color: #0c6d62;
+      text-decoration: underline;
+      text-underline-offset: 0.16em;
+      text-decoration-thickness: 0.08em;
+      font-size: 0.96rem;
+    }}
+    h1 {{ margin: 0; font-size: clamp(1.9rem, 3.0vw, 3rem); letter-spacing: -0.05em; line-height: 0.95; }}
+    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; display:grid; gap:0.25rem; }}
     .panel {{ background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 0.85rem 0.95rem; }}
     .stack {{ display:grid; gap: 0.8rem; }}
     .summary-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem; }}
@@ -1898,13 +1808,16 @@ def render_birdnet_species_html(site: dict) -> str:
   <div class="shell">
     <div class="masthead">
       <div>
-        <div><a href="{escape_html(site['public_url'])}">← Site page</a> · <a href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a></div>
+        <div class="nav-row">
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
+          <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+          <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
+        </div>
         <h1>{escape_html(site['species_label'])}</h1>
-        <div class="lede">Species-specific BirdNET score series for {escape_html(site['site_label'])}. Time windows are anchored to the latest timestamp for this species.</div>
       </div>
       <div class="meta">
-        <div>{escape_html(site['network_name'])}</div>
-        <div>{escape_html(site['client_version'] or 'unknown client version')}</div>
+        <div><a href="/">Back to all field sites</a></div>
+        <div>{escape_html(site['network_name'])} · {escape_html(site['client_version'] or 'unknown client version')}</div>
         <div>{render_local_time(site['last_check_in'], 'No check-in yet')}</div>
       </div>
     </div>
@@ -2226,7 +2139,7 @@ def render_site_detail_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link" href="/" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
+          <span class="nav-link">Site</span>
           <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
           <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
         </div>
@@ -2316,40 +2229,6 @@ def render_synoptic_html(site: dict) -> str:
             for series in site["sensor_series"]
         )
         or '<div class="empty">No sensor time series are visible yet for this site.</div>'
-    )
-
-    activity_sections = (
-        f"""
-        <section class="chart-card">
-          <div class="chart-head">
-            <div>
-              <strong>Bird Activity Intensity</strong>
-              <div class="dim">Hourly aggregate of quality score × occupancy score across all detections</div>
-            </div>
-          </div>
-          <div class="chart">{render_bar_chart_svg(site['birdnet_activity_series'], 'activity', '#b45309')}</div>
-        </section>
-        """
-        if site["birdnet_activity_series"]
-        else '<div class="empty">No BirdNET activity series are visible yet for this site.</div>'
-    )
-
-    dominant_species_sections = (
-        "".join(
-            f"""
-        <section class="chart-card">
-          <div class="chart-head">
-            <div>
-              <strong><a href="{escape_html(species_href(series['label']))}">{escape_html(series['label'])}</a></strong>
-              <div class="dim">{series['event_count']} events · total activity {series['activity_total']:.2f}</div>
-            </div>
-          </div>
-          <div class="chart">{render_event_timeline_svg(series['points'], 'activity', '#2563eb')}</div>
-        </section>
-        """
-            for series in site["dominant_species_timelines"]
-        )
-        or '<div class="empty">No dominant BirdNET species event series are visible yet for this site.</div>'
     )
 
     return f"""<!doctype html>
@@ -2488,7 +2367,7 @@ def render_synoptic_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link" href="{escape_html(site['public_url'])}" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
           <span class="nav-link">Time series</span>
           <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         </div>
@@ -2507,14 +2386,6 @@ def render_synoptic_html(site: dict) -> str:
           <div class="range-pills">{range_links}</div>
         </div>
         <div class="chart-grid">{sensor_sections}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Bird Activity Intensity</h2>
-        <div class="chart-grid">{activity_sections}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Dominant Species Event Timelines</h2>
-        <div class="chart-grid">{dominant_species_sections}</div>
       </section>
     </div>
   </div>
@@ -2726,7 +2597,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link" href="{escape_html(site['public_url'])}" onclick="if (window.history.length > 1) {{ event.preventDefault(); window.history.back(); }}">← <strong>Previous view</strong></a>
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
           <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
           <span class="nav-link">BirdNET rankings</span>
         </div>
