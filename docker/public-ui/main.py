@@ -272,6 +272,25 @@ def _format_axis_value(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+def _format_sensor_label(sensor_type: str | None, reading_key: str | None) -> str:
+    sensor = (sensor_type or "").strip()
+    key = (reading_key or "").strip().replace("_", " ")
+    key = " ".join(part for part in key.split() if part)
+    if not key:
+        return sensor or "Sensor"
+    if key.lower() == "co2 ppm":
+        key = "CO2 ppm"
+    elif key.lower() == "humidity pct":
+        key = "Humidity %"
+    elif key.lower() == "temperature c":
+        key = "Temperature C"
+    elif key.lower() == "pressure hpa":
+        key = "Pressure hPa"
+    else:
+        key = key.title()
+    return f"{sensor} · {key}" if sensor else key
+
+
 def _format_time_tick(value: str) -> str:
     timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return timestamp.strftime("%m-%d %H:%M")
@@ -859,6 +878,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (
                     """
                     SELECT recorded_at,
+                           sensor_type,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -869,6 +889,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     if sensor_cutoff is None
                     else """
                     SELECT recorded_at,
+                           sensor_type,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -886,28 +907,27 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             )
             sensor_focus_rows = cur.fetchall()
 
-    sensor_focus_series_map: dict[str, list[dict]] = {
-        "temperature": [],
-        "humidity": [],
-        "pressure": [],
-    }
-    for recorded_at, reading_key, reading_value in reversed(sensor_focus_rows):
-        key = str(reading_key or "").strip().lower()
-        metric_name = None
-        if "temp" in key:
-            metric_name = "temperature"
-        elif "humid" in key:
-            metric_name = "humidity"
-        elif "press" in key:
-            metric_name = "pressure"
-        if metric_name is None:
-            continue
-        sensor_focus_series_map[metric_name].append(
+    sensor_series_map: dict[str, list[dict]] = {}
+    for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_focus_rows):
+        label = _format_sensor_label(sensor_type, reading_key)
+        sensor_series_map.setdefault(label, []).append(
             {
                 "recorded_at": format_rfc3339_utc(recorded_at),
                 "value": float(reading_value),
             }
         )
+
+    sensor_plot_series = sorted(
+        (
+            {
+                "label": label,
+                "points": downsample_points(points, 140),
+            }
+            for label, points in sensor_series_map.items()
+            if points
+        ),
+        key=lambda item: (item["label"]),
+    )
 
     return {
         "peer_uuid": row[0],
@@ -1019,11 +1039,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             }
             for reading in readings
         ],
-        "sensor_focus_series": {
-            metric_name: downsample_points(points, 140)
-            for metric_name, points in sensor_focus_series_map.items()
-            if points
-        },
+        "sensor_plot_series": sensor_plot_series,
     }
 
 
@@ -1810,7 +1826,7 @@ def render_birdnet_species_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
           <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
           <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         </div>
@@ -1825,13 +1841,6 @@ def render_birdnet_species_html(site: dict) -> str:
     <div class="stack">
       <section class="panel">
         <div class="range-pills">{range_links}</div>
-      </section>
-      <section class="panel">
-        <div class="summary-grid">
-          <div class="metric"><div class="metric-label">Detections</div><div class="metric-value">{site['species_detection_count']}</div></div>
-          <div class="metric"><div class="metric-label">Latest Detection</div><div class="metric-value">{render_local_time(site['species_latest_at'], 'No detections')}</div></div>
-          <div class="metric"><div class="metric-label">Time Window</div><div class="metric-value">{escape_html(selected_range.title())}</div></div>
-        </div>
       </section>
       <section class="panel">
         <h2 class="section-title">Detection Score Timeline</h2>
@@ -1876,33 +1885,20 @@ def render_site_detail_html(site: dict) -> str:
         width=1040,
         row_height=26,
     )
-    sensor_focus_series = site.get("sensor_focus_series") or {}
-    temp_chart = render_line_chart_svg(
-        sensor_focus_series.get("temperature", []),
-        "value",
-        "#b45309",
-        width=560,
-        height=188,
-    )
-    humidity_chart = render_line_chart_svg(
-        sensor_focus_series.get("humidity", []),
-        "value",
-        "#0c6d62",
-        width=560,
-        height=188,
-    )
-    pressure_chart = render_line_chart_svg(
-        sensor_focus_series.get("pressure", []),
-        "value",
-        "#2563eb",
-        width=560,
-        height=188,
+    sensor_plot_series = site.get("sensor_plot_series") or []
+    sensor_cards_html = "".join(
+        f"""
+            <article class="sensor-focus-card">
+              <h3 class="sensor-focus-title">{escape_html(series['label'])}</h3>
+              <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62', width=560, height=206) or '<div class="empty">No data in this range.</div>'}</div>
+            </article>
+        """
+        for series in sensor_plot_series
     )
 
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
     birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
-    synoptic_range_url = f"{synoptic_url}?range={evidence_range}"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -2047,15 +2043,6 @@ def render_site_detail_html(site: dict) -> str:
       background: rgba(255,255,255,0.62);
       min-width: 0;
     }}
-    .sensor-focus-link {{
-      display: block;
-      color: inherit;
-      text-decoration: none;
-    }}
-    .sensor-focus-link:hover .sensor-focus-card {{
-      border-color: rgba(12,109,98,0.45);
-      box-shadow: 0 8px 18px rgba(12,109,98,0.10);
-    }}
     .sensor-focus-title {{
       margin: 0 0 0.3rem;
       color: var(--muted);
@@ -2064,7 +2051,7 @@ def render_site_detail_html(site: dict) -> str:
       letter-spacing: 0.08em;
     }}
     .sensor-focus-chart {{
-      min-height: 11rem;
+      min-height: 12rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 12px;
       overflow-x: auto;
@@ -2140,7 +2127,7 @@ def render_site_detail_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <span class="nav-link">Site</span>
+          <span class="nav-link">Overview</span>
           <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
           <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
         </div>
@@ -2164,26 +2151,7 @@ def render_site_detail_html(site: dict) -> str:
           <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
           </a>
-          <div class="sensor-focus-grid" style="margin-top:0.6rem;">
-            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
-              <article class="sensor-focus-card">
-                <h3 class="sensor-focus-title">Temperature</h3>
-                <div class="sensor-focus-chart">{temp_chart or '<div class="empty">No temperature data in this range.</div>'}</div>
-              </article>
-            </a>
-            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
-              <article class="sensor-focus-card">
-                <h3 class="sensor-focus-title">Humidity</h3>
-                <div class="sensor-focus-chart">{humidity_chart or '<div class="empty">No humidity data in this range.</div>'}</div>
-              </article>
-            </a>
-            <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
-              <article class="sensor-focus-card">
-                <h3 class="sensor-focus-title">Pressure</h3>
-                <div class="sensor-focus-chart">{pressure_chart or '<div class="empty">No pressure data in this range.</div>'}</div>
-              </article>
-            </a>
-          </div>
+          {"<div class='sensor-focus-grid' style='margin-top:0.6rem;'>" + sensor_cards_html + "</div>" if sensor_cards_html else ""}
         </section>
       </main>
     </div>
@@ -2410,7 +2378,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }
 
     plot_markup = (
-        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62", species_href_map)}</div>'
+        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62", species_href_map, row_height=26)}</div>'
         if plotted_species_count
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
@@ -2598,7 +2566,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
           <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
           <span class="nav-link">BirdNET rankings</span>
         </div>

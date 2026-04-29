@@ -37,6 +37,7 @@ SESSION_SECRET = hashlib.sha256(
     f"sensos-admin-ui:{ADMIN_API_PASSWORD}".encode("utf-8")
 ).digest()
 HANDSHAKE_RE = re.compile(r"(\d+)\s+(\w+)\s+ago")
+IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
 
 def issue_session_token() -> str:
@@ -107,6 +108,7 @@ def render_page(
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
         ("/admin/peers", "Peers"),
+        ("/admin/wireguard", "WireGuard"),
         ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
         ("/admin/runtime", "Runtime"),
@@ -309,11 +311,11 @@ def render_login_page(next_path: str, error: str | None = None) -> HTMLResponse:
 def badge_for_status(value: str | None) -> str:
     text = (value or "unknown").strip().lower()
     cls = "badge"
-    if text in {"ready", "ok", "active", "healthy", "true"}:
+    if text in {"ready", "ok", "active", "healthy", "true", "recent"}:
         cls += " ok"
-    elif text in {"error", "failed", "inactive", "false"}:
+    elif text in {"error", "failed", "inactive", "false", "stale", "never"}:
         cls += " err"
-    elif text in {"starting", "pending", "warning"}:
+    elif text in {"starting", "pending", "warning", "warm"}:
         cls += " warn"
     return f'<span class="{cls}">{html.escape(value or "unknown")}</span>'
 
@@ -414,6 +416,54 @@ def normalize_handshake(text: str) -> str:
         return text
     ts = datetime.now(timezone.utc) - delta
     return ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def parse_handshake_age_seconds(text: str) -> int | None:
+    value = (text or "").strip().lower()
+    if not value:
+        return None
+    if value == "just now":
+        return 0
+    if "never" in value:
+        return None
+    total = 0
+    matches = re.findall(r"(\d+)\s+(second|minute|hour|day)s?", value)
+    if not matches:
+        return None
+    for raw_count, unit in matches:
+        count = int(raw_count)
+        if unit == "second":
+            total += count
+        elif unit == "minute":
+            total += count * 60
+        elif unit == "hour":
+            total += count * 3600
+        elif unit == "day":
+            total += count * 86400
+    return total
+
+
+def extract_allowed_ip(allowed_ips: str) -> str | None:
+    text = (allowed_ips or "").strip()
+    if not text:
+        return None
+    first = text.split(",", 1)[0].strip()
+    match = IPV4_RE.search(first)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def handshake_bucket(last_handshake: str, age_seconds: int | None) -> str:
+    if "never" in (last_handshake or "").lower():
+        return "never"
+    if age_seconds is None:
+        return "unknown"
+    if age_seconds <= 300:
+        return "recent"
+    if age_seconds <= 3600:
+        return "warm"
+    return "stale"
 
 
 def is_infra_wg_ip(value: str | None) -> bool:
@@ -655,6 +705,63 @@ def fetch_runtime_rows() -> list[dict]:
         }
         for row in rows
     ]
+
+
+def fetch_wireguard_peer_health_rows() -> list[dict]:
+    peers = fetch_peer_rows()
+    peer_by_ip = {row["wg_ip"]: row for row in peers}
+
+    runtime_rows = fetch_runtime_rows()
+    health_rows: list[dict] = []
+    for runtime in runtime_rows:
+        for peer in runtime["peers"]:
+            allowed_ip = extract_allowed_ip(peer.get("allowed_ips", ""))
+            if not allowed_ip or is_infra_wg_ip(allowed_ip):
+                continue
+            peer_meta = peer_by_ip.get(allowed_ip, {})
+            last_handshake = peer.get("last_contact", "—")
+            age_seconds = parse_handshake_age_seconds(peer.get("last_contact", ""))
+            bucket = handshake_bucket(last_handshake, age_seconds)
+            health_rows.append(
+                {
+                    "wg_ip": allowed_ip,
+                    "network_name": peer_meta.get("network_name") or runtime["network_name"],
+                    "client_label": peer_meta.get("note") or allowed_ip,
+                    "hostname": peer_meta.get("hostname") or "Unknown",
+                    "is_active": bool(peer_meta.get("is_active", True)),
+                    "last_check_in": peer_meta.get("last_check_in"),
+                    "last_handshake": last_handshake,
+                    "handshake_age_seconds": age_seconds,
+                    "handshake_bucket": bucket,
+                    "endpoint": peer.get("endpoint", "—"),
+                    "allowed_ips": peer.get("allowed_ips", "—"),
+                    "transfer": peer.get("transfer", "—"),
+                    "runtime_component": runtime["component"],
+                    "runtime_status": runtime["status"],
+                    "runtime_updated_at": runtime["updated_at"],
+                }
+            )
+
+    deduped: dict[str, dict] = {}
+    for row in health_rows:
+        existing = deduped.get(row["wg_ip"])
+        if existing is None:
+            deduped[row["wg_ip"]] = row
+            continue
+        prev = existing["handshake_age_seconds"]
+        curr = row["handshake_age_seconds"]
+        if prev is None and curr is not None:
+            deduped[row["wg_ip"]] = row
+        elif prev is not None and curr is not None and curr < prev:
+            deduped[row["wg_ip"]] = row
+    rows = list(deduped.values())
+    rows.sort(
+        key=lambda row: (
+            0 if row["handshake_age_seconds"] is None else 1,
+            row["handshake_age_seconds"] if row["handshake_age_seconds"] is not None else 10**12,
+        )
+    )
+    return rows
 
 
 def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
@@ -1280,6 +1387,62 @@ def peer_delete_action(request: Request, peer_uuid: str):
     message = f"Peer '{wg_ip}' deleted." if ok else f"Peer '{wg_ip}' was not found."
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+    )
+
+
+@router.get("/wireguard", response_class=HTMLResponse)
+def wireguard_page(request: Request, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    rows = fetch_wireguard_peer_health_rows()
+    recent_count = sum(1 for row in rows if row["handshake_bucket"] == "recent")
+    warm_count = sum(1 for row in rows if row["handshake_bucket"] == "warm")
+    stale_count = sum(1 for row in rows if row["handshake_bucket"] == "stale")
+    never_count = sum(1 for row in rows if row["handshake_bucket"] == "never")
+    latest_runtime_update = max(
+        (row["runtime_updated_at"] for row in rows if row["runtime_updated_at"] is not None),
+        default=None,
+    )
+
+    body = f"""
+<div class="grid">
+  {stat_card("Client peers", str(len(rows)), "Operator client peers visible in WireGuard runtime (infra peers excluded).")}
+  {stat_card("Recent handshakes", str(recent_count), "Handshake age <= 5 minutes.")}
+  {stat_card("Warm handshakes", str(warm_count), "Handshake age between 5 minutes and 1 hour.")}
+  {stat_card("Stale / Never", f'{stale_count} / {never_count}', "Stale >1 hour or never observed.")}
+  {stat_card("Runtime updated", summarize_age(latest_runtime_update), "Freshness of WireGuard runtime status snapshot.")}
+</div>
+<section class="panel">
+  <h2 class="section-title">WireGuard peer health</h2>
+  <table>
+    <thead>
+      <tr><th>Client</th><th>Network</th><th>Host</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['client_label'] or '').strip() or '—')}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td>{html.escape(row['hostname'])}</td>"
+          f"<td><div>{badge_for_status(row['handshake_bucket'])}</div><div class='dim'>{html.escape(row['last_handshake'])}</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
+          f"<td class='mono' title='{html.escape(row['endpoint'])}'>{html.escape(truncate_middle(row['endpoint'], 26))}</td>"
+          f"<td class='mono' title='{html.escape(row['transfer'])}'>{html.escape(truncate_middle(row['transfer'], 28))}</td>"
+          f"<td><div>{badge_for_status(row['runtime_status'])}</div><div class='dim'>{html.escape(row['runtime_component'])}</div></td>"
+          "</tr>"
+          for row in rows
+      ) or '<tr><td colspan="8" class="dim">No WireGuard peer runtime data yet.</td></tr>'}
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="WireGuard",
+        body=body,
+        current_path="/admin/wireguard",
+        flash=flash,
     )
 
 
