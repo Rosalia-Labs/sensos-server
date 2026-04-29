@@ -1680,6 +1680,7 @@ def fetch_site_birdnet_species(
     site["species_range_window"] = range_window
     site["birdnet_species_url"] = birdnet_species_url(site["peer_uuid"], label, normalized_range)
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["species_score_series"] = downsample_points(score_points, 180)
     site["species_occupancy_series"] = downsample_points(occupancy_points, 180)
     site["species_weighted_series"] = downsample_points(weighted_points, 180)
@@ -1881,21 +1882,21 @@ def render_site_detail_html(site: dict) -> str:
         "value",
         "#b45309",
         width=560,
-        height=172,
+        height=188,
     )
     humidity_chart = render_line_chart_svg(
         sensor_focus_series.get("humidity", []),
         "value",
         "#0c6d62",
         width=560,
-        height=172,
+        height=188,
     )
     pressure_chart = render_line_chart_svg(
         sensor_focus_series.get("pressure", []),
         "value",
         "#2563eb",
         width=560,
-        height=172,
+        height=188,
     )
 
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
@@ -2063,7 +2064,7 @@ def render_site_detail_html(site: dict) -> str:
       letter-spacing: 0.08em;
     }}
     .sensor-focus-chart {{
-      min-height: 10.25rem;
+      min-height: 11rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 12px;
       overflow-x: auto;
