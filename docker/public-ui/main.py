@@ -113,7 +113,40 @@ def _theme_override_css() -> str:
       --marker: #569cd6;
       --marker-active: #d7ba7d;
     }
+    body {
+      background:
+        radial-gradient(circle at top left, rgba(86,156,214,0.14), transparent 28rem),
+        radial-gradient(circle at top right, rgba(197,134,192,0.12), transparent 24rem),
+        linear-gradient(180deg, #111315 0%, var(--bg) 100%);
+    }
+    a, .nav-link-inline { color: var(--accent); }
+    .range-pill.active { background: var(--accent); border-color: var(--accent); color: #111315; }
+    .summary-bar { background: linear-gradient(90deg, #569cd6, #4ec9b0); }
+    .metric-pill { background: rgba(86,156,214,0.2); color: #9cdcfe; }
+    .plot-shell {
+      background: linear-gradient(180deg, rgba(30,30,30,0.95), rgba(24,24,24,0.9));
+      border-color: rgba(255,255,255,0.12);
+    }
     """
+
+
+def _plot_color(name: str) -> str:
+    theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
+    if theme == "vscode-dark":
+        palette = {
+            "accent": "#569cd6",      # VS Code blue
+            "occupancy": "#c586c0",   # VS Code purple
+            "weighted": "#dcdcaa",    # VS Code yellow
+            "alt": "#4ec9b0",         # VS Code cyan
+        }
+        return palette.get(name, palette["accent"])
+    palette = {
+        "accent": "#0c6d62",
+        "occupancy": "#2563eb",
+        "weighted": "#b45309",
+        "alt": "#1d8b78",
+    }
+    return palette.get(name, palette["accent"])
 
 
 def current_version() -> str:
@@ -618,7 +651,7 @@ def render_horizontal_lollipop_svg(
         if href:
             label_markup = (
                 f'<a href="{escape_html(href)}" target="_self" rel="noopener">'
-                f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(12,109,98,0.95)" text-decoration="underline">{label_text}</text>'
+                f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="{_plot_color("accent")}" text-decoration="underline">{label_text}</text>'
                 f"</a>"
             )
         parts.append(label_markup)
@@ -1778,17 +1811,17 @@ def render_birdnet_species_html(site: dict) -> str:
         )
     )
     score_chart = (
-        render_event_timeline_svg(site["species_score_series"], "value", "#0c6d62")
+        render_event_timeline_svg(site["species_score_series"], "value", _plot_color("accent"))
         if site["species_score_series"]
         else ""
     )
     occupancy_chart = (
-        render_line_chart_svg(site["species_occupancy_series"], "value", "#2563eb")
+        render_line_chart_svg(site["species_occupancy_series"], "value", _plot_color("occupancy"))
         if site["species_occupancy_series"]
         else ""
     )
     weighted_chart = (
-        render_bar_chart_svg(site["species_weighted_series"], "activity", "#b45309")
+        render_bar_chart_svg(site["species_weighted_series"], "activity", _plot_color("weighted"))
         if site["species_weighted_series"]
         else ""
     )
@@ -1932,7 +1965,7 @@ def render_site_detail_html(site: dict) -> str:
     evidence_chart = render_horizontal_lollipop_svg(
         site["top_birdnet_evidence"],
         "evidence_weight",
-        "#0c6d62",
+        _plot_color("accent"),
         None,
         width=1040,
         row_height=26,
@@ -1945,7 +1978,7 @@ def render_site_detail_html(site: dict) -> str:
             <article class="sensor-focus-card">
               <h3 class="sensor-focus-title">{escape_html(series['label'])}</h3>
               <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
-                <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62', width=560, height=186) or '<div class="empty">No data in this range.</div>'}</div>
+                <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', _plot_color("accent"), width=560, height=186) or '<div class="empty">No data in this range.</div>'}</div>
               </a>
             </article>
         """
@@ -2239,7 +2272,7 @@ def render_synoptic_html(site: dict) -> str:
               <div class="dim">latest {series['latest_value']:.3f} at {render_local_time(series['latest_at'])}</div>
             </div>
           </div>
-          <div class="chart">{render_line_chart_svg(series['points'], 'value', '#0c6d62')}</div>
+          <div class="chart">{render_line_chart_svg(series['points'], 'value', _plot_color("accent"))}</div>
         </section>
         """
             for series in site["sensor_series"]
@@ -2420,7 +2453,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }
 
     plot_markup = (
-        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, "#0c6d62", species_href_map, row_height=26)}</div>'
+        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, _plot_color("accent"), species_href_map, row_height=26)}</div>'
         if plotted_species_count
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
@@ -2527,17 +2560,9 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     .controls {{
       display: grid;
-      grid-template-columns: minmax(480px, 2.3fr) minmax(220px, 1fr);
-      gap: 0.8rem;
-      align-items: end;
-    }}
-    label {{
-      display: grid;
-      gap: 0.35rem;
-      font-size: 0.85rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      grid-template-columns: minmax(340px, 2.3fr) minmax(180px, 1fr);
+      gap: 0.7rem;
+      align-items: center;
     }}
     select {{
       width: 100%;
@@ -2549,11 +2574,19 @@ def render_birdnet_rankings_html(site: dict) -> str:
       font: inherit;
     }}
     .section-title {{
-      margin: 0 0 0.6rem;
+      margin: 0;
       font-size: 1rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--muted);
+    }}
+    .section-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 0.6rem;
+      flex-wrap: wrap;
     }}
     .plot-shell {{
       min-height: 16rem;
@@ -2617,19 +2650,13 @@ def render_birdnet_rankings_html(site: dict) -> str:
     </div>
     <div class="stack">
       <section class="panel">
-        <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
-          <label>
-            Sort Criteria
-            <select name="sort" onchange="submitBirdnetRankingControls()">{sort_options}</select>
-          </label>
-          <label>
-            Time Window
-            <select name="range" onchange="submitBirdnetRankingControls()">{range_options}</select>
-          </label>
-        </form>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Rankings</h2>
+        <div class="section-bar">
+          <h2 class="section-title">Rankings</h2>
+          <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
+            <select name="sort" onchange="submitBirdnetRankingControls()" aria-label="Sort criteria">{sort_options}</select>
+            <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
+          </form>
+        </div>
         {plot_markup}
       </section>
       <section class="panel">
