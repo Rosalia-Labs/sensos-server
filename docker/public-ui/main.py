@@ -1533,7 +1533,7 @@ def render_site_status_html(site: dict) -> str:
     .nav-link {{
       color: var(--muted);
       text-decoration: none;
-      font-size: 1.08rem;
+      font-size: 0.96rem;
     }}
     .nav-link-inline {{
       color: #0c6d62;
@@ -2806,13 +2806,13 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     select {{
       width: 100%;
-      padding: 0.58rem 0.82rem;
+      padding: 0.36rem 0.82rem;
       border-radius: 12px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.88);
       color: var(--ink);
       font: inherit;
-      font-size: 1.05rem;
+      font-size: 0.82rem;
       line-height: 1.2;
     }}
     .section-title {{
