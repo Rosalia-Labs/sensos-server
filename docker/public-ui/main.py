@@ -1883,21 +1883,16 @@ def render_site_detail_html(site: dict) -> str:
             ("all", "All Time"),
         )
     )
-    evidence_cards = (
-        "".join(
-            f"""
-        <article class="evidence-card">
-          <div class="evidence-rank">{index}</div>
-          <div>
-            <div><strong><a href="{escape_html(species_href(summary['label']))}">{escape_html(summary['label'])}</a></strong></div>
-            <div class="dim">weighted frequency {summary['evidence_weight']:.2f} · {summary['detection_count']} detections · best {summary['best_score']:.2f}</div>
-            <div class="dim">avg score {summary['average_score']:.2f} · latest {render_local_time(summary['latest_processed_at'])}</div>
-          </div>
-        </article>
-        """
-            for index, summary in enumerate(site["top_birdnet_evidence"], start=1)
-        )
-        or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'
+    evidence_chart = render_horizontal_lollipop_svg(
+        site["top_birdnet_evidence"],
+        "evidence_weight",
+        "#0c6d62",
+        {
+            str(summary["label"]): species_href(summary["label"])
+            for summary in site["top_birdnet_evidence"]
+        },
+        width=1160,
+        row_height=42,
     )
 
     birdnet_cards = (
@@ -2090,10 +2085,17 @@ def render_site_detail_html(site: dict) -> str:
       grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 0.7rem;
     }}
-    .evidence-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.7rem;
+    .evidence-chart-wrap {{
+      min-height: 16rem;
+      border: 1px solid rgba(23,32,29,0.08);
+      border-radius: 16px;
+      overflow-x: auto;
+      background: rgba(255,255,255,0.55);
+    }}
+    .evidence-chart-wrap svg {{
+      width: 100%;
+      min-width: 920px;
+      display: block;
     }}
     .detail-grid {{
       display: grid;
@@ -2106,28 +2108,6 @@ def render_site_detail_html(site: dict) -> str:
       padding: 0.8rem 0.85rem;
       background: rgba(255,255,255,0.72);
       min-width: 0;
-    }}
-    .evidence-card {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.85rem 0.9rem;
-      background: rgba(255,255,255,0.72);
-      display: grid;
-      grid-template-columns: 2.4rem minmax(0, 1fr);
-      gap: 0.8rem;
-      align-items: start;
-    }}
-    .evidence-rank {{
-      width: 2.4rem;
-      height: 2.4rem;
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(12,109,98,0.94), rgba(25,148,135,0.88));
-      color: white;
-      display: grid;
-      place-items: center;
-      font-weight: 700;
-      font-size: 1rem;
-      box-shadow: 0 10px 24px rgba(12,109,98,0.18);
     }}
     .metric-label {{
       color: var(--muted);
@@ -2172,7 +2152,7 @@ def render_site_detail_html(site: dict) -> str:
     }}
     @media (max-width: 980px) {{
       .masthead {{ grid-template-columns: 1fr; }}
-      .summary-strip, .evidence-grid, .detail-grid {{ grid-template-columns: 1fr; }}
+      .summary-strip, .detail-grid {{ grid-template-columns: 1fr; }}
       .meta {{ text-align: left; }}
     }}
   </style>
@@ -2207,7 +2187,7 @@ def render_site_detail_html(site: dict) -> str:
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
-          <div class="evidence-grid">{evidence_cards}</div>
+          <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
         </section>
         <div class="detail-grid">
           <section class="panel">
