@@ -172,10 +172,30 @@ def render_local_time_script() -> str:
       for (const node of scope.querySelectorAll("[data-utc]")) {
         const utcValue = node.getAttribute("data-utc");
         const mode = node.getAttribute("data-time-style") || "full";
-        const options = mode === "tick"
-          ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
-          : { year: "numeric", month: "short", day: "2-digit", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" };
-        node.textContent = formatLocalTimestamp(utcValue, options);
+        if (mode === "tick") {
+          const timeText = formatLocalTimestamp(utcValue, { hour: "2-digit", minute: "2-digit" });
+          const dateText = formatLocalTimestamp(utcValue, { month: "2-digit", day: "2-digit" });
+          if ((node.namespaceURI || "").includes("svg")) {
+            const x = node.getAttribute("x") || "0";
+            while (node.firstChild) node.removeChild(node.firstChild);
+            const ns = "http://www.w3.org/2000/svg";
+            const topLine = document.createElementNS(ns, "tspan");
+            topLine.setAttribute("x", x);
+            topLine.setAttribute("dy", "0");
+            topLine.textContent = timeText;
+            const bottomLine = document.createElementNS(ns, "tspan");
+            bottomLine.setAttribute("x", x);
+            bottomLine.setAttribute("dy", "12");
+            bottomLine.textContent = dateText;
+            node.appendChild(topLine);
+            node.appendChild(bottomLine);
+          } else {
+            node.textContent = `${timeText} ${dateText}`;
+          }
+        } else {
+          const options = { year: "numeric", month: "short", day: "2-digit", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" };
+          node.textContent = formatLocalTimestamp(utcValue, options);
+        }
       }
       const timezoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || "your browser timezone";
       for (const node of scope.querySelectorAll("[data-browser-timezone]")) {
@@ -321,7 +341,7 @@ def _chart_bounds(width: int, height: int) -> dict:
         "left": 58,
         "right": width - 18,
         "top": 14,
-        "bottom": height - 32,
+        "bottom": height - 42,
     }
 
 
@@ -364,11 +384,11 @@ def _render_axes(
             safe_utc = escape_html(str(utc_value))
             fallback = escape_html(_format_time_tick(str(utc_value)))
             parts.append(
-                f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)" data-utc="{safe_utc}" data-time-style="tick">{fallback}</text>'
+                f'<text x="{x:.2f}" y="{bottom + 14}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)" data-utc="{safe_utc}" data-time-style="tick">{fallback}</text>'
             )
         else:
             parts.append(
-                f'<text x="{x:.2f}" y="{bottom + 18}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
+                f'<text x="{x:.2f}" y="{bottom + 14}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
             )
     return "".join(parts)
 
@@ -568,13 +588,16 @@ def render_horizontal_lollipop_svg(
         y = top + row_step * index + row_step / 2
         x = axis_x + (max(value, 0.0) / max_value) * chart_span
         label = str(row.get("label") or row.get("top_label") or "Unknown")
+        label_text = escape_html(label)
         label_markup = (
-            f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{escape_html(label)}</text>'
+            f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(23,32,29,0.88)">{label_text}</text>'
         )
         href = (label_href_map or {}).get(label)
         if href:
             label_markup = (
-                f'<a href="{escape_html(href)}" target="_self" rel="noopener">{label_markup}</a>'
+                f'<a href="{escape_html(href)}" target="_self" rel="noopener">'
+                f'<text x="{axis_x - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="rgba(12,109,98,0.95)" text-decoration="underline">{label_text}</text>'
+                f"</a>"
             )
         parts.append(label_markup)
         parts.append(
@@ -2054,12 +2077,11 @@ def render_site_detail_html(site: dict) -> str:
       min-height: 12rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 12px;
-      overflow-x: auto;
+      overflow: hidden;
       background: rgba(255,255,255,0.5);
     }}
     .sensor-focus-chart svg {{
       width: 100%;
-      min-width: 420px;
       display: block;
     }}
     .detail-grid {{
@@ -2336,7 +2358,7 @@ def render_synoptic_html(site: dict) -> str:
     <div class="masthead">
       <div>
         <div class="nav-row">
-          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Site</a>
+          <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
           <span class="nav-link">Time series</span>
           <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         </div>
