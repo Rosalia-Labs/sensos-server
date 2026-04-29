@@ -842,6 +842,73 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (lookup_wg_ip,),
             )
             readings = cur.fetchall()
+            cur.execute(
+                """
+                SELECT max(recorded_at)
+                FROM sensos.public_site_i2c_recent
+                WHERE wg_ip = %s;
+                """,
+                (lookup_wg_ip,),
+            )
+            latest_sensor_at = cur.fetchone()[0]
+            sensor_cutoff = window_cutoff_from_latest(
+                latest_sensor_at,
+                evidence_window,
+            )
+            cur.execute(
+                (
+                    """
+                    SELECT recorded_at,
+                           reading_key,
+                           reading_value
+                    FROM sensos.public_site_i2c_recent
+                    WHERE wg_ip = %s
+                    ORDER BY recorded_at DESC
+                    LIMIT 12000;
+                    """
+                    if sensor_cutoff is None
+                    else """
+                    SELECT recorded_at,
+                           reading_key,
+                           reading_value
+                    FROM sensos.public_site_i2c_recent
+                    WHERE wg_ip = %s
+                      AND recorded_at >= %s
+                    ORDER BY recorded_at DESC
+                    LIMIT 12000;
+                    """
+                ),
+                (
+                    (lookup_wg_ip,)
+                    if sensor_cutoff is None
+                    else (lookup_wg_ip, sensor_cutoff)
+                ),
+            )
+            sensor_focus_rows = cur.fetchall()
+
+    sensor_focus_series_map: dict[str, list[dict]] = {
+        "temperature": [],
+        "humidity": [],
+        "pressure": [],
+    }
+    for recorded_at, reading_key, reading_value in reversed(sensor_focus_rows):
+        key = str(reading_key or "").strip().lower()
+        metric_name = None
+        if "temp" in key:
+            metric_name = "temperature"
+        elif "humid" in key:
+            metric_name = "humidity"
+        elif "press" in key:
+            metric_name = "pressure"
+        if metric_name is None:
+            continue
+        sensor_focus_series_map[metric_name].append(
+            {
+                "recorded_at": format_rfc3339_utc(recorded_at),
+                "value": float(reading_value),
+            }
+        )
+
     return {
         "peer_uuid": row[0],
         "site_id": row[0],
@@ -952,6 +1019,11 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             }
             for reading in readings
         ],
+        "sensor_focus_series": {
+            metric_name: downsample_points(points, 140)
+            for metric_name, points in sensor_focus_series_map.items()
+            if points
+        },
     }
 
 
@@ -1872,7 +1944,6 @@ def render_birdnet_species_html(site: dict) -> str:
 
 def render_site_detail_html(site: dict) -> str:
     evidence_range = normalize_detail_range(site.get("evidence_range"))
-    species_href = lambda label: birdnet_species_url(site["peer_uuid"], str(label), evidence_range)
     evidence_range_links = "".join(
         f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site["public_url"])}?range={key}">{label}</a>'
         for key, label in (
@@ -1888,8 +1959,30 @@ def render_site_detail_html(site: dict) -> str:
         "evidence_weight",
         "#0c6d62",
         None,
-        width=1080,
-        row_height=32,
+        width=1040,
+        row_height=26,
+    )
+    sensor_focus_series = site.get("sensor_focus_series") or {}
+    temp_chart = render_line_chart_svg(
+        sensor_focus_series.get("temperature", []),
+        "value",
+        "#b45309",
+        width=560,
+        height=140,
+    )
+    humidity_chart = render_line_chart_svg(
+        sensor_focus_series.get("humidity", []),
+        "value",
+        "#0c6d62",
+        width=560,
+        height=140,
+    )
+    pressure_chart = render_line_chart_svg(
+        sensor_focus_series.get("pressure", []),
+        "value",
+        "#2563eb",
+        width=560,
+        height=140,
     )
 
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
@@ -1924,20 +2017,20 @@ def render_site_detail_html(site: dict) -> str:
         linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
     }}
     a {{ color: var(--accent); }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.9rem 1rem 1.25rem; }}
+    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
     .masthead {{
       display: flex;
       justify-content: space-between;
       gap: 1rem;
       align-items: flex-start;
-      margin-bottom: 0.8rem;
+      margin-bottom: 0.5rem;
     }}
     .nav-row {{
       display: inline-flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 0.65rem;
-      margin-bottom: 0.35rem;
+      margin-bottom: 0.2rem;
     }}
     .nav-link {{
       color: var(--muted);
@@ -1979,7 +2072,7 @@ def render_site_detail_html(site: dict) -> str:
     }}
     h1 {{
       margin: 0;
-      font-size: clamp(2rem, 3.2vw, 3.2rem);
+      font-size: clamp(1.9rem, 3.0vw, 3rem);
       letter-spacing: -0.05em;
       line-height: 0.95;
     }}
@@ -1996,14 +2089,14 @@ def render_site_detail_html(site: dict) -> str:
       grid-template-columns: minmax(0, 1fr);
       gap: 1rem;
     }}
-    .stack {{ display: grid; gap: 1rem; align-content: start; }}
+    .stack {{ display: grid; gap: 0.6rem; align-content: start; }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 24px;
+      border-radius: 22px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(16px);
-      padding: 0.9rem;
+      padding: 0.65rem 0.7rem;
     }}
     .summary-strip {{
       display: grid;
@@ -2016,7 +2109,7 @@ def render_site_detail_html(site: dict) -> str:
       color: inherit;
     }}
     .evidence-chart-wrap {{
-      min-height: 12rem;
+      min-height: 10.5rem;
       border: 1px solid rgba(23,32,29,0.08);
       border-radius: 14px;
       overflow-x: auto;
@@ -2024,7 +2117,38 @@ def render_site_detail_html(site: dict) -> str:
     }}
     .evidence-chart-wrap svg {{
       width: 100%;
-      min-width: 860px;
+      min-width: 800px;
+      display: block;
+    }}
+    .sensor-focus-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.6rem;
+    }}
+    .sensor-focus-card {{
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.5rem 0.55rem;
+      background: rgba(255,255,255,0.62);
+      min-width: 0;
+    }}
+    .sensor-focus-title {{
+      margin: 0 0 0.3rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .sensor-focus-chart {{
+      min-height: 8.5rem;
+      border: 1px solid rgba(23,32,29,0.08);
+      border-radius: 12px;
+      overflow-x: auto;
+      background: rgba(255,255,255,0.5);
+    }}
+    .sensor-focus-chart svg {{
+      width: 100%;
+      min-width: 420px;
       display: block;
     }}
     .detail-grid {{
@@ -2082,7 +2206,7 @@ def render_site_detail_html(site: dict) -> str:
     }}
     @media (max-width: 980px) {{
       .masthead {{ grid-template-columns: 1fr; }}
-      .summary-strip, .detail-grid {{ grid-template-columns: 1fr; }}
+      .summary-strip, .detail-grid, .sensor-focus-grid {{ grid-template-columns: 1fr; }}
       .meta {{ text-align: left; }}
     }}
   </style>
@@ -2110,13 +2234,29 @@ def render_site_detail_html(site: dict) -> str:
         <section class="panel">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
             <div>
-              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species By Weighted Frequency</h2>
+              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species</h2>
             </div>
             <div class="range-pills">{evidence_range_links}</div>
           </div>
           <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
           </a>
+        </section>
+        <section class="panel">
+          <div class="sensor-focus-grid">
+            <article class="sensor-focus-card">
+              <h3 class="sensor-focus-title">Temperature</h3>
+              <div class="sensor-focus-chart">{temp_chart or '<div class="empty">No temperature data in this range.</div>'}</div>
+            </article>
+            <article class="sensor-focus-card">
+              <h3 class="sensor-focus-title">Humidity</h3>
+              <div class="sensor-focus-chart">{humidity_chart or '<div class="empty">No humidity data in this range.</div>'}</div>
+            </article>
+            <article class="sensor-focus-card">
+              <h3 class="sensor-focus-title">Pressure</h3>
+              <div class="sensor-focus-chart">{pressure_chart or '<div class="empty">No pressure data in this range.</div>'}</div>
+            </article>
+          </div>
         </section>
       </main>
     </div>
