@@ -89,6 +89,7 @@ Typical use:
 ```sh
 ./uninstall
 ./uninstall --purge-data
+./uninstall --purge-data --purge-images
 ./uninstall --purge-data --no-backup
 ./uninstall --keep-service
 ```
@@ -99,6 +100,7 @@ Behavior:
 - removes the optional `sensos-server` systemd unit by default
 - removes install-state markers used by `./upgrade`
 - `--purge-data` also removes Docker volumes and `/var/lib/sensos-server` for a fresh reinstall
+- `--purge-images` also removes Docker images referenced by this repo's Compose stack
 - `--purge-data` keeps the normal backup behavior unless `--no-backup` is passed
 - preserves the repo checkout, `docker/.env`, and repo backups
 - prompts for confirmation unless `--yes` is passed

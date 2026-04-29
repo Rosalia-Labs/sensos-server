@@ -8,10 +8,12 @@ REPO_ROOT="${SCRIPT_DIR}"
 STOP_SERVER_SCRIPT="${REPO_ROOT}/bin/stop-server"
 PREFLIGHT_SCRIPT="${REPO_ROOT}/setup/00-preflight"
 UNINSTALL_HELPER="${REPO_ROOT}/setup/uninstall"
+DOCKER_DIR="${REPO_ROOT}/docker"
 SYSTEM_INSTALL_STATE_FILE="/var/lib/sensos-server/install-state.env"
 LOCAL_INSTALL_STATE_FILE="${REPO_ROOT}/.sensos-server/install-state.env"
 SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
 PURGE_DATA=0
+PURGE_IMAGES=0
 REMOVE_SERVICE=1
 NO_BACKUP=0
 ASSUME_YES=0
@@ -34,6 +36,7 @@ repo checkout.
 
 Options:
   --purge-data      Remove Docker volumes and host state for a fresh reinstall
+  --purge-images    Remove Docker images used by this repo's Compose stack
   --keep-service    Leave the optional ${SERVICE_NAME} systemd unit installed
   --no-backup       Skip backups when removing Docker volumes
   --yes             Skip the confirmation prompt
@@ -55,6 +58,9 @@ parse_args() {
         case "$1" in
             --purge-data)
                 PURGE_DATA=1
+                ;;
+            --purge-images)
+                PURGE_IMAGES=1
                 ;;
             --keep-service)
                 REMOVE_SERVICE=0
@@ -89,6 +95,9 @@ confirm_uninstall() {
     else
         action_summary="${action_summary}, and remove install-state markers"
     fi
+    if [[ "${PURGE_IMAGES}" == "1" ]]; then
+        action_summary="${action_summary}, and remove Docker images for this stack"
+    fi
 
     if [[ "${ASSUME_YES}" == "1" ]]; then
         return
@@ -119,6 +128,43 @@ stop_stack() {
 
     log "stopping server stack"
     "${STOP_SERVER_SCRIPT}" "${stop_args[@]}"
+}
+
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        printf 'docker compose\n'
+        return
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+        printf 'docker-compose\n'
+        return
+    fi
+    die "Neither 'docker compose' nor 'docker-compose' is available."
+}
+
+purge_stack_images() {
+    local -a compose=()
+    local image_ids
+
+    [[ "${PURGE_IMAGES}" == "1" ]] || return 0
+    [[ -d "${DOCKER_DIR}" ]] || die "missing docker directory: ${DOCKER_DIR}"
+
+    read -r -a compose <<< "$(compose_cmd)"
+
+    image_ids="$(
+        cd "${DOCKER_DIR}" && "${compose[@]}" images -q 2>/dev/null | awk 'NF' | sort -u
+    )"
+
+    if [[ -z "${image_ids}" ]]; then
+        log "no stack images found to remove"
+        return 0
+    fi
+
+    log "removing Docker images for this stack"
+    # shellcheck disable=SC2086
+    if ! docker image rm ${image_ids} >/dev/null; then
+        log "some images could not be removed (possibly shared or in use); continuing"
+    fi
 }
 
 sudo_run() {
@@ -160,6 +206,7 @@ main() {
 
     confirm_uninstall
     stop_stack
+    purge_stack_images
     remove_host_integration
     log "uninstall complete"
 }

@@ -283,6 +283,12 @@ def render_page(
     .split.compact > .panel {{
       padding: 0.9rem 1rem;
     }}
+    .split.networks-split {{
+      align-items: stretch;
+    }}
+    .split.networks-split > .panel {{
+      height: 100%;
+    }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.92rem; }}
     ul.clean {{ margin: 0; padding-left: 1.1rem; }}
     @media (max-width: 900px) {{
@@ -1199,7 +1205,7 @@ def networks_page(request: Request, flash: str | None = None):
 
     rows = fetch_network_rows()
     body = f"""
-<div class="split">
+<div class="split networks-split">
   <section class="panel">
     <h2 class="section-title">Current published endpoints</h2>
     <table>
@@ -1228,7 +1234,6 @@ def networks_page(request: Request, flash: str | None = None):
       <label>Published WireGuard port<input type="number" name="wg_port" min="1" max="65535" placeholder="51820"></label>
       <button type="submit">Create or reconcile network</button>
     </form>
-    <p class="help">This reuses the same network-creation path as the CLI and waits for the generated WireGuard public key when needed.</p>
   </section>
 </div>
 <section class="panel">
