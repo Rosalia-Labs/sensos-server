@@ -139,6 +139,7 @@ Important flags from the source:
 - `--admin-api-password`
 - `--client-api-password`
 - `--public-db-password`
+- `--ui-theme` (`default` or `vscode-dark`; omitted keeps built-in default look)
 - `--api-password` as a legacy shortcut to set both the same way
 - `--expose-containers`
 

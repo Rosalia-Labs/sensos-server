@@ -96,6 +96,26 @@ BIRDNET_RANKING_SORTS = {
 }
 
 
+def _theme_override_css() -> str:
+    theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
+    if theme != "vscode-dark":
+        return ""
+    return """
+    :root {
+      --bg: #1e1e1e;
+      --panel: rgba(37,37,38,0.92);
+      --ink: #d4d4d4;
+      --muted: #9da3a9;
+      --accent: #569cd6;
+      --accent-2: #d7ba7d;
+      --border: rgba(255,255,255,0.14);
+      --shadow: 0 24px 60px rgba(0,0,0,0.4);
+      --marker: #569cd6;
+      --marker-active: #d7ba7d;
+    }
+    """
+
+
 def current_version() -> str:
     base = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
     return f"{base}-{VERSION_SUFFIX}" if VERSION_SUFFIX else base
@@ -1347,6 +1367,7 @@ def render_site_status_html(site: dict) -> str:
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .meta {{ text-align: left; }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
@@ -1854,6 +1875,7 @@ def render_birdnet_species_html(site: dict) -> str:
       .masthead {{ flex-direction: column; }}
       .summary-grid {{ grid-template-columns: 1fr; }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
@@ -2149,6 +2171,7 @@ def render_site_detail_html(site: dict) -> str:
       .summary-strip, .detail-grid, .sensor-focus-grid {{ grid-template-columns: 1fr; }}
       .meta {{ text-align: left; }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
   <body>
@@ -2352,6 +2375,7 @@ def render_synoptic_html(site: dict) -> str:
       border-color: #0c6d62;
       color: #f7f4ed;
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
@@ -2576,6 +2600,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
       .masthead {{ flex-direction: column; }}
       .controls {{ grid-template-columns: 1fr; }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>

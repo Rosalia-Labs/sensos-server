@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import html
+import os
 import re
 import secrets
 import time
@@ -38,6 +39,25 @@ SESSION_SECRET = hashlib.sha256(
 ).digest()
 HANDSHAKE_RE = re.compile(r"(\d+)\s+(\w+)\s+ago")
 IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+
+
+def _theme_override_css() -> str:
+    theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
+    if theme != "vscode-dark":
+        return ""
+    return """
+    :root {
+      --bg: #1e1e1e;
+      --panel: rgba(37,37,38,0.92);
+      --ink: #d4d4d4;
+      --muted: #9da3a9;
+      --accent: #569cd6;
+      --accent-2: #d7ba7d;
+      --border: rgba(255,255,255,0.14);
+      --danger: #f14c4c;
+      --shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+    }
+    """
 
 
 def issue_session_token() -> str:
@@ -226,6 +246,7 @@ def render_page(
       .split {{ grid-template-columns: 1fr; }}
       th:nth-child(5), td:nth-child(5) {{ display: none; }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
@@ -287,6 +308,7 @@ def render_login_page(next_path: str, error: str | None = None) -> HTMLResponse:
       background: rgba(180,35,24,0.08); border: 1px solid rgba(180,35,24,0.18); color: #7a271a;
     }}
     .help {{ color: #5f685f; font-size: 0.92rem; }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
