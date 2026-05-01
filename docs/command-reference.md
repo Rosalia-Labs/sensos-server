@@ -12,23 +12,7 @@ For the current server container orchestration model, see
 
 ## Typical Setup Sequence
 
-Typical order on a newly prepared server host:
-
-1. `./bin/configure-server`
-2. `./bin/start-server`
-3. `./bin/create-network <network-name>`
-4. optional: `./bin/install-service`
-5. optional: `sudo systemctl start sensos-server`
-
-Notes:
-
-- the default path is direct unprivileged use from the repo
-- the systemd service is optional and exists for reboot persistence and uptime
-- this repo is designed to run directly from the checkout owned by the service user
-- the current user must be able to run Docker, usually by being in the `docker` group
-- see [`docs/server-user-setup.md`](server-user-setup.md) for a dedicated host-user bootstrap example
-- on Debian-family systems, install `docker-cli`, `docker.io`,
-  `docker-compose`, and `curl`
+Canonical setup order is documented in the [Getting Started Tutorial](getting-started.md).
 
 ## Optional Host Integration
 

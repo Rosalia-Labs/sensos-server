@@ -4,6 +4,17 @@ This guide is the shortest path to bring up a SensOS server host.
 For full command syntax, flags, and operational details, use the
 [`Command Reference`](command-reference.md).
 
+## Typical Setup Sequence
+
+1. Prepare host packages (admin account)
+2. Create service user and Docker access (admin account)
+3. Clone repo as service user
+4. Run `./bin/configure-server`
+5. Run `./bin/start-server`
+6. Run `./bin/create-network <network-name>`
+7. Enroll clients
+8. Optional: install and start host systemd service
+
 ## Before You Start
 
 - Use a Debian-family host.
@@ -14,8 +25,12 @@ Reference: [Server user setup](server-user-setup.md)
 
 ## 1. Prepare Host Packages (Admin Account)
 
-Install required host packages and Docker prerequisites using the canonical
-notes in [`command-reference.md`](command-reference.md#typical-setup-sequence).
+Install required host packages:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose docker-cli curl git
+```
 
 ## 2. Create Service User And Docker Access (Admin Account)
 
