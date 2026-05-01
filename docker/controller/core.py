@@ -343,6 +343,19 @@ def migrate_0_13_0_reconcile_upload_peer_schema(cur):
         );
         """
     )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_i2c_readings_dedupe_peer_v2
+        ON sensos.i2c_readings (
+            peer_id,
+            client_reading_id,
+            recorded_at,
+            device_address,
+            sensor_type,
+            reading_key
+        );
+        """
+    )
 
     cur.execute(
         """
@@ -396,6 +409,24 @@ def migrate_0_13_0_reconcile_upload_peer_schema(cur):
         );
         """
     )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_birdnet_detections_dedupe_peer_v2
+        ON sensos.birdnet_detections (
+            peer_id,
+            channel_index,
+            clip_start_time,
+            clip_end_time
+        );
+        """
+    )
+
+
+def migrate_0_14_0_reconcile_upload_dedupe_indexes(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_i2c_readings_table(cur)
+    create_birdnet_detections_table(cur)
 
 
 SCHEMA_MIGRATIONS = [
@@ -448,6 +479,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.13.0"),
         name="reconcile upload tables with peer_id foreign keys",
         apply=migrate_0_13_0_reconcile_upload_peer_schema,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.14.0"),
+        name="reconcile upload dedupe indexes for peer-based conflict handling",
+        apply=migrate_0_14_0_reconcile_upload_dedupe_indexes,
     ),
 ]
 
