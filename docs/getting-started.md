@@ -6,13 +6,34 @@ For full command syntax, flags, and operational details, use the
 
 ## Before You Start
 
-- Use a Debian-family host with Docker installed and available to your server user.
-- Clone this repo as the long-lived server runtime checkout.
-- Confirm the account that will operate the server can run Docker commands.
+- Use a Debian-family host.
+- Plan to run SensOS from a dedicated unprivileged service account (for example `sensos`).
+- Keep a separate admin account for host-level `sudo` tasks.
 
 Reference: [Server user setup](server-user-setup.md)
 
-## 1. Configure Server Environment
+## 1. Prepare Host Packages (Admin Account)
+
+Install required host packages and Docker prerequisites using the canonical
+notes in [`command-reference.md`](command-reference.md#typical-setup-sequence).
+
+## 2. Create Service User And Docker Access (Admin Account)
+
+Complete these canonical steps in [Server user setup](server-user-setup.md):
+
+- [Create the user](server-user-setup.md#create-the-user)
+- [Install SSH keys](server-user-setup.md#install-ssh-keys)
+- [Add Docker access](server-user-setup.md#add-docker-access)
+
+Then log in as that service user before continuing.
+
+## 3. Clone Repo As Service User
+
+Use the canonical clone instructions here:
+[Clone the repo as that user](server-user-setup.md#clone-the-repo-as-that-user).
+Run the remaining steps from that checkout as the service user.
+
+## 4. Configure Server Environment
 
 From the repo root:
 
@@ -24,7 +45,7 @@ This writes `docker/.env` (ports, API credentials, dashboard settings).
 
 Reference: [`bin/configure-server`](command-reference.md#binconfigure-server)
 
-## 2. Start The Control Plane
+## 5. Start The Control Plane
 
 ```sh
 ./bin/start-server
@@ -35,7 +56,7 @@ Reference:
 - [`bin/start-server`](command-reference.md#binstart-server)
 - [Container control plane](container-control-plane.md)
 
-## 3. Create A Client Network
+## 6. Create A Client Network
 
 ```sh
 ./bin/create-network <network-name>
@@ -48,9 +69,9 @@ Reference:
 - [`bin/create-network`](command-reference.md#bincreate-network)
 - [Networking](networking.md)
 
-## 4. Enroll Clients
+## 7. Enroll Clients
 
-Use the server endpoint details from step 3 on client devices with
+Use the server endpoint details from step 6 on client devices with
 `config-network` in `sensos-client`.
 
 Reference:
@@ -59,7 +80,7 @@ Reference:
 - [`bin/client-overview`](command-reference.md#binclient-overview)
 - [`bin/network-overview`](command-reference.md#binnetwork-overview)
 
-## 5. Optional Host Integration
+## 8. Optional Host Integration (Admin Account)
 
 For reboot-persistent systemd management on the host:
 

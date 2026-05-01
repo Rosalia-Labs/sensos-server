@@ -68,13 +68,8 @@ git clone https://github.com/Rosalia-Labs/sensos-server.git
 
 ## Next Steps
 
-Run the normal setup flow from the checkout owned by that user:
-
-```sh
-cd /home/sensos/sensos-server
-./bin/configure-server
-./bin/start-server
-```
+After the service-user bootstrap is complete, continue with the canonical
+bring-up sequence in [Getting started](getting-started.md).
 
 If you also want the optional systemd service, run it from your normal admin
 SSH login with `sudo` against the service user's checkout:
