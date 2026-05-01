@@ -1,13 +1,16 @@
 # sensos-server
 Server side configuration scripts
 
-Docs:
+Read this first:
 
-- [Backup automation](docs/backup-automation.md)
-- [Container control plane](docs/container-control-plane.md)
-- [Networking](docs/networking.md)
-- [QEMU testing](docs/qemu-testing.md)
-- [Runtime model](docs/runtime-model.md)
+- [Getting started and command guide](docs/getting-started.md)
+
+Other docs:
+
 - [Server user setup](docs/server-user-setup.md)
-- [User commands](docs/user-commands.md)
+- [Networking](docs/networking.md)
+- [Container control plane](docs/container-control-plane.md)
+- [QEMU testing](docs/qemu-testing.md)
+- [Backup automation](docs/backup-automation.md)
+- [Runtime model](docs/runtime-model.md)
 - [Versioning](docs/versioning.md)
