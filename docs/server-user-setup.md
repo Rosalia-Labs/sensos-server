@@ -86,4 +86,6 @@ sudo systemctl start sensos-server
 
 `bin/install-service` will install the unit against that checkout and use the
 checkout owner as the default `User=` for the service. The normal repo checkout
-and runtime should still stay owned by the service user.
+and runtime should still stay owned by the service user. If the privileged
+setup step fails, `bin/install-service` now prints a hint to rerun it from a
+privileged account.

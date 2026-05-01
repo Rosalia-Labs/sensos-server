@@ -49,6 +49,7 @@ Behavior:
 - infers the service user from the repo checkout owner unless `SENSOS_SERVICE_USER` is set
 - runs the setup pipeline with a privileged path
 - installs and enables the `sensos-server` systemd unit
+- prints a clear hint to rerun from a privileged account if the privileged step fails
 - leaves the runtime code in the repo instead of deploying a separate overlay
 - is not required for normal manual operation
 
@@ -267,6 +268,26 @@ Behavior:
 - can rebuild containers before start
 - starts the DB-backed control-plane stack, where the database coordinates
   container WireGuard reconciliation
+
+### `bin/server-logs`
+
+Shows Docker Compose logs for this repo's server stack from the repo-owned
+`docker/` directory.
+
+Typical use:
+
+```sh
+./bin/server-logs
+./bin/server-logs --follow
+./bin/server-logs --tail 200
+./bin/server-logs --follow api
+```
+
+Behavior:
+
+- automatically runs from the repo's `docker/` directory
+- prefers `docker compose`, falling back to `docker-compose` when needed
+- forwards all arguments directly to `docker compose logs`
 
 ### `bin/server-overview`
 
