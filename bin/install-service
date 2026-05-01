@@ -18,6 +18,11 @@ die() {
     exit 1
 }
 
+die_privilege_hint() {
+    die "$1
+[bin/install-service] HINT: run this command from a privileged account (root or a user with sudo access)."
+}
+
 print_usage() {
     cat <<EOF
 Usage: ${SCRIPT_PATH} [options]
@@ -82,13 +87,17 @@ main() {
     log "installing optional systemd service for ${REPO_ROOT}"
 
     if [[ "${EUID}" -eq 0 ]]; then
-        env \
+        if ! env \
             "SENSOS_REPO_ROOT=${REPO_ROOT}" \
             "SENSOS_SERVICE_NAME=${SERVICE_NAME}" \
             "SENSOS_SERVICE_USER=${service_user}" \
-            "${SETUP_SCRIPT}"
+            "${SETUP_SCRIPT}"; then
+            die_privilege_hint "service install failed while running as root"
+        fi
     else
-        sudo_run "${SETUP_SCRIPT}"
+        if ! sudo_run "${SETUP_SCRIPT}"; then
+            die_privilege_hint "service install failed; sudo could not complete setup"
+        fi
     fi
 
     log "service install complete"

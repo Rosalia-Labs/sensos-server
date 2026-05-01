@@ -70,12 +70,6 @@ You set the server-side passwords with:
 ./bin/configure-server --client-api-password '<client-password>' --admin-api-password '<admin-password>'
 ```
 
-Or, for a temporary shared-password setup:
-
-```sh
-./bin/configure-server --api-password '<password>'
-```
-
 During enrollment, the client operator must enter the client API password when
 `config-network` prompts for it.
 

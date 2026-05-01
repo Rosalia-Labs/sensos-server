@@ -13,7 +13,6 @@ DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_ADMIN_API_PASSWORD="sensos-admin"
 DEFAULT_CLIENT_API_PASSWORD="sensos-client"
 DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
-DEFAULT_EXPOSE_CONTAINERS="false"
 DEFAULT_UI_THEME=""
 
 # Print help message
@@ -29,8 +28,6 @@ Options:
   --client-api-password PWD Set client API password (default: $DEFAULT_CLIENT_API_PASSWORD)
   --public-db-password PWD Set read-only public dashboard DB password (default: $DEFAULT_PUBLIC_DB_PASSWORD)
   --ui-theme THEME         Optional UI theme override: default | vscode-dark (omitted: built-in default)
-  --api-password PWD       Legacy shortcut: set both admin and client API passwords
-  --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
   -h, --help               Show this help message
 EOF
     exit 0
@@ -67,15 +64,6 @@ while [[ $# -gt 0 ]]; do
         UI_THEME="$2"
         shift 2
         ;;
-    --api-password)
-        ADMIN_API_PASSWORD="$2"
-        CLIENT_API_PASSWORD="$2"
-        shift 2
-        ;;
-    --expose-containers)
-        EXPOSE_CONTAINERS="true"
-        shift
-        ;;
     -h | --help)
         print_help
         ;;
@@ -96,7 +84,6 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
 ADMIN_API_PASSWORD=${ADMIN_API_PASSWORD:-$DEFAULT_ADMIN_API_PASSWORD}
 CLIENT_API_PASSWORD=${CLIENT_API_PASSWORD:-$DEFAULT_CLIENT_API_PASSWORD}
 PUBLIC_DB_PASSWORD=${PUBLIC_DB_PASSWORD:-$DEFAULT_PUBLIC_DB_PASSWORD}
-EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
 UI_THEME=${UI_THEME:-$DEFAULT_UI_THEME}
 
 if [[ -n "${UI_THEME}" && "${UI_THEME}" != "default" && "${UI_THEME}" != "vscode-dark" ]]; then
@@ -119,7 +106,6 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 ADMIN_API_PASSWORD=$ADMIN_API_PASSWORD
 CLIENT_API_PASSWORD=$CLIENT_API_PASSWORD
 PUBLIC_DB_PASSWORD=$PUBLIC_DB_PASSWORD
-EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS
 EOF
 
 if [[ -n "${UI_THEME}" ]]; then

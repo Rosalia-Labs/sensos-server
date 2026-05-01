@@ -142,8 +142,6 @@ Important flags from the source:
 - `--client-api-password`
 - `--public-db-password`
 - `--ui-theme` (`default` or `vscode-dark`; omitted keeps built-in default look)
-- `--api-password` as a legacy shortcut to set both the same way
-- `--expose-containers`
 
 Typical use:
 
@@ -151,7 +149,6 @@ Typical use:
 ./bin/configure-server
 ./bin/configure-server --api-port 8765 --admin-api-password '<admin-password>' --client-api-password '<client-password>'
 ./bin/configure-server --public-ui-port 8780 --public-db-password '<public-db-password>'
-./bin/configure-server --api-port 8765 --api-password '<shared-password>'
 ```
 
 Behavior:
