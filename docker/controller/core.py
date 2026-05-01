@@ -34,14 +34,13 @@ DATABASE_URL = (
     f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
 )
 
-LEGACY_API_PASSWORD = os.getenv("API_PASSWORD")
-ADMIN_API_PASSWORD = os.getenv("ADMIN_API_PASSWORD", LEGACY_API_PASSWORD or "")
-CLIENT_API_PASSWORD = os.getenv("CLIENT_API_PASSWORD", LEGACY_API_PASSWORD or "")
+ADMIN_API_PASSWORD = os.getenv("ADMIN_API_PASSWORD", "")
+CLIENT_API_PASSWORD = os.getenv("CLIENT_API_PASSWORD", "")
 PUBLIC_DB_PASSWORD = os.getenv("PUBLIC_DB_PASSWORD", "sensos-public")
 if not ADMIN_API_PASSWORD:
-    raise ValueError("ADMIN_API_PASSWORD or API_PASSWORD must be set. Exiting.")
+    raise ValueError("ADMIN_API_PASSWORD must be set. Exiting.")
 if not CLIENT_API_PASSWORD:
-    raise ValueError("CLIENT_API_PASSWORD or API_PASSWORD must be set. Exiting.")
+    raise ValueError("CLIENT_API_PASSWORD must be set. Exiting.")
 
 VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
 VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")

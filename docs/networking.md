@@ -61,7 +61,6 @@ settings in this repo. They are chosen per network when you run
 The server supports separate HTTP Basic auth passwords for clients and admins:
 
 - server source of truth: `CLIENT_API_PASSWORD` and `ADMIN_API_PASSWORD` in `docker/.env`
-- backward-compatibility fallback: `API_PASSWORD` still sets both when the split vars are absent
 - client local copy: `/sensos/keys/api_password`
 
 You set the server-side passwords with:

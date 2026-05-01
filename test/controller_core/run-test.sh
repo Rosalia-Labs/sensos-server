@@ -20,7 +20,8 @@ docker run --rm -it \
     -v "$WORKDIR":/app \
     -w /app \
     -e POSTGRES_PASSWORD=dummy \
-    -e API_PASSWORD=dummy \
+    -e ADMIN_API_PASSWORD=dummy \
+    -e CLIENT_API_PASSWORD=dummy \
     debian:bookworm-slim \
     bash -c "
       apt-get update && \
