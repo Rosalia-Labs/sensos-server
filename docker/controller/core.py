@@ -285,6 +285,119 @@ def migrate_0_12_1_birdnet_volume_schema(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_13_0_reconcile_upload_peer_schema(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+
+    cur.execute(
+        """
+        ALTER TABLE sensos.i2c_readings
+        ADD COLUMN IF NOT EXISTS peer_id INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.i2c_readings r
+        SET peer_id = p.id
+        FROM sensos.wireguard_peers p
+        WHERE r.peer_id IS NULL
+          AND p.wg_ip = r.wireguard_ip;
+        """
+    )
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'i2c_readings_peer_id_fkey'
+                  AND conrelid = 'sensos.i2c_readings'::regclass
+            ) THEN
+                ALTER TABLE sensos.i2c_readings
+                ADD CONSTRAINT i2c_readings_peer_id_fkey
+                FOREIGN KEY (peer_id)
+                REFERENCES sensos.wireguard_peers(id)
+                ON DELETE CASCADE;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_i2c_readings_site_recorded_at
+        ON sensos.i2c_readings (peer_id, recorded_at DESC, id DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_i2c_readings_dedupe
+        ON sensos.i2c_readings (
+            peer_id,
+            client_reading_id,
+            recorded_at,
+            device_address,
+            sensor_type,
+            reading_key
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS peer_id INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.birdnet_detections d
+        SET peer_id = p.id
+        FROM sensos.wireguard_peers p
+        WHERE d.peer_id IS NULL
+          AND p.wg_ip = d.wireguard_ip;
+        """
+    )
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'birdnet_detections_peer_id_fkey'
+                  AND conrelid = 'sensos.birdnet_detections'::regclass
+            ) THEN
+                ALTER TABLE sensos.birdnet_detections
+                ADD CONSTRAINT birdnet_detections_peer_id_fkey
+                FOREIGN KEY (peer_id)
+                REFERENCES sensos.wireguard_peers(id)
+                ON DELETE CASCADE;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
+        ON sensos.birdnet_detections (peer_id, clip_start_time DESC, channel_index, window_index);
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_birdnet_detections_dedupe
+        ON sensos.birdnet_detections (
+            peer_id,
+            channel_index,
+            clip_start_time,
+            clip_end_time
+        );
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -330,6 +443,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.12.1"),
         name="add birdnet window volume to detections and public views",
         apply=migrate_0_12_1_birdnet_volume_schema,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.13.0"),
+        name="reconcile upload tables with peer_id foreign keys",
+        apply=migrate_0_13_0_reconcile_upload_peer_schema,
     ),
 ]
 
