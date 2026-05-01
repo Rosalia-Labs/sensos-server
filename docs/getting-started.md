@@ -7,13 +7,14 @@ For full command syntax, flags, and operational details, use the
 ## Typical Setup Sequence
 
 1. Prepare host packages (admin account)
-2. Create service user and Docker access (admin account)
+2. Create service user (admin account)
 3. Clone repo as service user
-4. Run `./bin/configure-server`
-5. Run `./bin/start-server`
-6. Run `./bin/create-network <network-name>`
-7. Enroll clients
-8. Optional: install and start host systemd service
+4. Add Docker access for the service user (admin account)
+5. Run `./bin/configure-server`
+6. Run `./bin/start-server`
+7. Run `./bin/create-network <network-name>`
+8. Enroll clients
+9. Optional: install and start host systemd service
 
 ## Before You Start
 
@@ -32,15 +33,14 @@ sudo apt-get update
 sudo apt-get install -y docker.io docker-compose docker-cli curl git
 ```
 
-## 2. Create Service User And Docker Access (Admin Account)
+## 2. Create Service User (Admin Account)
 
-Complete these canonical steps in [Server user setup](server-user-setup.md):
+Complete this canonical step in [Server user setup](server-user-setup.md):
 
 - [Create the user](server-user-setup.md#create-the-user)
 - [Install SSH keys](server-user-setup.md#install-ssh-keys)
-- [Add Docker access](server-user-setup.md#add-docker-access)
 
-Then log in as that service user before continuing.
+Then continue to clone the repo as that service user.
 
 ## 3. Clone Repo As Service User
 
@@ -48,7 +48,15 @@ Use the canonical clone instructions here:
 [Clone the repo as that user](server-user-setup.md#clone-the-repo-as-that-user).
 Run the remaining steps from that checkout as the service user.
 
-## 4. Configure Server Environment
+## 4. Add Docker Access (Admin Account)
+
+Complete the canonical step in [Server user setup](server-user-setup.md):
+
+- [Add Docker access](server-user-setup.md#add-docker-access)
+
+After that, log out and back in as the service user so group membership is active.
+
+## 5. Configure Server Environment
 
 From the repo root:
 
@@ -60,7 +68,7 @@ This writes `docker/.env` (ports, API credentials, dashboard settings).
 
 Reference: [`bin/configure-server`](command-reference.md#binconfigure-server)
 
-## 5. Start The Control Plane
+## 6. Start The Control Plane
 
 ```sh
 ./bin/start-server
@@ -71,7 +79,7 @@ Reference:
 - [`bin/start-server`](command-reference.md#binstart-server)
 - [Container control plane](container-control-plane.md)
 
-## 6. Create A Client Network
+## 7. Create A Client Network
 
 ```sh
 ./bin/create-network <network-name>
@@ -84,9 +92,9 @@ Reference:
 - [`bin/create-network`](command-reference.md#bincreate-network)
 - [Networking](networking.md)
 
-## 7. Enroll Clients
+## 8. Enroll Clients
 
-Use the server endpoint details from step 6 on client devices with
+Use the server endpoint details from step 7 on client devices with
 `config-network` in `sensos-client`.
 
 Reference:
@@ -95,7 +103,7 @@ Reference:
 - [`bin/client-overview`](command-reference.md#binclient-overview)
 - [`bin/network-overview`](command-reference.md#binnetwork-overview)
 
-## 8. Optional Host Integration (Admin Account)
+## 9. Optional Host Integration (Admin Account)
 
 For reboot-persistent systemd management on the host:
 
