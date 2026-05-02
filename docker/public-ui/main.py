@@ -3375,8 +3375,9 @@ def render_index_html() -> str:
   </div>
   <script>
     const worldBounds = {{ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }};
-    const minLonSpan = 1.4;
-    const minLatSpan = 1.0;
+    // Allow deeper manual zoom while still enforcing a finite floor.
+    const minLonSpan = 0.02;
+    const minLatSpan = 0.015;
     const tileSize = 256;
     const maxTileZoom = 17;
     const satelliteTileTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
@@ -3662,13 +3663,22 @@ def render_index_html() -> str:
       mapPopover.innerHTML = "";
     }}
 
+    function sitePopupIdentifier(site) {{
+      const network = String(site?.network_name || "").trim();
+      const note = String(site?.note || "").trim();
+      const hostname = String(site?.hostname || "").trim();
+      const ip = String(site?.wg_ip || "").trim();
+      const suffix = note || hostname || ip || "unknown";
+      if (network) return `${{network}} + ${{suffix}}`;
+      return suffix;
+    }}
+
     function showMapPopover(candidates, clickX, clickY) {{
       const items = candidates
         .map((entry) => entry.site)
         .map((site) => `
           <button type="button" data-site-id="${{escapeHtml(site.site_id)}}">
-            <strong>${{escapeHtml(site.site_label)}}</strong>
-            <div class="dim mono">${{escapeHtml(site.wg_ip)}}</div>
+            <strong>${{escapeHtml(sitePopupIdentifier(site))}}</strong>
           </button>
         `)
         .join("");
@@ -3693,11 +3703,15 @@ def render_index_html() -> str:
       mapPopover.style.top = `${{top}}px`;
 
       for (const button of mapPopover.querySelectorAll("button[data-site-id]")) {{
-        button.addEventListener("click", () => {{
+        button.addEventListener("click", (event) => {{
+          event.preventDefault();
+          event.stopPropagation();
           const siteId = button.getAttribute("data-site-id");
           const selected = sites.find((site) => String(site.site_id) === String(siteId));
           hideMapPopover();
-          if (selected) openSiteDashboard(selected);
+          if (selected && selected.public_url) {{
+            window.location.assign(selected.public_url);
+          }}
         }});
       }}
     }}
