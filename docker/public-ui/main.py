@@ -3047,6 +3047,34 @@ def render_index_html() -> str:
       position: absolute;
       inset: 0;
       overflow: hidden;
+      cursor: grab;
+      touch-action: none;
+    }}
+    .map-stage.dragging {{
+      cursor: grabbing;
+    }}
+    .map-zoom {{
+      display: inline-flex;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: 0 10px 30px rgba(23,32,29,0.08);
+      background: rgba(255,255,255,0.82);
+    }}
+    .zoom-button {{
+      border: 0;
+      border-right: 1px solid var(--border);
+      background: transparent;
+      color: var(--ink);
+      width: 2.2rem;
+      height: 2.2rem;
+      font: inherit;
+      font-size: 1.2rem;
+      line-height: 1;
+      cursor: pointer;
+    }}
+    .zoom-button:last-child {{
+      border-right: 0;
     }}
     canvas#mapCanvas {{
       position: absolute;
@@ -3095,6 +3123,44 @@ def render_index_html() -> str:
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 0.3rem 0.6rem;
+    }}
+    .map-popover {{
+      position: absolute;
+      z-index: 6;
+      min-width: 15rem;
+      max-width: min(24rem, calc(100% - 1.4rem));
+      background: rgba(255,255,255,0.96);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 16px 30px rgba(23,32,29,0.2);
+      padding: 0.35rem;
+      display: none;
+    }}
+    .map-popover-title {{
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      padding: 0.35rem 0.45rem 0.25rem;
+    }}
+    .map-popover-list {{
+      display: grid;
+      gap: 0.3rem;
+    }}
+    .map-popover button {{
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.92);
+      padding: 0.45rem 0.55rem;
+      font: inherit;
+      color: var(--ink);
+      cursor: pointer;
+    }}
+    .map-popover button:hover {{
+      border-color: rgba(12,109,98,0.45);
+      box-shadow: 0 6px 14px rgba(12,109,98,0.12);
     }}
     .sidebar {{
       padding: 0.75rem;
@@ -3266,10 +3332,15 @@ def render_index_html() -> str:
       <section class="panel map-wrap">
         <div class="map-toolbar">
           <button class="toolbar-button" id="resetViewButton" type="button">Reset View</button>
+          <div class="map-zoom" aria-label="Map zoom controls">
+            <button class="zoom-button" id="zoomInButton" type="button" aria-label="Zoom in">+</button>
+            <button class="zoom-button" id="zoomOutButton" type="button" aria-label="Zoom out">-</button>
+          </div>
         </div>
         <div class="map-stage" id="mapStage">
           <canvas id="mapCanvas"></canvas>
           <div class="markers" id="markersLayer"></div>
+          <div class="map-popover" id="mapPopover"></div>
         </div>
         <div class="map-caption" id="mapCaption">Loading mapped sites…</div>
       </section>
@@ -3318,8 +3389,11 @@ def render_index_html() -> str:
     const mapStage = document.getElementById("mapStage");
     const canvas = document.getElementById("mapCanvas");
     const markersLayer = document.getElementById("markersLayer");
+    const mapPopover = document.getElementById("mapPopover");
     const mapCaption = document.getElementById("mapCaption");
     const resetViewButton = document.getElementById("resetViewButton");
+    const zoomInButton = document.getElementById("zoomInButton");
+    const zoomOutButton = document.getElementById("zoomOutButton");
     const siteTitleLink = document.getElementById("siteTitleLink");
     const siteTitle = document.getElementById("siteTitle");
     const siteSubtitle = document.getElementById("siteSubtitle");
@@ -3330,6 +3404,8 @@ def render_index_html() -> str:
     const chooserBlock = document.getElementById("chooserBlock");
     const birdnetList = document.getElementById("birdnetList");
     const i2cList = document.getElementById("i2cList");
+    let dragState = null;
+    let suppressNextClick = false;
 
     function clampView(view) {{
       const lonSpan = Math.max(view.lonMax - view.lonMin, minLonSpan);
@@ -3367,10 +3443,10 @@ def render_index_html() -> str:
 
     function visibleSites() {{
       return sites.filter((site) =>
-        site.map_longitude >= currentView.lonMin &&
-        site.map_longitude <= currentView.lonMax &&
-        site.map_latitude >= currentView.latMin &&
-        site.map_latitude <= currentView.latMax
+        site.longitude >= currentView.lonMin &&
+        site.longitude <= currentView.lonMax &&
+        site.latitude >= currentView.latMin &&
+        site.latitude <= currentView.latMax
       );
     }}
 
@@ -3513,7 +3589,7 @@ def render_index_html() -> str:
     function renderMarkers() {{
       markersLayer.innerHTML = "";
       for (const site of visibleSites()) {{
-        const pos = project(site.map_longitude, site.map_latitude);
+        const pos = project(site.longitude, site.latitude);
         const el = document.createElement("div");
         el.className = "marker";
         if (activeSiteId && site.site_id === activeSiteId) {{
@@ -3536,8 +3612,8 @@ def render_index_html() -> str:
 
     function fitSites(targetSites) {{
       if (!targetSites.length) return;
-      const lonValues = targetSites.map((site) => site.map_longitude ?? site.longitude);
-      const latValues = targetSites.map((site) => site.map_latitude ?? site.latitude);
+      const lonValues = targetSites.map((site) => site.longitude);
+      const latValues = targetSites.map((site) => site.latitude);
       const lonPad = Math.max((Math.max(...lonValues) - Math.min(...lonValues)) * 0.35, 0.25);
       const latPad = Math.max((Math.max(...latValues) - Math.min(...latValues)) * 0.35, 0.2);
       currentView = clampView({{
@@ -3549,41 +3625,81 @@ def render_index_html() -> str:
       render();
     }}
 
-    function jitterOverlappingSites(rawSites) {{
-      const grouped = new Map();
-      for (const site of rawSites) {{
-        const key = `${{Number(site.latitude).toFixed(7)}},${{Number(site.longitude).toFixed(7)}}`;
-        if (!grouped.has(key)) grouped.set(key, []);
-        grouped.get(key).push(site);
-      }}
+    function panByPixels(deltaX, deltaY) {{
+      const rect = mapStage.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const lonSpan = currentView.lonMax - currentView.lonMin;
+      const latSpan = currentView.latMax - currentView.latMin;
+      const lonShift = (deltaX / rect.width) * lonSpan;
+      const latShift = (deltaY / rect.height) * latSpan;
+      currentView = clampView({{
+        lonMin: currentView.lonMin - lonShift,
+        lonMax: currentView.lonMax - lonShift,
+        latMin: currentView.latMin + latShift,
+        latMax: currentView.latMax + latShift,
+      }});
+      render();
+    }}
 
-      const out = [];
-      for (const group of grouped.values()) {{
-        const ordered = [...group].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id)));
-        if (ordered.length === 1) {{
-          const site = {{ ...ordered[0] }};
-          site.map_latitude = site.latitude;
-          site.map_longitude = site.longitude;
-          out.push(site);
-          continue;
-        }}
+    function zoomByFactor(factor) {{
+      const lonCenter = (currentView.lonMin + currentView.lonMax) / 2;
+      const latCenter = (currentView.latMin + currentView.latMax) / 2;
+      const lonHalf = ((currentView.lonMax - currentView.lonMin) * factor) / 2;
+      const latHalf = ((currentView.latMax - currentView.latMin) * factor) / 2;
+      currentView = clampView({{
+        lonMin: lonCenter - lonHalf,
+        lonMax: lonCenter + lonHalf,
+        latMin: latCenter - latHalf,
+        latMax: latCenter + latHalf,
+      }});
+      hideMapPopover();
+      setChooserSites([]);
+      render();
+    }}
 
-        const baseRadiusMeters = 600;
-        for (let idx = 0; idx < ordered.length; idx += 1) {{
-          const site = {{ ...ordered[idx] }};
-          const theta = (2 * Math.PI * idx) / ordered.length;
-          const ring = Math.floor(idx / 8);
-          const radiusMeters = baseRadiusMeters + ring * 280;
-          const latDegPerMeter = 1 / 111320;
-          const lonDegPerMeter = 1 / (111320 * Math.max(Math.cos((site.latitude * Math.PI) / 180), 0.2));
-          const dLat = Math.sin(theta) * radiusMeters * latDegPerMeter;
-          const dLon = Math.cos(theta) * radiusMeters * lonDegPerMeter;
-          site.map_latitude = site.latitude + dLat;
-          site.map_longitude = site.longitude + dLon;
-          out.push(site);
-        }}
+    function hideMapPopover() {{
+      mapPopover.style.display = "none";
+      mapPopover.innerHTML = "";
+    }}
+
+    function showMapPopover(candidates, clickX, clickY) {{
+      const items = candidates
+        .map((entry) => entry.site)
+        .map((site) => `
+          <button type="button" data-site-id="${{escapeHtml(site.site_id)}}">
+            <strong>${{escapeHtml(site.site_label)}}</strong>
+            <div class="dim mono">${{escapeHtml(site.wg_ip)}}</div>
+          </button>
+        `)
+        .join("");
+      mapPopover.innerHTML = `
+        <div class="map-popover-title">Select Site</div>
+        <div class="map-popover-list">${{items}}</div>
+      `;
+      mapPopover.style.display = "block";
+
+      const stageRect = mapStage.getBoundingClientRect();
+      const popRect = mapPopover.getBoundingClientRect();
+      const margin = 12;
+      let left = clickX + margin;
+      let top = clickY + margin;
+      if (left + popRect.width > stageRect.width - margin) {{
+        left = Math.max(margin, clickX - popRect.width - margin);
       }}
-      return out;
+      if (top + popRect.height > stageRect.height - margin) {{
+        top = Math.max(margin, clickY - popRect.height - margin);
+      }}
+      mapPopover.style.left = `${{left}}px`;
+      mapPopover.style.top = `${{top}}px`;
+
+      for (const button of mapPopover.querySelectorAll("button[data-site-id]")) {{
+        button.addEventListener("click", () => {{
+          const siteId = button.getAttribute("data-site-id");
+          const selected = sites.find((site) => String(site.site_id) === String(siteId));
+          hideMapPopover();
+          if (selected) openSiteDashboard(selected);
+        }});
+      }}
     }}
 
     function setChooserSites(targetSites) {{
@@ -3801,7 +3917,7 @@ def render_index_html() -> str:
       const y = clientY - rect.top;
       const candidates = visibleSites()
         .map((site) => {{
-          const pos = project(site.map_longitude ?? site.longitude, site.map_latitude ?? site.latitude);
+          const pos = project(site.longitude, site.latitude);
           const dx = pos.x - x;
           const dy = pos.y - y;
           return {{ site, distance: Math.sqrt(dx * dx + dy * dy) }};
@@ -3811,24 +3927,25 @@ def render_index_html() -> str:
 
       if (!candidates.length) return;
       if (candidates.length === 1) {{
+        hideMapPopover();
         openSiteDashboard(candidates[0].site);
         return;
       }}
 
       const matchedSites = candidates.map((entry) => entry.site);
       if (!isAtMaxZoom()) {{
+        hideMapPopover();
         fitSites(matchedSites);
         setChooserSites([]);
         return;
       }}
 
-      openSiteDashboard(candidates[0].site);
+      showMapPopover(candidates, x, y);
     }}
 
     async function boot() {{
       const response = await fetch("/api/sites");
-      const rawSites = await response.json();
-      sites = jitterOverlappingSites(rawSites);
+      sites = await response.json();
       render();
       if (sites.length) {{
         fitSites(sites);
@@ -3836,6 +3953,57 @@ def render_index_html() -> str:
     }}
 
     mapStage.addEventListener("click", (event) => resolveClick(event.clientX, event.clientY));
+    mapStage.addEventListener("mousedown", (event) => {{
+      if (event.button !== 0) return;
+      dragState = {{
+        startX: event.clientX,
+        startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        moved: false,
+      }};
+      mapStage.classList.add("dragging");
+      hideMapPopover();
+    }});
+    mapStage.addEventListener("mousemove", (event) => {{
+      if (!dragState) return;
+      const dx = event.clientX - dragState.lastX;
+      const dy = event.clientY - dragState.lastY;
+      if (dx === 0 && dy === 0) return;
+      panByPixels(dx, dy);
+      dragState.lastX = event.clientX;
+      dragState.lastY = event.clientY;
+      const movedDistance = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+      if (movedDistance > 4) dragState.moved = true;
+    }});
+    mapStage.addEventListener("mouseup", () => {{
+      if (dragState && dragState.moved) suppressNextClick = true;
+      mapStage.classList.remove("dragging");
+    }});
+    mapStage.addEventListener("mouseleave", () => {{
+      mapStage.classList.remove("dragging");
+      dragState = null;
+    }});
+    mapStage.addEventListener("click", (event) => {{
+      if (!suppressNextClick) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      suppressNextClick = false;
+      dragState = null;
+    }}, true);
+    window.addEventListener("mouseup", () => {{
+      if (!dragState) return;
+      mapStage.classList.remove("dragging");
+      dragState = null;
+    }});
+    zoomInButton.addEventListener("click", () => zoomByFactor(0.7));
+    zoomOutButton.addEventListener("click", () => zoomByFactor(1.3));
+    document.addEventListener("click", (event) => {{
+      if (!mapPopover || mapPopover.style.display !== "block") return;
+      if (!mapStage.contains(event.target)) {{
+        hideMapPopover();
+      }}
+    }});
     resetViewButton.addEventListener("click", () => {{
       currentView = {{ ...worldBounds }};
       activeSiteId = null;
