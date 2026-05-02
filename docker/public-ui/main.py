@@ -3360,9 +3360,12 @@ def render_index_html() -> str:
 
     function project(lon, lat) {{
       const rect = mapStage.getBoundingClientRect();
-      const x = ((lon - currentView.lonMin) / (currentView.lonMax - currentView.lonMin)) * rect.width;
-      const y = ((currentView.latMax - lat) / (currentView.latMax - currentView.latMin)) * rect.height;
-      return {{ x, y }};
+      const viewport = mercatorViewport(rect);
+      const point = mercatorWorldPoint(lon, lat, 0);
+      return {{
+        x: viewport.offsetX + (point.x - viewport.topLeft.x) * viewport.scale,
+        y: viewport.offsetY + (point.y - viewport.topLeft.y) * viewport.scale,
+      }};
     }}
 
     function visibleSites() {{
@@ -3432,6 +3435,22 @@ def render_index_html() -> str:
       const zoom = Math.floor(Math.min(zoomFromWidth, zoomFromHeight));
       if (!Number.isFinite(zoom)) return 1;
       return Math.max(1, Math.min(maxTileZoom, zoom));
+    }}
+
+    function mercatorViewport(rect) {{
+      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
+      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
+      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
+      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
+      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
+      const drawWidth = worldWidth * scale;
+      const drawHeight = worldHeight * scale;
+      return {{
+        topLeft,
+        scale,
+        offsetX: (rect.width - drawWidth) / 2,
+        offsetY: (rect.height - drawHeight) / 2,
+      }};
     }}
 
     function tileUrl(z, x, y) {{
