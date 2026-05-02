@@ -1149,7 +1149,7 @@ def overview_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Latest peer check-ins</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Last check-in</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last check-in</th></tr>
       </thead>
       <tbody>
         {''.join(
@@ -1389,7 +1389,7 @@ def peers_page(
     <select name="sort" onchange="this.form.submit()">
       <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
       <option value="client"{' selected' if sort == 'client' else ''}>Client</option>
-      <option value="host"{' selected' if sort == 'host' else ''}>Client host</option>
+      <option value="host"{' selected' if sort == 'host' else ''}>Client name</option>
       <option value="checkin"{' selected' if sort == 'checkin' else ''}>Last check-in</option>
       <option value="state"{' selected' if sort == 'state' else ''}>State</option>
     </select>
@@ -1408,7 +1408,7 @@ def peers_page(
   {filter_form}
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client name</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {''.join(body_rows) or '<tr><td colspan="7" class="dim">No clients registered.</td></tr>'}
@@ -1492,7 +1492,7 @@ def wireguard_page(request: Request, flash: str | None = None):
   <h2 class="section-title">WireGuard peer health</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client host</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1605,7 +1605,7 @@ def birdnet_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Client BirdNET activity summary</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
       </thead>
       <tbody>
         {''.join(
@@ -1656,7 +1656,7 @@ def sensors_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Client sensor freshness summary</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client host</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
       </thead>
       <tbody>
         {''.join(
