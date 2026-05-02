@@ -3367,10 +3367,10 @@ def render_index_html() -> str:
 
     function visibleSites() {{
       return sites.filter((site) =>
-        site.longitude >= currentView.lonMin &&
-        site.longitude <= currentView.lonMax &&
-        site.latitude >= currentView.latMin &&
-        site.latitude <= currentView.latMax
+        site.map_longitude >= currentView.lonMin &&
+        site.map_longitude <= currentView.lonMax &&
+        site.map_latitude >= currentView.latMin &&
+        site.map_latitude <= currentView.latMax
       );
     }}
 
@@ -3476,12 +3476,8 @@ def render_index_html() -> str:
       const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
       const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
       const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      // Use one shared scale so imagery keeps true aspect ratio (no X/Y warping).
-      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
-      const drawWidth = worldWidth * scale;
-      const drawHeight = worldHeight * scale;
-      const offsetX = (rect.width - drawWidth) / 2;
-      const offsetY = (rect.height - drawHeight) / 2;
+      const scaleX = rect.width / worldWidth;
+      const scaleY = rect.height / worldHeight;
 
       const xStart = Math.floor(topLeft.x / tileSize);
       const xEnd = Math.floor(bottomRight.x / tileSize);
@@ -3490,10 +3486,10 @@ def render_index_html() -> str:
 
       for (let tileX = xStart; tileX <= xEnd; tileX += 1) {{
         for (let tileY = yStart; tileY <= yEnd; tileY += 1) {{
-          const screenX = offsetX + (tileX * tileSize - topLeft.x) * scale;
-          const screenY = offsetY + (tileY * tileSize - topLeft.y) * scale;
-          const screenW = tileSize * scale;
-          const screenH = tileSize * scale;
+          const screenX = (tileX * tileSize - topLeft.x) * scaleX;
+          const screenY = (tileY * tileSize - topLeft.y) * scaleY;
+          const screenW = tileSize * scaleX;
+          const screenH = tileSize * scaleY;
           const tile = requestTile(zoom, tileX, tileY);
 
           if (tile && tile.status === "ready") {{
@@ -3517,7 +3513,7 @@ def render_index_html() -> str:
     function renderMarkers() {{
       markersLayer.innerHTML = "";
       for (const site of visibleSites()) {{
-        const pos = project(site.longitude, site.latitude);
+        const pos = project(site.map_longitude, site.map_latitude);
         const el = document.createElement("div");
         el.className = "marker";
         if (activeSiteId && site.site_id === activeSiteId) {{
@@ -3540,8 +3536,8 @@ def render_index_html() -> str:
 
     function fitSites(targetSites) {{
       if (!targetSites.length) return;
-      const lonValues = targetSites.map((site) => site.longitude);
-      const latValues = targetSites.map((site) => site.latitude);
+      const lonValues = targetSites.map((site) => site.map_longitude ?? site.longitude);
+      const latValues = targetSites.map((site) => site.map_latitude ?? site.latitude);
       const lonPad = Math.max((Math.max(...lonValues) - Math.min(...lonValues)) * 0.35, 0.25);
       const latPad = Math.max((Math.max(...latValues) - Math.min(...latValues)) * 0.35, 0.2);
       currentView = clampView({{
@@ -3551,6 +3547,43 @@ def render_index_html() -> str:
         latMax: Math.max(...latValues) + latPad,
       }});
       render();
+    }}
+
+    function jitterOverlappingSites(rawSites) {{
+      const grouped = new Map();
+      for (const site of rawSites) {{
+        const key = `${{Number(site.latitude).toFixed(7)}},${{Number(site.longitude).toFixed(7)}}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(site);
+      }}
+
+      const out = [];
+      for (const group of grouped.values()) {{
+        const ordered = [...group].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id)));
+        if (ordered.length === 1) {{
+          const site = {{ ...ordered[0] }};
+          site.map_latitude = site.latitude;
+          site.map_longitude = site.longitude;
+          out.push(site);
+          continue;
+        }}
+
+        const baseRadiusMeters = 10;
+        for (let idx = 0; idx < ordered.length; idx += 1) {{
+          const site = {{ ...ordered[idx] }};
+          const theta = (2 * Math.PI * idx) / ordered.length;
+          const ring = Math.floor(idx / 8);
+          const radiusMeters = baseRadiusMeters + ring * 6;
+          const latDegPerMeter = 1 / 111320;
+          const lonDegPerMeter = 1 / (111320 * Math.max(Math.cos((site.latitude * Math.PI) / 180), 0.2));
+          const dLat = Math.sin(theta) * radiusMeters * latDegPerMeter;
+          const dLon = Math.cos(theta) * radiusMeters * lonDegPerMeter;
+          site.map_latitude = site.latitude + dLat;
+          site.map_longitude = site.longitude + dLon;
+          out.push(site);
+        }}
+      }}
+      return out;
     }}
 
     function setChooserSites(targetSites) {{
@@ -3768,7 +3801,7 @@ def render_index_html() -> str:
       const y = clientY - rect.top;
       const candidates = visibleSites()
         .map((site) => {{
-          const pos = project(site.longitude, site.latitude);
+          const pos = project(site.map_longitude ?? site.longitude, site.map_latitude ?? site.latitude);
           const dx = pos.x - x;
           const dy = pos.y - y;
           return {{ site, distance: Math.sqrt(dx * dx + dy * dy) }};
@@ -3794,7 +3827,8 @@ def render_index_html() -> str:
 
     async function boot() {{
       const response = await fetch("/api/sites");
-      sites = await response.json();
+      const rawSites = await response.json();
+      sites = jitterOverlappingSites(rawSites);
       render();
       if (sites.length) {{
         fitSites(sites);
