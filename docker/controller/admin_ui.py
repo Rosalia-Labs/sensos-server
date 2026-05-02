@@ -171,7 +171,7 @@ def render_page(
     nav_items = [
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
-        ("/admin/peers", "Peers"),
+        ("/admin/peers", "Clients"),
         ("/admin/wireguard", "WireGuard"),
         ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
@@ -1404,20 +1404,20 @@ def peers_page(
 """
     body = f"""
 <section class="panel">
-  <h2 class="section-title">Registered peers</h2>
+  <h2 class="section-title">Registered clients</h2>
   {filter_form}
   <table>
     <thead>
       <tr><th>Client</th><th>Network</th><th>Client host</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
-      {''.join(body_rows) or '<tr><td colspan="7" class="dim">No peers registered.</td></tr>'}
+      {''.join(body_rows) or '<tr><td colspan="7" class="dim">No clients registered.</td></tr>'}
     </tbody>
   </table>
 </section>
 """
     return render_page(
-        title="Peers",
+        title="Clients",
         body=body,
         current_path="/admin/peers",
         flash=flash,
