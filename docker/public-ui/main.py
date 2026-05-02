@@ -3047,8 +3047,10 @@ def render_index_html() -> str:
       position: absolute;
       inset: 0;
       overflow: hidden;
-      cursor: grab;
       touch-action: none;
+    }}
+    .map-stage.pan-ready {{
+      cursor: grab;
     }}
     .map-stage.dragging {{
       cursor: grabbing;
@@ -3407,6 +3409,7 @@ def render_index_html() -> str:
     const i2cList = document.getElementById("i2cList");
     let dragState = null;
     let suppressNextClick = false;
+    let spacePanActive = false;
 
     function clampView(view) {{
       const lonSpan = Math.max(view.lonMax - view.lonMin, minLonSpan);
@@ -3437,8 +3440,10 @@ def render_index_html() -> str:
 
     function project(lon, lat) {{
       const rect = mapStage.getBoundingClientRect();
-      const x = ((lon - currentView.lonMin) / (currentView.lonMax - currentView.lonMin)) * rect.width;
-      const y = ((currentView.latMax - lat) / (currentView.latMax - currentView.latMin)) * rect.height;
+      const view = computeMercatorView(rect);
+      const point = mercatorWorldPoint(lon, lat, 0);
+      const x = view.offsetX + (point.x - view.topLeft.x) * view.scale;
+      const y = view.offsetY + (point.y - view.topLeft.y) * view.scale;
       return {{ x, y }};
     }}
 
@@ -3482,7 +3487,13 @@ def render_index_html() -> str:
 
       ctx.strokeStyle = "rgba(23,32,29,0.35)";
       ctx.lineWidth = 1.5;
-      ctx.strokeRect(0.75, 0.75, rect.width - 1.5, rect.height - 1.5);
+      const view = computeMercatorView(rect);
+      ctx.strokeRect(
+        view.offsetX + 0.75,
+        view.offsetY + 0.75,
+        Math.max(0, view.drawWidth - 1.5),
+        Math.max(0, view.drawHeight - 1.5),
+      );
     }}
 
     function clampLatitude(lat) {{
@@ -3548,13 +3559,14 @@ def render_index_html() -> str:
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, rect.width, rect.height);
 
+      const view = computeMercatorView(rect);
       const zoom = chooseBasemapZoom(rect);
       const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
       const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
-      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
-      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      const scaleX = rect.width / worldWidth;
-      const scaleY = rect.height / worldHeight;
+      const zoomScale = 2 ** zoom;
+      const offsetX = view.offsetX;
+      const offsetY = view.offsetY;
+      const scale = view.scale / zoomScale;
 
       const xStart = Math.floor(topLeft.x / tileSize);
       const xEnd = Math.floor(bottomRight.x / tileSize);
@@ -3563,10 +3575,10 @@ def render_index_html() -> str:
 
       for (let tileX = xStart; tileX <= xEnd; tileX += 1) {{
         for (let tileY = yStart; tileY <= yEnd; tileY += 1) {{
-          const screenX = (tileX * tileSize - topLeft.x) * scaleX;
-          const screenY = (tileY * tileSize - topLeft.y) * scaleY;
-          const screenW = tileSize * scaleX;
-          const screenH = tileSize * scaleY;
+          const screenX = offsetX + (tileX * tileSize - topLeft.x) * scale;
+          const screenY = offsetY + (tileY * tileSize - topLeft.y) * scale;
+          const screenW = tileSize * scale;
+          const screenH = tileSize * scale;
           const tile = requestTile(zoom, tileX, tileY);
 
           if (tile && tile.status === "ready") {{
@@ -3585,6 +3597,19 @@ def render_index_html() -> str:
       haze.addColorStop(1, "rgba(17,24,39,0.16)");
       ctx.fillStyle = haze;
       ctx.fillRect(0, 0, rect.width, rect.height);
+    }}
+
+    function computeMercatorView(rect) {{
+      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
+      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
+      const worldWidth = Math.max(1e-9, bottomRight.x - topLeft.x);
+      const worldHeight = Math.max(1e-9, bottomRight.y - topLeft.y);
+      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
+      const drawWidth = worldWidth * scale;
+      const drawHeight = worldHeight * scale;
+      const offsetX = (rect.width - drawWidth) / 2;
+      const offsetY = (rect.height - drawHeight) / 2;
+      return {{ topLeft, worldWidth, worldHeight, scale, drawWidth, drawHeight, offsetX, offsetY }};
     }}
 
     function renderMarkers() {{
@@ -3656,6 +3681,14 @@ def render_index_html() -> str:
       hideMapPopover();
       setChooserSites([]);
       render();
+    }}
+
+    function updatePanAffordance() {{
+      if (spacePanActive) {{
+        mapStage.classList.add("pan-ready");
+      }} else if (!dragState) {{
+        mapStage.classList.remove("pan-ready");
+      }}
     }}
 
     function hideMapPopover() {{
@@ -3968,7 +4001,9 @@ def render_index_html() -> str:
 
     mapStage.addEventListener("click", (event) => resolveClick(event.clientX, event.clientY));
     mapStage.addEventListener("mousedown", (event) => {{
-      if (event.button !== 0) return;
+      const panGesture = (event.button === 1 || event.button === 2 || (event.button === 0 && spacePanActive));
+      if (!panGesture) return;
+      event.preventDefault();
       dragState = {{
         startX: event.clientX,
         startY: event.clientY,
@@ -3997,6 +4032,7 @@ def render_index_html() -> str:
     mapStage.addEventListener("mouseleave", () => {{
       mapStage.classList.remove("dragging");
       dragState = null;
+      updatePanAffordance();
     }});
     mapStage.addEventListener("click", (event) => {{
       if (!suppressNextClick) return;
@@ -4009,6 +4045,26 @@ def render_index_html() -> str:
       if (!dragState) return;
       mapStage.classList.remove("dragging");
       dragState = null;
+      updatePanAffordance();
+    }});
+    mapStage.addEventListener("contextmenu", (event) => {{
+      if (spacePanActive || dragState) event.preventDefault();
+    }});
+    window.addEventListener("keydown", (event) => {{
+      if (event.code !== "Space") return;
+      const target = event.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (!spacePanActive) {{
+        spacePanActive = true;
+        updatePanAffordance();
+      }}
+      event.preventDefault();
+    }});
+    window.addEventListener("keyup", (event) => {{
+      if (event.code !== "Space") return;
+      spacePanActive = false;
+      updatePanAffordance();
+      event.preventDefault();
     }});
     zoomInButton.addEventListener("click", () => zoomByFactor(0.7));
     zoomOutButton.addEventListener("click", () => zoomByFactor(1.3));
