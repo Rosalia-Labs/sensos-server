@@ -3568,12 +3568,12 @@ def render_index_html() -> str:
           continue;
         }}
 
-        const baseRadiusMeters = 10;
+        const baseRadiusMeters = 600;
         for (let idx = 0; idx < ordered.length; idx += 1) {{
           const site = {{ ...ordered[idx] }};
           const theta = (2 * Math.PI * idx) / ordered.length;
           const ring = Math.floor(idx / 8);
-          const radiusMeters = baseRadiusMeters + ring * 6;
+          const radiusMeters = baseRadiusMeters + ring * 280;
           const latDegPerMeter = 1 / 111320;
           const lonDegPerMeter = 1 / (111320 * Math.max(Math.cos((site.latitude * Math.PI) / 180), 0.2));
           const dLat = Math.sin(theta) * radiusMeters * latDegPerMeter;
@@ -3822,7 +3822,7 @@ def render_index_html() -> str:
         return;
       }}
 
-      setChooserSites(matchedSites);
+      openSiteDashboard(candidates[0].site);
     }}
 
     async function boot() {{
