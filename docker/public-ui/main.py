@@ -3047,36 +3047,6 @@ def render_index_html() -> str:
       position: absolute;
       inset: 0;
       overflow: hidden;
-      touch-action: none;
-    }}
-    .map-stage.pan-ready {{
-      cursor: grab;
-    }}
-    .map-stage.dragging {{
-      cursor: grabbing;
-    }}
-    .map-zoom {{
-      display: inline-flex;
-      border-radius: 999px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      box-shadow: 0 10px 30px rgba(23,32,29,0.08);
-      background: rgba(255,255,255,0.82);
-    }}
-    .zoom-button {{
-      border: 0;
-      border-right: 1px solid var(--border);
-      background: transparent;
-      color: var(--ink);
-      width: 2.2rem;
-      height: 2.2rem;
-      font: inherit;
-      font-size: 1.2rem;
-      line-height: 1;
-      cursor: pointer;
-    }}
-    .zoom-button:last-child {{
-      border-right: 0;
     }}
     canvas#mapCanvas {{
       position: absolute;
@@ -3125,44 +3095,6 @@ def render_index_html() -> str:
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 0.3rem 0.6rem;
-    }}
-    .map-popover {{
-      position: absolute;
-      z-index: 6;
-      min-width: 15rem;
-      max-width: min(24rem, calc(100% - 1.4rem));
-      background: rgba(255,255,255,0.96);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      box-shadow: 0 16px 30px rgba(23,32,29,0.2);
-      padding: 0.35rem;
-      display: none;
-    }}
-    .map-popover-title {{
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--muted);
-      padding: 0.35rem 0.45rem 0.25rem;
-    }}
-    .map-popover-list {{
-      display: grid;
-      gap: 0.3rem;
-    }}
-    .map-popover button {{
-      width: 100%;
-      text-align: left;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: rgba(255,255,255,0.92);
-      padding: 0.45rem 0.55rem;
-      font: inherit;
-      color: var(--ink);
-      cursor: pointer;
-    }}
-    .map-popover button:hover {{
-      border-color: rgba(12,109,98,0.45);
-      box-shadow: 0 6px 14px rgba(12,109,98,0.12);
     }}
     .sidebar {{
       padding: 0.75rem;
@@ -3334,15 +3266,10 @@ def render_index_html() -> str:
       <section class="panel map-wrap">
         <div class="map-toolbar">
           <button class="toolbar-button" id="resetViewButton" type="button">Reset View</button>
-          <div class="map-zoom" aria-label="Map zoom controls">
-            <button class="zoom-button" id="zoomInButton" type="button" aria-label="Zoom in">+</button>
-            <button class="zoom-button" id="zoomOutButton" type="button" aria-label="Zoom out">-</button>
-          </div>
         </div>
         <div class="map-stage" id="mapStage">
           <canvas id="mapCanvas"></canvas>
           <div class="markers" id="markersLayer"></div>
-          <div class="map-popover" id="mapPopover"></div>
         </div>
         <div class="map-caption" id="mapCaption">Loading mapped sites…</div>
       </section>
@@ -3377,9 +3304,8 @@ def render_index_html() -> str:
   </div>
   <script>
     const worldBounds = {{ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }};
-    // Allow deeper manual zoom while still enforcing a finite floor.
-    const minLonSpan = 0.02;
-    const minLatSpan = 0.015;
+    const minLonSpan = 1.4;
+    const minLatSpan = 1.0;
     const tileSize = 256;
     const maxTileZoom = 17;
     const satelliteTileTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
@@ -3392,11 +3318,8 @@ def render_index_html() -> str:
     const mapStage = document.getElementById("mapStage");
     const canvas = document.getElementById("mapCanvas");
     const markersLayer = document.getElementById("markersLayer");
-    const mapPopover = document.getElementById("mapPopover");
     const mapCaption = document.getElementById("mapCaption");
     const resetViewButton = document.getElementById("resetViewButton");
-    const zoomInButton = document.getElementById("zoomInButton");
-    const zoomOutButton = document.getElementById("zoomOutButton");
     const siteTitleLink = document.getElementById("siteTitleLink");
     const siteTitle = document.getElementById("siteTitle");
     const siteSubtitle = document.getElementById("siteSubtitle");
@@ -3407,9 +3330,6 @@ def render_index_html() -> str:
     const chooserBlock = document.getElementById("chooserBlock");
     const birdnetList = document.getElementById("birdnetList");
     const i2cList = document.getElementById("i2cList");
-    let dragState = null;
-    let suppressNextClick = false;
-    let spacePanActive = false;
 
     function clampView(view) {{
       const lonSpan = Math.max(view.lonMax - view.lonMin, minLonSpan);
@@ -3440,10 +3360,8 @@ def render_index_html() -> str:
 
     function project(lon, lat) {{
       const rect = mapStage.getBoundingClientRect();
-      const view = computeMercatorView(rect);
-      const point = mercatorWorldPoint(lon, lat, 0);
-      const x = view.offsetX + (point.x - view.topLeft.x) * view.scale;
-      const y = view.offsetY + (point.y - view.topLeft.y) * view.scale;
+      const x = ((lon - currentView.lonMin) / (currentView.lonMax - currentView.lonMin)) * rect.width;
+      const y = ((currentView.latMax - lat) / (currentView.latMax - currentView.latMin)) * rect.height;
       return {{ x, y }};
     }}
 
@@ -3487,13 +3405,7 @@ def render_index_html() -> str:
 
       ctx.strokeStyle = "rgba(23,32,29,0.35)";
       ctx.lineWidth = 1.5;
-      const view = computeMercatorView(rect);
-      ctx.strokeRect(
-        view.offsetX + 0.75,
-        view.offsetY + 0.75,
-        Math.max(0, view.drawWidth - 1.5),
-        Math.max(0, view.drawHeight - 1.5),
-      );
+      ctx.strokeRect(0.75, 0.75, rect.width - 1.5, rect.height - 1.5);
     }}
 
     function clampLatitude(lat) {{
@@ -3559,14 +3471,17 @@ def render_index_html() -> str:
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, rect.width, rect.height);
 
-      const view = computeMercatorView(rect);
       const zoom = chooseBasemapZoom(rect);
       const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
       const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
-      const zoomScale = 2 ** zoom;
-      const offsetX = view.offsetX;
-      const offsetY = view.offsetY;
-      const scale = view.scale / zoomScale;
+      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
+      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
+      // Use one shared scale so imagery keeps true aspect ratio (no X/Y warping).
+      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
+      const drawWidth = worldWidth * scale;
+      const drawHeight = worldHeight * scale;
+      const offsetX = (rect.width - drawWidth) / 2;
+      const offsetY = (rect.height - drawHeight) / 2;
 
       const xStart = Math.floor(topLeft.x / tileSize);
       const xEnd = Math.floor(bottomRight.x / tileSize);
@@ -3597,19 +3512,6 @@ def render_index_html() -> str:
       haze.addColorStop(1, "rgba(17,24,39,0.16)");
       ctx.fillStyle = haze;
       ctx.fillRect(0, 0, rect.width, rect.height);
-    }}
-
-    function computeMercatorView(rect) {{
-      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
-      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
-      const worldWidth = Math.max(1e-9, bottomRight.x - topLeft.x);
-      const worldHeight = Math.max(1e-9, bottomRight.y - topLeft.y);
-      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
-      const drawWidth = worldWidth * scale;
-      const drawHeight = worldHeight * scale;
-      const offsetX = (rect.width - drawWidth) / 2;
-      const offsetY = (rect.height - drawHeight) / 2;
-      return {{ topLeft, worldWidth, worldHeight, scale, drawWidth, drawHeight, offsetX, offsetY }};
     }}
 
     function renderMarkers() {{
@@ -3649,104 +3551,6 @@ def render_index_html() -> str:
         latMax: Math.max(...latValues) + latPad,
       }});
       render();
-    }}
-
-    function panByPixels(deltaX, deltaY) {{
-      const rect = mapStage.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const lonSpan = currentView.lonMax - currentView.lonMin;
-      const latSpan = currentView.latMax - currentView.latMin;
-      const lonShift = (deltaX / rect.width) * lonSpan;
-      const latShift = (deltaY / rect.height) * latSpan;
-      currentView = clampView({{
-        lonMin: currentView.lonMin - lonShift,
-        lonMax: currentView.lonMax - lonShift,
-        latMin: currentView.latMin + latShift,
-        latMax: currentView.latMax + latShift,
-      }});
-      render();
-    }}
-
-    function zoomByFactor(factor) {{
-      const lonCenter = (currentView.lonMin + currentView.lonMax) / 2;
-      const latCenter = (currentView.latMin + currentView.latMax) / 2;
-      const lonHalf = ((currentView.lonMax - currentView.lonMin) * factor) / 2;
-      const latHalf = ((currentView.latMax - currentView.latMin) * factor) / 2;
-      currentView = clampView({{
-        lonMin: lonCenter - lonHalf,
-        lonMax: lonCenter + lonHalf,
-        latMin: latCenter - latHalf,
-        latMax: latCenter + latHalf,
-      }});
-      hideMapPopover();
-      setChooserSites([]);
-      render();
-    }}
-
-    function updatePanAffordance() {{
-      if (spacePanActive) {{
-        mapStage.classList.add("pan-ready");
-      }} else if (!dragState) {{
-        mapStage.classList.remove("pan-ready");
-      }}
-    }}
-
-    function hideMapPopover() {{
-      mapPopover.style.display = "none";
-      mapPopover.innerHTML = "";
-    }}
-
-    function sitePopupIdentifier(site) {{
-      const network = String(site?.network_name || "").trim();
-      const note = String(site?.note || "").trim();
-      const hostname = String(site?.hostname || "").trim();
-      const ip = String(site?.wg_ip || "").trim();
-      const suffix = note || hostname || ip || "unknown";
-      if (network) return `${{network}} + ${{suffix}}`;
-      return suffix;
-    }}
-
-    function showMapPopover(candidates, clickX, clickY) {{
-      const items = candidates
-        .map((entry) => entry.site)
-        .map((site) => `
-          <button type="button" data-site-id="${{escapeHtml(site.site_id)}}">
-            <strong>${{escapeHtml(sitePopupIdentifier(site))}}</strong>
-          </button>
-        `)
-        .join("");
-      mapPopover.innerHTML = `
-        <div class="map-popover-title">Select Site</div>
-        <div class="map-popover-list">${{items}}</div>
-      `;
-      mapPopover.style.display = "block";
-
-      const stageRect = mapStage.getBoundingClientRect();
-      const popRect = mapPopover.getBoundingClientRect();
-      const margin = 12;
-      let left = clickX + margin;
-      let top = clickY + margin;
-      if (left + popRect.width > stageRect.width - margin) {{
-        left = Math.max(margin, clickX - popRect.width - margin);
-      }}
-      if (top + popRect.height > stageRect.height - margin) {{
-        top = Math.max(margin, clickY - popRect.height - margin);
-      }}
-      mapPopover.style.left = `${{left}}px`;
-      mapPopover.style.top = `${{top}}px`;
-
-      for (const button of mapPopover.querySelectorAll("button[data-site-id]")) {{
-        button.addEventListener("click", (event) => {{
-          event.preventDefault();
-          event.stopPropagation();
-          const siteId = button.getAttribute("data-site-id");
-          const selected = sites.find((site) => String(site.site_id) === String(siteId));
-          hideMapPopover();
-          if (selected && selected.public_url) {{
-            window.location.assign(selected.public_url);
-          }}
-        }});
-      }}
     }}
 
     function setChooserSites(targetSites) {{
@@ -3974,20 +3778,18 @@ def render_index_html() -> str:
 
       if (!candidates.length) return;
       if (candidates.length === 1) {{
-        hideMapPopover();
         openSiteDashboard(candidates[0].site);
         return;
       }}
 
       const matchedSites = candidates.map((entry) => entry.site);
       if (!isAtMaxZoom()) {{
-        hideMapPopover();
         fitSites(matchedSites);
         setChooserSites([]);
         return;
       }}
 
-      showMapPopover(candidates, x, y);
+      setChooserSites(matchedSites);
     }}
 
     async function boot() {{
@@ -4000,80 +3802,6 @@ def render_index_html() -> str:
     }}
 
     mapStage.addEventListener("click", (event) => resolveClick(event.clientX, event.clientY));
-    mapStage.addEventListener("mousedown", (event) => {{
-      const panGesture = (event.button === 1 || event.button === 2 || (event.button === 0 && spacePanActive));
-      if (!panGesture) return;
-      event.preventDefault();
-      dragState = {{
-        startX: event.clientX,
-        startY: event.clientY,
-        lastX: event.clientX,
-        lastY: event.clientY,
-        moved: false,
-      }};
-      mapStage.classList.add("dragging");
-      hideMapPopover();
-    }});
-    mapStage.addEventListener("mousemove", (event) => {{
-      if (!dragState) return;
-      const dx = event.clientX - dragState.lastX;
-      const dy = event.clientY - dragState.lastY;
-      if (dx === 0 && dy === 0) return;
-      panByPixels(dx, dy);
-      dragState.lastX = event.clientX;
-      dragState.lastY = event.clientY;
-      const movedDistance = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
-      if (movedDistance > 4) dragState.moved = true;
-    }});
-    mapStage.addEventListener("mouseup", () => {{
-      if (dragState && dragState.moved) suppressNextClick = true;
-      mapStage.classList.remove("dragging");
-    }});
-    mapStage.addEventListener("mouseleave", () => {{
-      mapStage.classList.remove("dragging");
-      dragState = null;
-      updatePanAffordance();
-    }});
-    mapStage.addEventListener("click", (event) => {{
-      if (!suppressNextClick) return;
-      event.stopImmediatePropagation();
-      event.preventDefault();
-      suppressNextClick = false;
-      dragState = null;
-    }}, true);
-    window.addEventListener("mouseup", () => {{
-      if (!dragState) return;
-      mapStage.classList.remove("dragging");
-      dragState = null;
-      updatePanAffordance();
-    }});
-    mapStage.addEventListener("contextmenu", (event) => {{
-      if (spacePanActive || dragState) event.preventDefault();
-    }});
-    window.addEventListener("keydown", (event) => {{
-      if (event.code !== "Space") return;
-      const target = event.target;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-      if (!spacePanActive) {{
-        spacePanActive = true;
-        updatePanAffordance();
-      }}
-      event.preventDefault();
-    }});
-    window.addEventListener("keyup", (event) => {{
-      if (event.code !== "Space") return;
-      spacePanActive = false;
-      updatePanAffordance();
-      event.preventDefault();
-    }});
-    zoomInButton.addEventListener("click", () => zoomByFactor(0.7));
-    zoomOutButton.addEventListener("click", () => zoomByFactor(1.3));
-    document.addEventListener("click", (event) => {{
-      if (!mapPopover || mapPopover.style.display !== "block") return;
-      if (!mapStage.contains(event.target)) {{
-        hideMapPopover();
-      }}
-    }});
     resetViewButton.addEventListener("click", () => {{
       currentView = {{ ...worldBounds }};
       activeSiteId = null;
