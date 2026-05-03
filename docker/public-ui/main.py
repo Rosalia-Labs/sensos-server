@@ -3724,8 +3724,15 @@ def render_index_html() -> str:
 
     function handleSiteMarkerClick(marker) {{
       const nearby = markersNearMarker(marker, 34);
+      const uniqueCoordCount = new Set(
+        nearby.map((candidate) => {{
+          const latLng = candidate.getLatLng();
+          return `${{latLng.lat.toFixed(6)}},${{latLng.lng.toFixed(6)}}`;
+        }})
+      ).size;
 
-      if (nearby.length > 1) {{
+      // If multiple markers collapse into one physical point, treat it as unambiguous.
+      if (nearby.length > 1 && uniqueCoordCount > 1) {{
         zoomIntoMarkerGroup(nearby);
         return;
       }}
@@ -3740,9 +3747,9 @@ def render_index_html() -> str:
       }}
 
       map.fitBounds(markerLayer.getBounds(), {{
-        paddingTopLeft: [44, 44],
-        paddingBottomRight: [44, 44],
-        maxZoom: 15,
+        paddingTopLeft: [96, 96],
+        paddingBottomRight: [96, 96],
+        maxZoom: 10,
       }});
     }}
 
