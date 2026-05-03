@@ -3133,8 +3133,6 @@ def render_index_html() -> str:
 
     .leaflet-container img.leaflet-tile,
     .leaflet-container .leaflet-tile {{
-      width: 256px !important;
-      height: 256px !important;
       max-width: none !important;
       max-height: none !important;
       min-width: 0 !important;
@@ -3346,6 +3344,27 @@ def render_index_html() -> str:
       white-space: nowrap;
     }}
 
+
+    .show-all-button {{
+      position: fixed;
+      left: 12px;
+      bottom: 24px;
+      z-index: 1000;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--ink);
+      background: rgba(255,255,255,0.78);
+      box-shadow: 0 8px 24px rgba(23,32,29,0.13);
+      backdrop-filter: blur(10px);
+      padding: 0.42rem 0.64rem;
+      font: inherit;
+      cursor: pointer;
+    }}
+
+    .show-all-button:hover {{
+      background: rgba(255,255,255,0.92);
+    }}
+
     .site-dot {{
       width: 17px;
       height: 17px;
@@ -3437,6 +3456,7 @@ def render_index_html() -> str:
     <strong>Field Sites</strong>
     <span id="site-count">Loading…</span>
   </div>
+  <button class="show-all-button" id="show-all-button" type="button">Show all</button>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -3455,6 +3475,7 @@ def render_index_html() -> str:
     const DEFAULT_ZOOM = 6;
 
     const siteCount = document.getElementById("site-count");
+    const showAllButton = document.getElementById("show-all-button");
     let sites = [];
 
     function assertLeafletCssLooksLoaded() {{
@@ -3482,14 +3503,14 @@ def render_index_html() -> str:
     const satelliteLayer = L.tileLayer(SATELLITE_TILES, {{
       attribution: SATELLITE_ATTRIBUTION,
       maxZoom: 19,
-      detectRetina: true,
+      detectRetina: false,
       className: "basemap-tile",
     }}).addTo(map);
 
     const osmLayer = L.tileLayer(OSM_TILES, {{
       attribution: OSM_ATTRIBUTION,
       maxZoom: 19,
-      detectRetina: true,
+      detectRetina: false,
       className: "basemap-tile",
     }});
 
@@ -3657,6 +3678,11 @@ def render_index_html() -> str:
         map.invalidateSize();
         map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
       }});
+    }});
+
+    showAllButton.addEventListener("click", () => {{
+      map.closePopup();
+      fitToSites();
     }});
 
     window.addEventListener("load", () => {{
