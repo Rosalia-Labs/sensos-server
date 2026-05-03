@@ -3492,11 +3492,12 @@ def render_index_html() -> str:
 
     assertLeafletCssLooksLoaded();
 
-    const map = L.map("map", {{
+    const map = L.map("map", {
       zoomControl: false,
       preferCanvas: true,
       worldCopyJump: true,
-    }}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+      scrollWheelZoom: false,
+    }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
     L.control.zoom({{ position: "bottomright" }}).addTo(map);
 
