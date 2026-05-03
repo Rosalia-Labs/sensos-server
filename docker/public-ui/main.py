@@ -58,8 +58,8 @@ BIRDNET_RANKING_STATISTICS = {
 }
 
 BIRDNET_RANKING_WEIGHTING = {
-    "no": {"label": "Weight by occup.: no"},
-    "yes": {"label": "Weight by occup.: yes"},
+    "no": {"label": "Weighted: no"},
+    "yes": {"label": "Weighted: yes"},
 }
 
 
@@ -296,8 +296,8 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_variable(value: str | None) -> str:
-    candidate = (value or "score").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "score"
+    candidate = (value or "frequency").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "frequency"
 
 
 def normalize_birdnet_ranking_statistic(value: str | None) -> str:
@@ -306,8 +306,8 @@ def normalize_birdnet_ranking_statistic(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_weight(value: str | None) -> str:
-    candidate = (value or "no").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "no"
+    candidate = (value or "yes").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "yes"
 
 
 def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
@@ -1475,27 +1475,28 @@ def fetch_site_status(site_id: str) -> dict:
 
 def render_site_status_html(site: dict) -> str:
     infrastructure_rows = [
-        ("Site label", site["site_label"]),
-        ("Hostname", site.get("hostname") or "unknown"),
-        ("WireGuard IP", site["wg_ip"]),
-        ("Network", site["network_name"]),
-        ("Client version", site.get("client_version") or "unknown"),
-        ("Client active", "yes" if site.get("is_active") else "no"),
-        ("Status message", site.get("status_message") or "none"),
-        ("Coordinates", f"{site['latitude']:.6f}, {site['longitude']:.6f}"),
-        ("Registered at", render_local_time(site.get("registered_at"), "unknown")),
+        ("Site label", site["site_label"], False),
+        ("Hostname", site.get("hostname") or "unknown", False),
+        ("WireGuard IP", site["wg_ip"], False),
+        ("Network", site["network_name"], False),
+        ("Client version", site.get("client_version") or "unknown", False),
+        ("Client active", "yes" if site.get("is_active") else "no", False),
+        ("Status message", site.get("status_message") or "none", False),
+        ("Coordinates", f"{site['latitude']:.6f}, {site['longitude']:.6f}", False),
+        ("Registered at", render_local_time(site.get("registered_at"), "unknown"), True),
         (
             "Location updated",
             render_local_time(site.get("location_recorded_at"), "unknown"),
+            True,
         ),
-        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown")),
+        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown"), True),
     ]
     infra_cards = "".join(f"""
         <article class="row-card">
           <div class="dim">{escape_html(label)}</div>
-          <div><strong>{escape_html(value)}</strong></div>
+          <div><strong>{value if is_html else escape_html(value)}</strong></div>
         </article>
-        """ for label, value in infrastructure_rows)
+        """ for label, value, is_html in infrastructure_rows)
     top_species_cards = (
         "".join(f"""
             <div class="summary-row">
@@ -1680,11 +1681,6 @@ def render_site_status_html(site: dict) -> str:
     </div>
     <div class="layout">
       <section class="panel">
-        <h2 class="section-title">Top 5 Species (Weighted)</h2>
-        <div class="dim"><a href="{escape_html(site['birdnet_rankings_url'])}">Open full BirdNET rankings</a></div>
-        <div class="summary-card">{top_species_cards}</div>
-      </section>
-      <section class="panel">
         <h2 class="section-title">Infrastructure Details</h2>
         <div class="list">{infra_cards}</div>
       </section>
@@ -1787,6 +1783,8 @@ def fetch_site_birdnet_rankings(
     normalized_variable = normalize_birdnet_ranking_variable(variable_key)
     normalized_statistic = normalize_birdnet_ranking_statistic(statistic_key)
     normalized_weight = normalize_birdnet_ranking_weight(weight_key)
+    if normalized_variable in {"occup", "volume"}:
+        normalized_weight = "no"
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
 
@@ -2979,9 +2977,9 @@ def render_birdnet_rankings_html(site: dict) -> str:
         <div class="section-bar">
           <h2 class="section-title">Rankings</h2>
           <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
-            <select name="variable" onchange="submitBirdnetRankingControls()" aria-label="Variable">{variable_options}</select>
+            <select name="variable" onchange="handleBirdnetVariableChange()" aria-label="Variable">{variable_options}</select>
             <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
-            <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weight by occupancy">{weight_options}</select>
+            <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weighted">{weight_options}</select>
             <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
           </form>
         </div>
@@ -2994,6 +2992,18 @@ def render_birdnet_rankings_html(site: dict) -> str:
     </div>
   </div>
   <script>
+    function handleBirdnetVariableChange() {{
+      const form = document.getElementById("birdnetRankingControls");
+      if (!form) return;
+      const variableSelect = form.elements.namedItem("variable");
+      const weightSelect = form.elements.namedItem("weight");
+      const variableValue = variableSelect ? String(variableSelect.value || "") : "";
+      if (weightSelect && (variableValue === "occup" || variableValue === "volume")) {{
+        weightSelect.value = "no";
+      }}
+      form.requestSubmit();
+    }}
+
     function submitBirdnetRankingControls() {{
       const form = document.getElementById("birdnetRankingControls");
       if (!form) return;
