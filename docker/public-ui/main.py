@@ -3308,6 +3308,7 @@ def render_index_html() -> str:
     const minLatSpan = 1.0;
     const tileSize = 256;
     const maxTileZoom = 17;
+    const mapFitMode = "cover";
     const satelliteTileTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
     let currentView = {{ ...worldBounds }};
     let sites = [];
@@ -3424,33 +3425,36 @@ def render_index_html() -> str:
       return {{ x, y }};
     }}
 
+    function mapViewport(rect, zoom) {{
+      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
+      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
+      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
+      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
+      const scaleToContain = Math.min(rect.width / worldWidth, rect.height / worldHeight);
+      const scaleToCover = Math.max(rect.width / worldWidth, rect.height / worldHeight);
+      const scale = mapFitMode === "cover" ? scaleToCover : scaleToContain;
+      const drawWidth = worldWidth * scale;
+      const drawHeight = worldHeight * scale;
+      return {{
+        topLeft,
+        bottomRight,
+        worldWidth,
+        worldHeight,
+        scale,
+        offsetX: (rect.width - drawWidth) / 2,
+        offsetY: (rect.height - drawHeight) / 2,
+      }};
+    }}
+
     function chooseBasemapZoom(rect) {{
-      const lonSpan = Math.max(0.0001, currentView.lonMax - currentView.lonMin);
-      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
-      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
-      const mercatorWidth = Math.max(1, bottomRight.x - topLeft.x);
-      const mercatorHeight = Math.max(1, bottomRight.y - topLeft.y);
-      const zoomFromWidth = Math.log2(rect.width / mercatorWidth);
-      const zoomFromHeight = Math.log2(rect.height / mercatorHeight);
-      const zoom = Math.floor(Math.min(zoomFromWidth, zoomFromHeight));
+      const viewport = mapViewport(rect, 0);
+      const zoom = Math.floor(Math.log2(viewport.scale));
       if (!Number.isFinite(zoom)) return 1;
       return Math.max(1, Math.min(maxTileZoom, zoom));
     }}
 
     function mercatorViewport(rect) {{
-      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, 0);
-      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, 0);
-      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
-      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
-      const drawWidth = worldWidth * scale;
-      const drawHeight = worldHeight * scale;
-      return {{
-        topLeft,
-        scale,
-        offsetX: (rect.width - drawWidth) / 2,
-        offsetY: (rect.height - drawHeight) / 2,
-      }};
+      return mapViewport(rect, 0);
     }}
 
     function tileUrl(z, x, y) {{
@@ -3491,16 +3495,12 @@ def render_index_html() -> str:
       ctx.fillRect(0, 0, rect.width, rect.height);
 
       const zoom = chooseBasemapZoom(rect);
-      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
-      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
-      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
-      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      // Use one shared scale so imagery keeps true aspect ratio (no X/Y warping).
-      const scale = Math.min(rect.width / worldWidth, rect.height / worldHeight);
-      const drawWidth = worldWidth * scale;
-      const drawHeight = worldHeight * scale;
-      const offsetX = (rect.width - drawWidth) / 2;
-      const offsetY = (rect.height - drawHeight) / 2;
+      const viewport = mapViewport(rect, zoom);
+      const topLeft = viewport.topLeft;
+      const bottomRight = viewport.bottomRight;
+      const scale = viewport.scale;
+      const offsetX = viewport.offsetX;
+      const offsetY = viewport.offsetY;
 
       const xStart = Math.floor(topLeft.x / tileSize);
       const xEnd = Math.floor(bottomRight.x / tileSize);
