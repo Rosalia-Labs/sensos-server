@@ -27,7 +27,6 @@ services:
       GIT_BRANCH: ${GIT_BRANCH}
       GIT_TAG: ${GIT_TAG}
       GIT_DIRTY: ${GIT_DIRTY}
-      EXPOSE_CONTAINERS: ${EXPOSE_CONTAINERS}
       PUBLIC_DB_PASSWORD: ${PUBLIC_DB_PASSWORD}
     expose:
       - "8765"
