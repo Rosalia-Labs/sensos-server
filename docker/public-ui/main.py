@@ -3004,7 +3004,7 @@ def render_index_html() -> str:
     .meta {{ color: var(--muted); font-size: 0.85rem; }}
     .layout {{
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
       gap: 1rem;
       height: calc(100vh - 4.2rem);
     }}
@@ -3102,7 +3102,6 @@ def render_index_html() -> str:
       gap: 0.75rem;
       align-content: start;
       overflow: auto;
-      display: none;
     }}
     .sidebar h2 {{
       margin: 0;
@@ -3253,6 +3252,7 @@ def render_index_html() -> str:
       .layout {{ height: auto; }}
       .map-wrap {{ min-height: 68vh; }}
       .mini-plots {{ grid-template-columns: 1fr; }}
+      .sidebar {{ display: none; }}
     }}
   </style>
 </head>
@@ -3289,7 +3289,8 @@ def render_index_html() -> str:
         </section>
         <div class="metric-grid" id="metricGrid"></div>
         <section>
-          <div id="chooserBlock" class="site-list"></div>
+          <div class="section-title">Nearest Sites</div>
+          <div id="nearestSitesBlock" class="site-list"></div>
         </section>
         <section>
           <div class="section-title">Recent BirdNET Results</div>
@@ -3315,7 +3316,6 @@ def render_index_html() -> str:
     let currentView = {{ ...worldBounds }};
     let sites = [];
     let activeSiteId = null;
-    let chooserSites = [];
     const tileCache = new Map();
 
     const mapStage = document.getElementById("mapStage");
@@ -3330,7 +3330,7 @@ def render_index_html() -> str:
     const birdnetSummary = document.getElementById("birdnetSummary");
     const sensorMiniPlots = document.getElementById("sensorMiniPlots");
     const metricGrid = document.getElementById("metricGrid");
-    const chooserBlock = document.getElementById("chooserBlock");
+    const nearestSitesBlock = document.getElementById("nearestSitesBlock");
     const birdnetList = document.getElementById("birdnetList");
     const i2cList = document.getElementById("i2cList");
 
@@ -3603,6 +3603,7 @@ def render_index_html() -> str:
       drawMap();
       renderMarkers();
       mapCaption.textContent = `${{sites.length}} sites`;
+      renderNearestSites();
     }}
 
     function fitSites(targetSites) {{
@@ -3622,21 +3623,58 @@ def render_index_html() -> str:
       render();
     }}
 
-    function setChooserSites(targetSites) {{
-      chooserSites = targetSites;
-      if (!targetSites.length) {{
-        chooserBlock.className = "site-list";
-        chooserBlock.innerHTML = "";
+    function displaySiteName(site) {{
+      const note = String(site?.note || "").trim();
+      if (note) return note;
+      const hostname = String(site?.hostname || "").trim();
+      if (hostname) return hostname;
+      return String(site?.wg_ip || "unknown");
+    }}
+
+    function haversineKm(lat1, lon1, lat2, lon2) {{
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      return 2 * 6371 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }}
+
+    function nearestSitesByCenter() {{
+      if (!sites.length) return [];
+      const centerLon = (currentView.lonMin + currentView.lonMax) / 2;
+      const centerLat = (currentView.latMin + currentView.latMax) / 2;
+      return sites
+        .map((site) => ({{
+          site,
+          distanceKm: haversineKm(centerLat, centerLon, site.latitude, site.longitude),
+        }}))
+        .sort((a, b) => a.distanceKm - b.distanceKm);
+    }}
+
+    function nearestSiteRowLimit() {{
+      const rect = nearestSitesBlock.getBoundingClientRect();
+      if (!rect.height || rect.height < 10) return 8;
+      return Math.max(3, Math.floor(rect.height / 60));
+    }}
+
+    function renderNearestSites() {{
+      const ranked = nearestSitesByCenter();
+      if (!ranked.length) {{
+        nearestSitesBlock.innerHTML = '<div class="dim">No sites are visible yet.</div>';
         return;
       }}
-      chooserBlock.className = "site-list";
-      chooserBlock.innerHTML = "";
-      for (const site of targetSites) {{
+      const rowLimit = nearestSiteRowLimit();
+      nearestSitesBlock.innerHTML = "";
+      for (const entry of ranked.slice(0, rowLimit)) {{
         const button = document.createElement("button");
         button.type = "button";
-        button.innerHTML = `<strong>${{escapeHtml(site.site_label)}}</strong><div class="dim mono">${{escapeHtml(site.wg_ip)}}</div>`;
-        button.addEventListener("click", () => openSiteDashboard(site));
-        chooserBlock.appendChild(button);
+        button.innerHTML =
+          `<strong>${{escapeHtml(displaySiteName(entry.site))}}</strong>` +
+          `<div class="dim mono">${{escapeHtml(entry.site.wg_ip)}} · ${{escapeHtml(formatNumber(entry.distanceKm, 1))}} km</div>`;
+        button.addEventListener("click", () => openSiteDashboard(entry.site));
+        nearestSitesBlock.appendChild(button);
       }}
     }}
 
@@ -3768,7 +3806,6 @@ def render_index_html() -> str:
       if (!response.ok) return;
       const site = await response.json();
       activeSiteId = site.site_id;
-      setChooserSites([]);
       siteTitle.textContent = site.site_label;
       siteTitleLink.href = `${{site.public_url}}/status`;
       siteSubtitle.innerHTML = `<a href="${{escapeHtml(site.public_url)}}" target="_blank" rel="noopener">Open public site page</a> · <span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
@@ -3842,7 +3879,7 @@ def render_index_html() -> str:
           const dy = pos.y - y;
           return {{ site, distance: Math.sqrt(dx * dx + dy * dy) }};
         }})
-        .filter((entry) => entry.distance <= 16)
+        .filter((entry) => entry.distance <= 24)
         .sort((a, b) => a.distance - b.distance);
 
       if (!candidates.length) return;
@@ -3855,11 +3892,9 @@ def render_index_html() -> str:
       const clusterMinDistancePx = minimumPairDistancePx(matchedSites);
       if (clusterMinDistancePx < clusterSeparationTargetPx && !isAtMaxZoom()) {{
         zoomIntoSites(matchedSites);
-        setChooserSites([]);
         return;
       }}
-
-      setChooserSites(matchedSites);
+      openSiteDashboard(matchedSites[0]);
     }}
 
     function minimumPairDistancePx(targetSites) {{
@@ -3944,7 +3979,6 @@ def render_index_html() -> str:
     resetViewButton.addEventListener("click", () => {{
       currentView = {{ ...worldBounds }};
       activeSiteId = null;
-      setChooserSites([]);
       siteTitle.textContent = "Map";
       siteTitleLink.href = "#";
       siteSubtitle.textContent = "";
