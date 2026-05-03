@@ -42,56 +42,24 @@ DETAIL_EVIDENCE_RANGES = {
 
 BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
 
-BIRDNET_RANKING_SORTS = {
-    "sum_score_x_likely": {
-        "label": "Weighted frequency",
-        "metric_label": "Weighted frequency",
-        "description": "Summed BirdNET score multiplied by occupancy score across detections in the selected window.",
-        "order_sql": "sum_score_x_likely DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "sum_score_x_likely",
-    },
-    "sum_score_x_occup": {
-        "label": "Weighted duration",
-        "metric_label": "Weighted duration",
-        "description": "Summed clip duration multiplied by BirdNET score and occupancy score across detections in the selected window.",
-        "order_sql": "sum_score_x_occup DESC NULLS LAST, max_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "sum_score_x_occup",
-    },
-    "detection_count": {
-        "label": "Frequency",
-        "metric_label": "Frequency",
-        "description": "Counts retained BirdNET detections (runs), treating each detection interval as one occurrence.",
-        "order_sql": "detection_count DESC, sum_score_x_occup DESC NULLS LAST, max_score DESC NULLS LAST, top_label ASC",
-        "value_key": "detection_count",
-    },
-    "duration_sec": {
-        "label": "Duration",
-        "metric_label": "Duration",
-        "description": "Summed clip duration across detections in the selected window.",
-        "order_sql": "duration_sec DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "duration_sec",
-    },
-    "max_score": {
-        "label": "Max. birdnet score",
-        "metric_label": "Max. birdnet score",
-        "description": "Largest BirdNET score observed in the selected window.",
-        "order_sql": "max_score DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "max_score",
-    },
-    "max_occup": {
-        "label": "Max. prob. presense",
-        "metric_label": "Max. prob. presense",
-        "description": "Largest occupancy score observed in the selected window.",
-        "order_sql": "max_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "max_occup",
-    },
-    "avg_volume": {
-        "label": "Average volume",
-        "metric_label": "Average volume",
-        "description": "Average retained BirdNET window volume observed in the selected window.",
-        "order_sql": "avg_volume DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "avg_volume",
-    },
+BIRDNET_RANKING_VARIABLES = {
+    "frequency": {"label": "Frequency"},
+    "duration": {"label": "Duration"},
+    "score": {"label": "Score"},
+    "occup": {"label": "Occupancy"},
+    "volume": {"label": "Volume"},
+}
+
+BIRDNET_RANKING_STATISTICS = {
+    "mean": {"label": "Mean"},
+    "min": {"label": "Min"},
+    "max": {"label": "Max"},
+    "median": {"label": "Median"},
+}
+
+BIRDNET_RANKING_WEIGHTING = {
+    "no": {"label": "Weight by occup.: no"},
+    "yes": {"label": "Weight by occup.: yes"},
 }
 
 
@@ -327,9 +295,19 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
     return candidate if candidate in BIRDNET_RANKING_RANGES else "day"
 
 
-def normalize_birdnet_ranking_sort(value: str | None) -> str:
-    candidate = (value or "sum_score_x_likely").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_likely"
+def normalize_birdnet_ranking_variable(value: str | None) -> str:
+    candidate = (value or "score").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "score"
+
+
+def normalize_birdnet_ranking_statistic(value: str | None) -> str:
+    candidate = (value or "mean").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_STATISTICS else "mean"
+
+
+def normalize_birdnet_ranking_weight(value: str | None) -> str:
+    candidate = (value or "no").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "no"
 
 
 def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
@@ -1685,9 +1663,10 @@ def render_site_status_html(site: dict) -> str:
   <div class="shell">
     <div class="masthead">
       <div class="nav-row">
-        <span class="nav-link">Overview</span>
+        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
         <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
+        <span class="nav-link">Status</span>
       </div>
       <div class="meta">
         <a href="/">Back to all field sites</a>
@@ -1698,7 +1677,6 @@ def render_site_status_html(site: dict) -> str:
       <section class="panel"><div class="metric-label">Hostname</div><div class="metric-value">{escape_html(site['hostname'] or 'unknown')}</div></section>
       <section class="panel"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{escape_html(site['wg_ip'])}</div></section>
       <section class="panel"><div class="metric-label">Last Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'No check-in yet')}</div></section>
-      <section class="panel"><div class="metric-label">Public Site</div><div class="metric-value"><a href="{escape_html(site['public_url'])}">Open site dashboard</a></div></section>
     </div>
     <div class="layout">
       <section class="panel">
@@ -1800,14 +1778,17 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
 
 def fetch_site_birdnet_rankings(
     site_id: str,
-    sort_key: str | None = None,
+    variable_key: str | None = None,
+    statistic_key: str | None = None,
+    weight_key: str | None = None,
     range_key: str | None = None,
 ) -> dict:
     site = fetch_site_detail(site_id)
-    normalized_sort = normalize_birdnet_ranking_sort(sort_key)
+    normalized_variable = normalize_birdnet_ranking_variable(variable_key)
+    normalized_statistic = normalize_birdnet_ranking_statistic(statistic_key)
+    normalized_weight = normalize_birdnet_ranking_weight(weight_key)
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
-    sort_config = BIRDNET_RANKING_SORTS[normalized_sort]
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1822,6 +1803,40 @@ def fetch_site_birdnet_rankings(
                 if has_window_volume
                 else "NULL::double precision AS avg_volume"
             )
+
+            base_variable_expr_map = {
+                "frequency": "1::double precision",
+                "duration": "greatest(end_sec - start_sec, 0)::double precision",
+                "score": "top_score::double precision",
+                "occup": "coalesce(top_likely_score, top_score)::double precision",
+                "volume": (
+                    "volume::double precision"
+                    if has_window_volume
+                    else "NULL::double precision"
+                ),
+            }
+            variable_expr = base_variable_expr_map[normalized_variable]
+            if normalized_weight == "yes" and normalized_variable != "occup":
+                variable_expr = (
+                    f"({variable_expr}) * coalesce(top_likely_score, top_score)::double precision"
+                )
+
+            statistic_expr_map = {
+                "mean": f"avg({variable_expr})",
+                "min": f"min({variable_expr})",
+                "max": f"max({variable_expr})",
+                "median": f"percentile_cont(0.5) WITHIN GROUP (ORDER BY {variable_expr})",
+            }
+            selected_metric_expr = statistic_expr_map[normalized_statistic]
+            selected_metric_label = (
+                f"{BIRDNET_RANKING_STATISTICS[normalized_statistic]['label']} "
+                f"{BIRDNET_RANKING_VARIABLES[normalized_variable]['label']}"
+                f"{' × occup' if normalized_weight == 'yes' and normalized_variable != 'occup' else ''}"
+            )
+            selected_metric_description = (
+                f"{BIRDNET_RANKING_STATISTICS[normalized_statistic]['label']} of "
+                f"{BIRDNET_RANKING_VARIABLES[normalized_variable]['label'].lower()}"
+            )
             if range_cutoff is None:
                 cur.execute(
                     f"""
@@ -1834,11 +1849,12 @@ def fetch_site_birdnet_rankings(
                            max(top_score) AS max_score,
                            max(coalesce(top_likely_score, top_score)) AS max_occup,
                            {avg_volume_expr},
+                           {selected_metric_expr} AS selected_metric,
                            max(processed_at) AS latest_processed_at
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
                     GROUP BY top_label
-                    ORDER BY {sort_config["order_sql"]}
+                    ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
                     """,
                     (site["wg_ip"],),
                 )
@@ -1867,11 +1883,12 @@ def fetch_site_birdnet_rankings(
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
                                {avg_volume_expr},
+                               {selected_metric_expr} AS selected_metric,
                                max(processed_at) AS latest_processed_at
                         FROM sensos.public_site_birdnet_detections
                         WHERE wg_ip = %s
                         GROUP BY top_label
-                        ORDER BY {sort_config["order_sql"]}
+                        ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
                         """,
                         (site["wg_ip"],),
                     )
@@ -1887,12 +1904,13 @@ def fetch_site_birdnet_rankings(
                                max(top_score) AS max_score,
                                max(coalesce(top_likely_score, top_score)) AS max_occup,
                                {avg_volume_expr},
+                               {selected_metric_expr} AS selected_metric,
                                max(processed_at) AS latest_processed_at
                         FROM sensos.public_site_birdnet_detections
                         WHERE wg_ip = %s
                           AND processed_at >= %s
                         GROUP BY top_label
-                        ORDER BY {sort_config["order_sql"]}
+                        ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
                         """,
                         (site["wg_ip"], anchored_cutoff),
                     )
@@ -1900,11 +1918,12 @@ def fetch_site_birdnet_rankings(
 
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
-    site["birdnet_ranking_sort"] = normalized_sort
+    site["birdnet_ranking_variable"] = normalized_variable
+    site["birdnet_ranking_statistic"] = normalized_statistic
+    site["birdnet_ranking_weight"] = normalized_weight
     site["birdnet_ranking_range"] = normalized_range
-    site["birdnet_ranking_sort_label"] = sort_config["label"]
-    site["birdnet_ranking_metric_label"] = sort_config["metric_label"]
-    site["birdnet_ranking_description"] = sort_config["description"]
+    site["birdnet_ranking_metric_label"] = selected_metric_label
+    site["birdnet_ranking_description"] = selected_metric_description
     site["birdnet_rankings"] = [
         {
             "label": row[0],
@@ -1916,7 +1935,8 @@ def fetch_site_birdnet_rankings(
             "max_score": float(row[6]) if row[6] is not None else None,
             "max_occup": float(row[7]) if row[7] is not None else None,
             "avg_volume": float(row[8]) if row[8] is not None else None,
-            "latest_processed_at": format_rfc3339_utc(row[9]),
+            "selected_metric": float(row[9]) if row[9] is not None else None,
+            "latest_processed_at": format_rfc3339_utc(row[10]),
         }
         for row in ranking_rows
     ]
@@ -2207,6 +2227,7 @@ def render_birdnet_species_html(site: dict) -> str:
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
         <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
+        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
       <div class="meta">
         <a href="/">Back to all field sites</a>
@@ -2498,9 +2519,9 @@ def render_site_detail_html(site: dict) -> str:
     <div class="masthead">
       <div class="nav-row">
         <span class="nav-link">Overview</span>
-        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
         <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
         <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
+        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
       <div class="meta">
         <a href="/">Back to all field sites</a>
@@ -2704,6 +2725,7 @@ def render_synoptic_html(site: dict) -> str:
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
         <span class="nav-link">Time series</span>
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
+        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
       <div class="meta">
         <a href="/">Back to all field sites</a>
@@ -2725,9 +2747,15 @@ def render_synoptic_html(site: dict) -> str:
 
 
 def render_birdnet_rankings_html(site: dict) -> str:
-    selected_sort = normalize_birdnet_ranking_sort(site.get("birdnet_ranking_sort"))
+    selected_variable = normalize_birdnet_ranking_variable(
+        site.get("birdnet_ranking_variable")
+    )
+    selected_statistic = normalize_birdnet_ranking_statistic(
+        site.get("birdnet_ranking_statistic")
+    )
+    selected_weight = normalize_birdnet_ranking_weight(site.get("birdnet_ranking_weight"))
     selected_range = normalize_birdnet_ranking_range(site.get("birdnet_ranking_range"))
-    selected_metric = BIRDNET_RANKING_SORTS[selected_sort]["value_key"]
+    selected_metric = "selected_metric"
     plotted_species_count = sum(
         1 for item in site["birdnet_rankings"] if item.get(selected_metric) is not None
     )
@@ -2759,9 +2787,17 @@ def render_birdnet_rankings_html(site: dict) -> str:
         or '<div class="empty">No ranked BirdNET species are visible for the selected time window.</div>'
     )
 
-    sort_options = "".join(
-        f'<option value="{key}"{" selected" if key == selected_sort else ""}>{escape_html(config["label"])}</option>'
-        for key, config in BIRDNET_RANKING_SORTS.items()
+    variable_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_variable else ""}>{escape_html(config["label"])}</option>'
+        for key, config in BIRDNET_RANKING_VARIABLES.items()
+    )
+    statistic_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_statistic else ""}>{escape_html(config["label"])}</option>'
+        for key, config in BIRDNET_RANKING_STATISTICS.items()
+    )
+    weight_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_weight else ""}>{escape_html(config["label"])}</option>'
+        for key, config in BIRDNET_RANKING_WEIGHTING.items()
     )
     range_options = "".join(
         f'<option value="{key}"{" selected" if key == selected_range else ""}>{label}</option>'
@@ -2847,7 +2883,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     .controls {{
       display: grid;
-      grid-template-columns: minmax(340px, 2.3fr) minmax(180px, 1fr);
+      grid-template-columns: minmax(160px, 1.35fr) minmax(120px, 0.9fr) minmax(170px, 1fr) minmax(120px, 0.8fr);
       gap: 0.65rem;
       align-items: center;
     }}
@@ -2932,6 +2968,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
         <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
         <span class="nav-link">BirdNET rankings</span>
+        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
       <div class="meta">
         <a href="/">Back to all field sites</a>
@@ -2942,7 +2979,9 @@ def render_birdnet_rankings_html(site: dict) -> str:
         <div class="section-bar">
           <h2 class="section-title">Rankings</h2>
           <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
-            <select name="sort" onchange="submitBirdnetRankingControls()" aria-label="Sort criteria">{sort_options}</select>
+            <select name="variable" onchange="submitBirdnetRankingControls()" aria-label="Variable">{variable_options}</select>
+            <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
+            <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weight by occupancy">{weight_options}</select>
             <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
           </form>
         </div>
@@ -3024,7 +3063,9 @@ def birdnet_rankings_site_page(site_id: str, request: Request):
         render_birdnet_rankings_html(
             fetch_site_birdnet_rankings(
                 site_id,
-                request.query_params.get("sort"),
+                request.query_params.get("variable"),
+                request.query_params.get("stat"),
+                request.query_params.get("weight"),
                 request.query_params.get("range"),
             )
         )
@@ -3590,9 +3631,6 @@ def render_index_html() -> str:
 
     function popupHtml(site) {{
       const publicUrl = siteUrl(site);
-      const statusUrl = site.status_url || `${{publicUrl}}/status`;
-      const synopticUrl = site.synoptic_url || `${{publicUrl}}/synoptic`;
-      const birdnetUrl = site.birdnet_rankings_url || `${{publicUrl}}/birdnet-rankings`;
 
       return `
         <div class="site-popup">
@@ -3605,9 +3643,6 @@ def render_index_html() -> str:
           </div>
           <div class="site-popup-actions">
             <a href="${{escapeHtml(publicUrl)}}">Open dashboard</a>
-            <a href="${{escapeHtml(statusUrl)}}">Status</a>
-            <a href="${{escapeHtml(synopticUrl)}}">Time series</a>
-            <a href="${{escapeHtml(birdnetUrl)}}">BirdNET</a>
           </div>
         </div>
       `;
@@ -3746,4 +3781,3 @@ def render_index_html() -> str:
   </script>
 </body>
 </html>"""
-
