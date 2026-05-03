@@ -1,2976 +1,35 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Rosalia Labs LLC
-
-import json
-import os
-import html
-import re
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
-
-import psycopg
-
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-
-
-POSTGRES_USER = "sensos_public"
-POSTGRES_PASSWORD = os.getenv("PUBLIC_DB_PASSWORD", "sensos-public")
-DATABASE_URL = (
-    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
-)
-
-VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
-VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")
-VERSION_PATCH = os.getenv("VERSION_PATCH", "Unknown")
-VERSION_SUFFIX = os.getenv("VERSION_SUFFIX", "")
-
-SYNOPTIC_RANGES = {
-    "hour": timedelta(hours=1),
-    "day": timedelta(days=1),
-    "week": timedelta(days=7),
-    "month": timedelta(days=30),
-}
-
-DETAIL_EVIDENCE_RANGES = {
-    "hour": timedelta(hours=1),
-    "day": timedelta(days=1),
-    "week": timedelta(days=7),
-    "month": timedelta(days=30),
-    "all": None,
-}
-
-BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
-
-BIRDNET_RANKING_SORTS = {
-    "sum_score_x_likely": {
-        "label": "Weighted frequency",
-        "metric_label": "Weighted frequency",
-        "description": "Summed BirdNET score multiplied by occupancy score across detections in the selected window.",
-        "order_sql": "sum_score_x_likely DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "sum_score_x_likely",
-    },
-    "sum_score_x_occup": {
-        "label": "Weighted duration",
-        "metric_label": "Weighted duration",
-        "description": "Summed clip duration multiplied by BirdNET score and occupancy score across detections in the selected window.",
-        "order_sql": "sum_score_x_occup DESC NULLS LAST, max_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "sum_score_x_occup",
-    },
-    "detection_count": {
-        "label": "Frequency",
-        "metric_label": "Frequency",
-        "description": "Counts retained BirdNET detections (runs), treating each detection interval as one occurrence.",
-        "order_sql": "detection_count DESC, sum_score_x_occup DESC NULLS LAST, max_score DESC NULLS LAST, top_label ASC",
-        "value_key": "detection_count",
-    },
-    "duration_sec": {
-        "label": "Duration",
-        "metric_label": "Duration",
-        "description": "Summed clip duration across detections in the selected window.",
-        "order_sql": "duration_sec DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "duration_sec",
-    },
-    "max_score": {
-        "label": "Max. birdnet score",
-        "metric_label": "Max. birdnet score",
-        "description": "Largest BirdNET score observed in the selected window.",
-        "order_sql": "max_score DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "max_score",
-    },
-    "max_occup": {
-        "label": "Max. prob. presense",
-        "metric_label": "Max. prob. presense",
-        "description": "Largest occupancy score observed in the selected window.",
-        "order_sql": "max_occup DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "max_occup",
-    },
-    "avg_volume": {
-        "label": "Average volume",
-        "metric_label": "Average volume",
-        "description": "Average retained BirdNET window volume observed in the selected window.",
-        "order_sql": "avg_volume DESC NULLS LAST, sum_score_x_occup DESC NULLS LAST, detection_count DESC, top_label ASC",
-        "value_key": "avg_volume",
-    },
-}
-
-
-def _theme_override_css() -> str:
-    theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
-    if theme != "vscode-dark":
-        return ""
-    tokens = _vscode_dark_theme_tokens()
-    return """
-    :root {
-      --bg: %(bg)s;
-      --panel: %(panel)s;
-      --ink: %(ink)s;
-      --muted: %(muted)s;
-      --accent: %(accent)s;
-      --accent-2: %(accent_2)s;
-      --border: %(border)s;
-      --shadow: %(shadow)s;
-      --marker: %(marker)s;
-      --marker-active: %(marker_active)s;
-    }
-    body {
-      background:
-        radial-gradient(circle at top left, %(bg_glow_1)s, transparent 28rem),
-        radial-gradient(circle at top right, %(bg_glow_2)s, transparent 24rem),
-        linear-gradient(180deg, %(bg_top)s 0%%, var(--bg) 100%%);
-    }
-    a, .nav-link-inline { color: var(--accent); }
-    .panel { background: var(--panel); }
-    select {
-      background: %(control_bg)s;
-      border-color: %(control_border)s;
-      color: %(ink)s;
-    }
-    .range-pill.active { background: var(--accent); border-color: var(--accent); color: %(bg_top)s; }
-    .summary-bar { background: linear-gradient(90deg, %(accent)s, %(weighted)s); }
-    .metric-pill { background: %(metric_pill_bg)s; color: %(metric_pill_fg)s; }
-    .plot-shell {
-      background: linear-gradient(180deg, %(plot_bg_top)s, %(plot_bg_bottom)s);
-      border-color: %(plot_border)s;
-    }
-    """ % tokens
-
-
-def _vscode_dark_theme_tokens() -> dict[str, str]:
-    tokens = {
-        "bg": "#0f1115",
-        "panel": "rgba(30,34,40,0.94)",
-        "ink": "#d4d4d4",
-        "muted": "#a7adb5",
-        "accent": "#4ec9b0",
-        "accent_2": "#ce9178",
-        "border": "rgba(255,255,255,0.16)",
-        "shadow": "0 24px 60px rgba(0,0,0,0.52)",
-        "marker": "#4ec9b0",
-        "marker_active": "#d19a66",
-        "bg_glow_1": "rgba(78,201,176,0.12)",
-        "bg_glow_2": "rgba(209,154,102,0.1)",
-        "bg_top": "#0a0c10",
-        "control_bg": "rgba(24,27,33,0.95)",
-        "control_border": "rgba(255,255,255,0.2)",
-        "weighted": "#d19a66",
-        "metric_pill_bg": "rgba(78,201,176,0.16)",
-        "metric_pill_fg": "#7fe6d2",
-        "plot_bg_top": "rgba(17,19,24,0.96)",
-        "plot_bg_bottom": "rgba(12,14,18,0.93)",
-        "plot_border": "rgba(255,255,255,0.14)",
-        "occupancy": "#9cdcfe",
-        "alt": "#b5cea8",
-    }
-    raw = (os.getenv("SENSOS_UI_THEME_VSCODE_DARK_TOKENS", "") or "").strip()
-    if not raw:
-        return tokens
-    try:
-        payload = json.loads(raw)
-        if isinstance(payload, dict):
-            for key, value in payload.items():
-                if key in tokens and isinstance(value, str) and value.strip():
-                    tokens[key] = value.strip()
-    except Exception:
-        pass
-    return tokens
-
-
-def _plot_color(name: str) -> str:
-    theme = (os.getenv("SENSOS_UI_THEME", "default") or "default").strip().lower()
-    if theme == "vscode-dark":
-        tokens = _vscode_dark_theme_tokens()
-        palette = {
-            "accent": tokens["accent"],
-            "occupancy": tokens["occupancy"],
-            "weighted": tokens["weighted"],
-            "alt": tokens["alt"],
-        }
-        return palette.get(name, palette["accent"])
-    palette = {
-        "accent": "#0c6d62",
-        "occupancy": "#2563eb",
-        "weighted": "#b45309",
-        "alt": "#1d8b78",
-    }
-    return palette.get(name, palette["accent"])
-
-
-def current_version() -> str:
-    base = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
-    return f"{base}-{VERSION_SUFFIX}" if VERSION_SUFFIX else base
-
-
-def get_db(retries: int = 10, delay: int = 3):
-    import time
-
-    for attempt in range(retries):
-        try:
-            return psycopg.connect(DATABASE_URL, autocommit=True)
-        except psycopg.OperationalError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(delay)
-
-
-def relation_has_column(
-    cur, schema_name: str, relation_name: str, column_name: str
-) -> bool:
-    cur.execute(
-        """
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = %s
-          AND table_name = %s
-          AND column_name = %s
-        LIMIT 1;
-        """,
-        (schema_name, relation_name, column_name),
-    )
-    return cur.fetchone() is not None
-
-
-def format_rfc3339_utc(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def escape_html(value) -> str:
-    return html.escape(str(value or ""))
-
-
-def render_local_time(value: str | None, fallback: str = "Unknown time") -> str:
-    if not value:
-        return escape_html(fallback)
-    safe_value = escape_html(value)
-    return f'<time class="local-time" data-utc="{safe_value}" datetime="{safe_value}">{safe_value}</time>'
-
-
-def render_local_time_script() -> str:
-    return """
-  <script>
-    function formatLocalTimestamp(value, options) {
-      if (!value) return "";
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) return value;
-      return new Intl.DateTimeFormat(undefined, options || {
-        year: "numeric",
-        month: "short",
-        day: "2-digit",
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZoneName: "short"
-      }).format(parsed);
-    }
-
-    function localizeUtcElements(root) {
-      const scope = root || document;
-      const twoDigits = (num) => String(num).padStart(2, "0");
-      for (const node of scope.querySelectorAll("[data-utc]")) {
-        const utcValue = node.getAttribute("data-utc");
-        const mode = node.getAttribute("data-time-style") || "full";
-        if (mode === "tick") {
-          const parsed = new Date(utcValue || "");
-          if (Number.isNaN(parsed.getTime())) continue;
-          const timeText = formatLocalTimestamp(utcValue, { hour: "2-digit", minute: "2-digit" });
-          const dateText = `${twoDigits(parsed.getMonth() + 1)}/${twoDigits(parsed.getDate())}/${parsed.getFullYear()}`;
-          if ((node.namespaceURI || "").includes("svg")) {
-            const x = node.getAttribute("x") || "0";
-            while (node.firstChild) node.removeChild(node.firstChild);
-            const ns = "http://www.w3.org/2000/svg";
-            const topLine = document.createElementNS(ns, "tspan");
-            topLine.setAttribute("x", x);
-            topLine.setAttribute("dy", "0");
-            topLine.textContent = timeText;
-            const bottomLine = document.createElementNS(ns, "tspan");
-            bottomLine.setAttribute("x", x);
-            bottomLine.setAttribute("dy", "12");
-            bottomLine.textContent = dateText;
-            node.appendChild(topLine);
-            node.appendChild(bottomLine);
-          } else {
-            node.textContent = `${timeText} ${dateText}`;
-          }
-        } else {
-          const options = { year: "numeric", month: "short", day: "2-digit", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" };
-          node.textContent = formatLocalTimestamp(utcValue, options);
-        }
-      }
-      const timezoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || "your browser timezone";
-      for (const node of scope.querySelectorAll("[data-browser-timezone]")) {
-        node.textContent = timezoneName;
-      }
-    }
-
-    document.addEventListener("DOMContentLoaded", function() {
-      localizeUtcElements(document);
-    });
-  </script>"""
-
-
-def normalize_synoptic_range(value: str | None) -> str:
-    candidate = (value or "day").strip().lower()
-    return candidate if candidate in SYNOPTIC_RANGES else "day"
-
-
-def normalize_detail_range(value: str | None) -> str:
-    candidate = (value or "day").strip().lower()
-    return candidate if candidate in DETAIL_EVIDENCE_RANGES else "day"
-
-
-def normalize_birdnet_ranking_range(value: str | None) -> str:
-    candidate = (value or "day").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_RANGES else "day"
-
-
-def normalize_birdnet_ranking_sort(value: str | None) -> str:
-    candidate = (value or "sum_score_x_likely").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_SORTS else "sum_score_x_likely"
-
-
-def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
-    path = f"/sites/{site_id}/birdnet-species/{quote(label, safe='')}"
-    if range_key:
-        return f"{path}?range={quote(range_key, safe='')}"
-    return path
-
-
-def window_cutoff_from_latest(
-    latest_timestamp: datetime | None,
-    window: timedelta | None,
-) -> datetime | None:
-    if latest_timestamp is None or window is None:
-        return None
-    if latest_timestamp.tzinfo is None:
-        latest_timestamp = latest_timestamp.replace(tzinfo=timezone.utc)
-    return latest_timestamp.astimezone(timezone.utc) - window
-
-
-def downsample_points(points: list[dict], limit: int) -> list[dict]:
-    if len(points) <= limit:
-        return points
-    if limit <= 2:
-        return [points[0], points[-1]]
-    step = (len(points) - 1) / float(limit - 1)
-    sampled = [
-        points[min(round(index * step), len(points) - 1)] for index in range(limit - 1)
-    ]
-    sampled.append(points[-1])
-    deduped: list[dict] = []
-    seen: set[tuple[str, float]] = set()
-    for point in sampled:
-        marker = (
-            str(point.get("recorded_at") or point.get("processed_at")),
-            float(point.get("value", point.get("activity", 0.0))),
-        )
-        if marker in seen:
-            continue
-        deduped.append(point)
-        seen.add(marker)
-    return deduped
-
-
-def bucket_birdnet_timestamp(value: datetime, range_key: str) -> datetime:
-    ts = value.astimezone(timezone.utc)
-    if range_key == "hour":
-        minute = (ts.minute // 5) * 5
-        return ts.replace(minute=minute, second=0, microsecond=0)
-    if range_key == "day":
-        return ts.replace(minute=0, second=0, microsecond=0)
-    if range_key == "week":
-        hour = (ts.hour // 6) * 6
-        return ts.replace(hour=hour, minute=0, second=0, microsecond=0)
-    return ts.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def _format_axis_value(value: float) -> str:
-    if abs(value) >= 100:
-        return f"{value:.0f}"
-    if abs(value) >= 10:
-        return f"{value:.1f}".rstrip("0").rstrip(".")
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def _format_sensor_label(sensor_type: str | None, reading_key: str | None) -> str:
-    sensor = (sensor_type or "").strip()
-    key = (reading_key or "").strip().replace("_", " ")
-    key = " ".join(part for part in key.split() if part)
-    if not key:
-        return sensor or "Sensor"
-    if key.lower() == "co2 ppm":
-        key = "CO2 ppm"
-    elif key.lower() == "humidity pct":
-        key = "Humidity %"
-    elif key.lower() == "temperature c":
-        key = "Temperature C"
-    elif key.lower() == "pressure hpa":
-        key = "Pressure hPa"
-    else:
-        key = key.title()
-    return f"{sensor} · {key}" if sensor else key
-
-
-def _format_time_tick(value: str) -> str:
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return timestamp.strftime("%m-%d %H:%M")
-
-
-def detection_event_timestamp(
-    source_path: str | None, start_sec: float | None, processed_at: datetime
-) -> datetime:
-    if source_path:
-        match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)", source_path)
-        if match is not None:
-            try:
-                start_dt = datetime.strptime(
-                    match.group(1), "%Y-%m-%dT%H-%M-%SZ"
-                ).replace(tzinfo=timezone.utc)
-                if start_sec is not None:
-                    return start_dt + timedelta(seconds=float(start_sec))
-                return start_dt
-            except ValueError:
-                pass
-    if processed_at.tzinfo is None:
-        return processed_at.replace(tzinfo=timezone.utc)
-    return processed_at.astimezone(timezone.utc)
-
-
-def _chart_bounds(width: int, height: int) -> dict:
-    return {
-        "left": 58,
-        "right": width - 18,
-        "top": 10,
-        "bottom": height - 34,
-    }
-
-
-def _render_axes(
-    bounds: dict,
-    min_value: float,
-    max_value: float,
-    x_labels: list,
-) -> str:
-    left = bounds["left"]
-    right = bounds["right"]
-    top = bounds["top"]
-    bottom = bounds["bottom"]
-    span = max(max_value - min_value, 1e-9)
-    parts = [
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
-        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bottom}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
-    ]
-    for frac in (0.0, 0.5, 1.0):
-        value = min_value + span * frac
-        y = bottom - (bottom - top) * frac
-        parts.append(
-            f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>'
-        )
-        parts.append(
-            f'<text x="{left - 8}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
-        )
-    for item in x_labels:
-        if isinstance(item, dict):
-            x = float(item["x"])
-            label = item.get("label")
-            utc_value = item.get("utc")
-        else:
-            x, label = item
-            utc_value = None
-        parts.append(
-            f'<line x1="{x:.2f}" y1="{bottom}" x2="{x:.2f}" y2="{bottom + 6}" stroke="rgba(23,32,29,0.24)" stroke-width="1"></line>'
-        )
-        if utc_value:
-            safe_utc = escape_html(str(utc_value))
-            fallback = escape_html(_format_time_tick(str(utc_value)))
-            parts.append(
-                f'<text x="{x:.2f}" y="{bottom + 14}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)" data-utc="{safe_utc}" data-time-style="tick">{fallback}</text>'
-            )
-        else:
-            parts.append(
-                f'<text x="{x:.2f}" y="{bottom + 14}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(label)}</text>'
-            )
-    return "".join(parts)
-
-
-def render_line_chart_svg(
-    points: list[dict],
-    value_key: str,
-    stroke: str,
-    width: int = 760,
-    height: int = 180,
-) -> str:
-    if not points:
-        return ""
-    values = [
-        float(point[value_key]) for point in points if point.get(value_key) is not None
-    ]
-    if not values:
-        return ""
-    bounds = _chart_bounds(width, height)
-    left = bounds["left"]
-    right = bounds["right"]
-    top = bounds["top"]
-    bottom = bounds["bottom"]
-    min_value = min(values)
-    max_value = max(values)
-    span = max(max_value - min_value, 1e-9)
-    time_key = None
-    if points and ("recorded_at" in points[0] or "processed_at" in points[0]):
-        time_key = "recorded_at" if "recorded_at" in points[0] else "processed_at"
-    timestamps: list[datetime] = []
-    if time_key is not None:
-        try:
-            timestamps = [
-                datetime.fromisoformat(str(point[time_key]).replace("Z", "+00:00"))
-                for point in points
-            ]
-        except Exception:
-            timestamps = []
-    min_ts = min(timestamps) if timestamps else None
-    max_ts = max(timestamps) if timestamps else None
-    total_seconds = (
-        max((max_ts - min_ts).total_seconds(), 1.0)
-        if min_ts is not None and max_ts is not None
-        else None
-    )
-    step_x = (right - left) / max(1, len(points) - 1)
-    coords = []
-    for index, point in enumerate(points):
-        value = float(point[value_key])
-        if timestamps and min_ts is not None and total_seconds is not None:
-            x = left + (
-                ((timestamps[index] - min_ts).total_seconds() / total_seconds)
-                * (right - left)
-            )
-        else:
-            x = left + index * step_x
-        y = bottom - ((value - min_value) / span) * (bottom - top)
-        coords.append((x, y))
-    x_labels = []
-    if time_key is not None:
-        tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
-        x_labels = [
-            {"x": coords[index][0], "utc": points[index][time_key]}
-            for index in tick_indexes
-        ]
-    segment_bounds: list[tuple[int, int]] = []
-    if timestamps and len(timestamps) >= 2:
-        deltas = [
-            max((timestamps[idx] - timestamps[idx - 1]).total_seconds(), 0.0)
-            for idx in range(1, len(timestamps))
-        ]
-        positive_deltas = sorted(delta for delta in deltas if delta > 0)
-        if positive_deltas:
-            mid = len(positive_deltas) // 2
-            if len(positive_deltas) % 2 == 0:
-                median_delta = (positive_deltas[mid - 1] + positive_deltas[mid]) / 2.0
-            else:
-                median_delta = positive_deltas[mid]
-            # Split on unusually large gaps so discontinuous data does not appear continuous.
-            gap_break_threshold = median_delta * 1.1
-            start_idx = 0
-            for idx in range(1, len(timestamps)):
-                gap_sec = (timestamps[idx] - timestamps[idx - 1]).total_seconds()
-                if gap_sec > gap_break_threshold:
-                    if idx - start_idx >= 2:
-                        segment_bounds.append((start_idx, idx))
-                    start_idx = idx
-            if len(timestamps) - start_idx >= 2:
-                segment_bounds.append((start_idx, len(timestamps)))
-    if not segment_bounds:
-        segment_bounds = [(0, len(coords))]
-
-    line_paths = []
-    area_paths = []
-    for start_idx, end_idx in segment_bounds:
-        segment_coords = coords[start_idx:end_idx]
-        if len(segment_coords) < 2:
-            continue
-        line_paths.append(
-            " ".join(
-                ["M {:.2f} {:.2f}".format(segment_coords[0][0], segment_coords[0][1])]
-                + ["L {:.2f} {:.2f}".format(x, y) for x, y in segment_coords[1:]]
-            )
-        )
-        area_paths.append(
-            " ".join(
-                ["M {:.2f} {:.2f}".format(segment_coords[0][0], bottom)]
-                + ["L {:.2f} {:.2f}".format(x, y) for x, y in segment_coords]
-                + ["L {:.2f} {:.2f} Z".format(segment_coords[-1][0], bottom)]
-            )
-        )
-    svg_body = (
-        _render_axes(bounds, min_value, max_value, x_labels)
-        + "".join(
-            f'<path d="{area}" fill="{stroke}" opacity="0.12"></path>'
-            for area in area_paths
-        )
-        + "".join(
-            f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
-            for path in line_paths
-        )
-    )
-    return f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">{svg_body}</svg>'
-
-
-def render_bar_chart_svg(
-    points: list[dict],
-    value_key: str,
-    fill: str,
-    width: int = 760,
-    height: int = 180,
-) -> str:
-    if not points:
-        return ""
-    values = [
-        float(point[value_key]) for point in points if point.get(value_key) is not None
-    ]
-    if not values:
-        return ""
-    bounds = _chart_bounds(width, height)
-    left = bounds["left"]
-    right = bounds["right"]
-    top = bounds["top"]
-    bottom = bounds["bottom"]
-    max_value = max(values)
-    if max_value <= 0:
-        max_value = 1.0
-    timestamps: list[datetime] = []
-    if points and "processed_at" in points[0]:
-        try:
-            timestamps = [
-                datetime.fromisoformat(str(point["processed_at"]).replace("Z", "+00:00"))
-                for point in points
-            ]
-        except Exception:
-            timestamps = []
-    min_ts = min(timestamps) if timestamps else None
-    max_ts = max(timestamps) if timestamps else None
-    total_seconds = (
-        max((max_ts - min_ts).total_seconds(), 1.0)
-        if min_ts is not None and max_ts is not None
-        else None
-    )
-    step_x = (right - left) / max(1, len(points))
-    bar_width = max(6, step_x - 4)
-    rects = []
-    x_centers: list[float] = []
-    for index, point in enumerate(points):
-        value = float(point[value_key])
-        bar_height = (value / max_value) * (bottom - top)
-        if timestamps and min_ts is not None and total_seconds is not None:
-            center_x = left + (
-                ((timestamps[index] - min_ts).total_seconds() / total_seconds)
-                * (right - left)
-            )
-            x_centers.append(center_x)
-            x = center_x - (bar_width / 2)
-        else:
-            center_x = left + index * step_x + step_x / 2
-            x_centers.append(center_x)
-            x = left + index * step_x + max(1, (step_x - bar_width) / 2)
-        y = bottom - bar_height
-        rects.append(
-            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fill}" opacity="0.82"></rect>'
-        )
-    x_labels = []
-    if points and "processed_at" in points[0]:
-        tick_indexes = sorted({0, max(0, len(points) // 2), len(points) - 1})
-        x_labels = [
-            {
-                "x": x_centers[index],
-                "utc": points[index]["processed_at"],
-            }
-            for index in tick_indexes
-        ]
-    return (
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
-        f"{_render_axes(bounds, 0.0, max_value, x_labels)}" + "".join(rects) + "</svg>"
-    )
-
-
-def render_event_timeline_svg(
-    points: list[dict],
-    value_key: str,
-    stroke: str,
-    width: int = 760,
-    height: int = 120,
-) -> str:
-    if not points:
-        return ""
-    time_key = "event_at" if points and "event_at" in points[0] else "processed_at"
-    timestamps = [
-        datetime.fromisoformat(point[time_key].replace("Z", "+00:00"))
-        for point in points
-    ]
-    values = [float(point[value_key]) for point in points]
-    if not timestamps or not values:
-        return ""
-    bounds = _chart_bounds(width, height)
-    left = bounds["left"]
-    right = bounds["right"]
-    top = bounds["top"]
-    bottom = bounds["bottom"]
-    min_ts = min(timestamps)
-    max_ts = max(timestamps)
-    total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
-    circles = []
-    x_labels = [
-        {"x": left, "utc": points[0][time_key]},
-        {"x": (left + right) / 2, "utc": points[len(points) // 2][time_key]},
-        {"x": right, "utc": points[-1][time_key]},
-    ]
-    guides = [_render_axes(bounds, 0.0, 1.0, x_labels)]
-    marker_radius = 2.2
-    for ts, value, point in zip(timestamps, values, points):
-        x = left + ((ts - min_ts).total_seconds() / total_seconds) * (right - left)
-        y = bottom - value * (bottom - top)
-        circles.append(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{marker_radius:.2f}" fill="{stroke}" opacity="0.9"><title>{escape_html(point[time_key])} · {value:.2f}</title></circle>'
-        )
-    return (
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
-        + "".join(guides)
-        + "".join(circles)
-        + "</svg>"
-    )
-
-
-def render_horizontal_lollipop_svg(
-    rows: list[dict],
-    value_key: str,
-    accent: str,
-    label_href_map: dict[str, str] | None = None,
-    width: int = 1120,
-    row_height: int = 36,
-    label_font_size: int = 12,
-) -> str:
-    plot_rows = [row for row in rows if row.get(value_key) is not None]
-    if not plot_rows:
-        return ""
-    values = [float(row[value_key]) for row in plot_rows]
-    if not values:
-        return ""
-    height = max(180, 68 + len(plot_rows) * row_height)
-    trimmed_labels = []
-    for row in plot_rows:
-        label = str(row.get("label") or row.get("top_label") or "Unknown")
-        # Keep full canonical label for links/keys, but shorten displayed plot label.
-        label_display = re.sub(r"\s+\([^)]*\)\s*$", "", label).strip() or label
-        trimmed_labels.append(label_display)
-
-    max_label_chars = max((len(label) for label in trimmed_labels), default=0)
-    # Dynamic label gutter prevents excess whitespace after trimming BirdNET parentheticals.
-    label_width = min(max(120, int(max_label_chars * (label_font_size * 0.6))), 290)
-    right_pad = 72
-    top = 28
-    bottom = height - 34
-    axis_x = label_width + 18
-    right = width - right_pad
-    chart_span = max(right - axis_x, 1)
-    usable_values = [value for value in values if value >= 0]
-    max_value = max(usable_values) if usable_values else max(values)
-    max_value = max(max_value, 1e-9)
-    row_step = (bottom - top) / max(len(plot_rows), 1)
-    parts = [
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">',
-        f'<line x1="{axis_x}" y1="{top - 8}" x2="{axis_x}" y2="{bottom + 10}" stroke="rgba(23,32,29,0.28)" stroke-width="1"></line>',
-    ]
-    for frac in (0.25, 0.5, 0.75, 1.0):
-        x = axis_x + chart_span * frac
-        value = max_value * frac
-        parts.append(
-            f'<line x1="{x:.2f}" y1="{top - 8}" x2="{x:.2f}" y2="{bottom + 10}" stroke="rgba(23,32,29,0.08)" stroke-width="1" stroke-dasharray="4 6"></line>'
-        )
-        parts.append(
-            f'<text x="{x:.2f}" y="{height - 10}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(_format_axis_value(value))}</text>'
-        )
-    for index, row in enumerate(plot_rows):
-        value = float(row[value_key])
-        y = top + row_step * index + row_step / 2
-        x = axis_x + (max(value, 0.0) / max_value) * chart_span
-        label = str(row.get("label") or row.get("top_label") or "Unknown")
-        label_display = trimmed_labels[index]
-        label_text = escape_html(label_display)
-        label_markup = (
-            f'<text x="{axis_x - 12}" y="{y + (label_font_size * 0.33):.2f}" text-anchor="end" font-size="{label_font_size}" fill="rgba(23,32,29,0.88)">{label_text}</text>'
-        )
-        href = (label_href_map or {}).get(label)
-        if href:
-            label_markup = (
-                f'<a href="{escape_html(href)}" target="_self" rel="noopener">'
-                f'<text x="{axis_x - 12}" y="{y + (label_font_size * 0.33):.2f}" text-anchor="end" font-size="{label_font_size}" fill="{_plot_color("accent")}" text-decoration="underline">{label_text}</text>'
-                f"</a>"
-            )
-        parts.append(label_markup)
-        parts.append(
-            f'<line x1="{axis_x}" y1="{y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="{accent}" stroke-width="3" stroke-linecap="round" opacity="0.72"></line>'
-        )
-        parts.append(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="6.5" fill="{accent}" opacity="0.95"></circle>'
-        )
-        parts.append(
-            f'<text x="{min(x + 10, width - 6):.2f}" y="{y + 4:.2f}" text-anchor="start" font-size="11" fill="rgba(23,32,29,0.66)">{escape_html(_format_axis_value(value))}</text>'
-        )
-    parts.append("</svg>")
-    return "".join(parts)
-
-
-def fetch_sites() -> list[dict]:
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT peer_uuid,
-                       wg_ip,
-                       network_name,
-                       note,
-                       site_label,
-                       is_active,
-                       registered_at,
-                       location_recorded_at,
-                       latitude,
-                       longitude,
-                       last_check_in,
-                       hostname,
-                       version,
-                       status_message,
-                       birdnet_detection_count,
-                       birdnet_source_count,
-                       latest_birdnet_result_at
-                FROM sensos.public_sites
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                ORDER BY site_label, wg_ip;
-                """
-            )
-            rows = cur.fetchall()
-    return [
-        {
-            "peer_uuid": row[0],
-            "site_id": row[0],
-            "wg_ip": row[1],
-            "network_name": row[2],
-            "note": row[3],
-            "site_label": row[4],
-            "is_active": row[5],
-            "registered_at": format_rfc3339_utc(row[6]),
-            "location_recorded_at": format_rfc3339_utc(row[7]),
-            "latitude": float(row[8]),
-            "longitude": float(row[9]),
-            "last_check_in": format_rfc3339_utc(row[10]),
-            "hostname": row[11],
-            "client_version": row[12],
-            "status_message": row[13],
-            "birdnet_detection_count": int(row[14]),
-            "birdnet_source_count": int(row[15]),
-            "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
-            "public_url": f"/sites/{row[0]}",
-        }
-        for row in rows
-    ]
-
-
-def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
-    normalized_evidence_range = normalize_detail_range(evidence_range)
-    evidence_window = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            has_window_volume = relation_has_column(
-                cur,
-                "sensos",
-                "public_site_birdnet_detections",
-                "volume",
-            )
-            cur.execute(
-                """
-                SELECT peer_uuid,
-                       wg_ip,
-                       network_name,
-                       note,
-                       site_label,
-                       is_active,
-                       registered_at,
-                       location_recorded_at,
-                       latitude,
-                       longitude,
-                       last_check_in,
-                       hostname,
-                       version,
-                       status_message,
-                       birdnet_detection_count,
-                       birdnet_source_count,
-                       latest_birdnet_result_at
-                FROM sensos.public_sites
-                WHERE peer_uuid = %s OR wg_ip = %s;
-                """,
-                (site_id, site_id),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="Site not found.")
-            lookup_wg_ip = row[1]
-            cur.execute(
-                """
-                SELECT max(processed_at)
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            latest_birdnet_at = cur.fetchone()[0]
-            anchored_evidence_cutoff = window_cutoff_from_latest(
-                latest_birdnet_at,
-                evidence_window,
-            )
-            if anchored_evidence_cutoff is None:
-                cur.execute(
-                    """
-                    SELECT count(*)::integer,
-                           max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s;
-                    """,
-                    (lookup_wg_ip,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT count(*)::integer,
-                           max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s;
-                    """,
-                    (lookup_wg_ip, anchored_evidence_cutoff),
-                )
-            birdnet_summary = cur.fetchone()
-            cur.execute(
-                """
-                SELECT count(*)::integer,
-                       max(recorded_at)
-                FROM sensos.public_site_i2c_recent
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            i2c_summary = cur.fetchone()
-            if anchored_evidence_cutoff is None:
-                cur.execute(
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY evidence_weight DESC,
-                             best_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 8;
-                    """,
-                    (lookup_wg_ip,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY evidence_weight DESC,
-                             best_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 8;
-                    """,
-                    (lookup_wg_ip, anchored_evidence_cutoff),
-                )
-            top_birdnet_evidence = cur.fetchall()
-            cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
-            )
-            top_birdnet_labels = cur.fetchall()
-            cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
-            )
-            top_birdnet_scores = cur.fetchall()
-            cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_likely_score) AS average_occupancy_score,
-                           max(top_likely_score) AS best_occupancy_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_likely_score IS NOT NULL
-                    GROUP BY top_label
-                    ORDER BY best_occupancy_score DESC,
-                             average_occupancy_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_likely_score) AS average_occupancy_score,
-                           max(top_likely_score) AS best_occupancy_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_likely_score IS NOT NULL
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY best_occupancy_score DESC,
-                             average_occupancy_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
-            )
-            top_birdnet_occupancy = cur.fetchall()
-            cur.execute(
-                (
-                    """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                    if has_window_volume and anchored_evidence_cutoff is None
-                    else """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                    if has_window_volume
-                    else """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           NULL::double precision AS volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           NULL::double precision AS volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
-            )
-            detections = cur.fetchall()
-            cur.execute(
-                """
-                SELECT hostname,
-                       client_version,
-                       recorded_at,
-                       device_address,
-                       sensor_type,
-                       reading_key,
-                       reading_value,
-                       server_received_at
-                FROM sensos.public_site_i2c_recent
-                WHERE wg_ip = %s
-                  AND reading_rank <= 12
-                ORDER BY recorded_at DESC, server_received_at DESC;
-                """,
-                (lookup_wg_ip,),
-            )
-            readings = cur.fetchall()
-            cur.execute(
-                """
-                SELECT max(recorded_at)
-                FROM sensos.public_site_i2c_recent
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            latest_sensor_at = cur.fetchone()[0]
-            sensor_cutoff = window_cutoff_from_latest(
-                latest_sensor_at,
-                evidence_window,
-            )
-            cur.execute(
-                (
-                    """
-                    SELECT recorded_at,
-                           sensor_type,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """
-                    if sensor_cutoff is None
-                    else """
-                    SELECT recorded_at,
-                           sensor_type,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                      AND recorded_at >= %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if sensor_cutoff is None
-                    else (lookup_wg_ip, sensor_cutoff)
-                ),
-            )
-            sensor_focus_rows = cur.fetchall()
-
-    sensor_series_map: dict[str, list[dict]] = {}
-    for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_focus_rows):
-        label = _format_sensor_label(sensor_type, reading_key)
-        sensor_series_map.setdefault(label, []).append(
-            {
-                "recorded_at": format_rfc3339_utc(recorded_at),
-                "value": float(reading_value),
-            }
-        )
-
-    sensor_plot_series = sorted(
-        (
-            {
-                "label": label,
-                "points": downsample_points(points, 140),
-            }
-            for label, points in sensor_series_map.items()
-            if points
-        ),
-        key=lambda item: (item["label"]),
-    )
-
-    return {
-        "peer_uuid": row[0],
-        "site_id": row[0],
-        "wg_ip": row[1],
-        "network_name": row[2],
-        "note": row[3],
-        "site_label": row[4],
-        "is_active": row[5],
-        "registered_at": format_rfc3339_utc(row[6]),
-        "location_recorded_at": format_rfc3339_utc(row[7]),
-        "latitude": float(row[8]),
-        "longitude": float(row[9]),
-        "last_check_in": format_rfc3339_utc(row[10]),
-        "hostname": row[11],
-        "client_version": row[12],
-        "status_message": row[13],
-        "birdnet_detection_count": int(row[14]),
-        "birdnet_source_count": int(row[15]),
-        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
-        "public_url": f"/sites/{row[0]}",
-        "evidence_range": normalized_evidence_range,
-        "birdnet_detection_count": int(
-            (birdnet_summary[0] or 0) if birdnet_summary else 0
-        ),
-        "latest_birdnet_result_at": format_rfc3339_utc(
-            birdnet_summary[1] if birdnet_summary else None
-        ),
-        "i2c_reading_count": int((i2c_summary[0] or 0) if i2c_summary else 0),
-        "latest_i2c_reading_at": format_rfc3339_utc(
-            i2c_summary[1] if i2c_summary else None
-        ),
-        "top_birdnet_summaries": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "best_score": float(summary[2]) if summary[2] is not None else None,
-                "latest_processed_at": format_rfc3339_utc(summary[3]),
-            }
-            for summary in top_birdnet_labels
-        ],
-        "top_birdnet_evidence": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "evidence_weight": (
-                    float(summary[2]) if summary[2] is not None else None
-                ),
-                "average_score": float(summary[3]) if summary[3] is not None else None,
-                "best_score": float(summary[4]) if summary[4] is not None else None,
-                "latest_processed_at": format_rfc3339_utc(summary[5]),
-            }
-            for summary in top_birdnet_evidence
-        ],
-        "top_birdnet_score_summaries": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "average_score": float(summary[2]) if summary[2] is not None else None,
-                "best_score": float(summary[3]) if summary[3] is not None else None,
-            }
-            for summary in top_birdnet_scores
-        ],
-        "top_birdnet_occupancy_summaries": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "average_occupancy_score": (
-                    float(summary[2]) if summary[2] is not None else None
-                ),
-                "best_occupancy_score": (
-                    float(summary[3]) if summary[3] is not None else None
-                ),
-            }
-            for summary in top_birdnet_occupancy
-        ],
-        "recent_birdnet_detections": [
-            {
-                "hostname": detection[0],
-                "client_version": detection[1],
-                "source_path": detection[2],
-                "processed_at": format_rfc3339_utc(detection[3]),
-                "clip_end_time": format_rfc3339_utc(detection[4]),
-                "channel_index": detection[5],
-                "max_score_start_frame": int(detection[6]),
-                "start_sec": float(detection[7]),
-                "end_sec": float(detection[8]),
-                "volume": (
-                    float(detection[9]) if detection[9] is not None else None
-                ),
-                "top_label": detection[10],
-                "top_score": float(detection[11]),
-                "top_likely_score": (
-                    float(detection[12]) if detection[12] is not None else None
-                ),
-            }
-            for detection in detections
-        ],
-        "recent_i2c_readings": [
-            {
-                "hostname": reading[0],
-                "client_version": reading[1],
-                "recorded_at": format_rfc3339_utc(reading[2]),
-                "device_address": reading[3],
-                "sensor_type": reading[4],
-                "reading_key": reading[5],
-                "reading_value": float(reading[6]),
-                "server_received_at": format_rfc3339_utc(reading[7]),
-            }
-            for reading in readings
-        ],
-        "sensor_plot_series": sensor_plot_series,
-    }
-
-
-def fetch_site_status(site_id: str) -> dict:
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT peer_uuid,
-                       wg_ip,
-                       network_name,
-                       note,
-                       site_label,
-                       is_active,
-                       registered_at,
-                       location_recorded_at,
-                       latitude,
-                       longitude,
-                       last_check_in,
-                       hostname,
-                       version,
-                       status_message,
-                       birdnet_detection_count,
-                       birdnet_source_count,
-                       latest_birdnet_result_at
-                FROM sensos.public_sites
-                WHERE peer_uuid = %s OR wg_ip = %s;
-                """,
-                (site_id, site_id),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="Site not found.")
-            lookup_wg_ip = row[1]
-            cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                       avg(top_score) AS average_score,
-                       max(top_score) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                GROUP BY top_label
-                ORDER BY evidence_weight DESC,
-                         best_score DESC,
-                         detection_count DESC,
-                         top_label ASC
-                LIMIT 5;
-                """,
-                (lookup_wg_ip,),
-            )
-            top_birdnet_evidence = cur.fetchall()
-    return {
-        "peer_uuid": row[0],
-        "site_id": row[0],
-        "wg_ip": row[1],
-        "network_name": row[2],
-        "note": row[3],
-        "site_label": row[4],
-        "is_active": row[5],
-        "registered_at": format_rfc3339_utc(row[6]),
-        "location_recorded_at": format_rfc3339_utc(row[7]),
-        "latitude": float(row[8]),
-        "longitude": float(row[9]),
-        "last_check_in": format_rfc3339_utc(row[10]),
-        "hostname": row[11],
-        "client_version": row[12],
-        "status_message": row[13],
-        "birdnet_detection_count": int(row[14]),
-        "birdnet_source_count": int(row[15]),
-        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
-        "public_url": f"/sites/{row[0]}",
-        "status_url": f"/sites/{row[0]}/status",
-        "synoptic_url": f"/sites/{row[0]}/synoptic",
-        "birdnet_rankings_url": f"/sites/{row[0]}/birdnet-rankings",
-        "top_birdnet_evidence": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "evidence_weight": (
-                    float(summary[2]) if summary[2] is not None else None
-                ),
-                "average_score": float(summary[3]) if summary[3] is not None else None,
-                "best_score": float(summary[4]) if summary[4] is not None else None,
-                "latest_processed_at": format_rfc3339_utc(summary[5]),
-            }
-            for summary in top_birdnet_evidence
-        ],
-    }
-
-
-def render_site_status_html(site: dict) -> str:
-    infrastructure_rows = [
-        ("Site label", site["site_label"]),
-        ("Hostname", site.get("hostname") or "unknown"),
-        ("WireGuard IP", site["wg_ip"]),
-        ("Network", site["network_name"]),
-        ("Client version", site.get("client_version") or "unknown"),
-        ("Client active", "yes" if site.get("is_active") else "no"),
-        ("Status message", site.get("status_message") or "none"),
-        ("Coordinates", f"{site['latitude']:.6f}, {site['longitude']:.6f}"),
-        ("Registered at", render_local_time(site.get("registered_at"), "unknown")),
-        (
-            "Location updated",
-            render_local_time(site.get("location_recorded_at"), "unknown"),
-        ),
-        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown")),
-    ]
-    infra_cards = "".join(
-        f"""
-        <article class="row-card">
-          <div class="dim">{escape_html(label)}</div>
-          <div><strong>{escape_html(value)}</strong></div>
-        </article>
-        """
-        for label, value in infrastructure_rows
-    )
-    top_species_cards = (
-        "".join(
-            f"""
-            <div class="summary-row">
-              <div>
-                <div class="summary-label">{escape_html(summary["label"])}</div>
-                <div class="summary-bar" style="width:{max((float(summary.get("evidence_weight") or 0.0) / max(float(site["top_birdnet_evidence"][0].get("evidence_weight") or 0.0), 1e-9)) * 100.0, 3.0):.1f}%"></div>
-              </div>
-              <div class="summary-value">{escape_html(f"{float(summary.get('evidence_weight') or 0.0):.2f}")}</div>
-            </div>
-            """
-            for summary in site["top_birdnet_evidence"]
-        )
-        if site.get("top_birdnet_evidence")
-        else '<div class="empty">No weighted BirdNET detections are available yet.</div>'
-    )
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_html(site['site_label'])} · Public Status</title>
-  <style>
-    :root {{
-      --bg: #eff3ea;
-      --ink: #17201d;
-      --muted: #61706a;
-      --panel: rgba(255,255,255,0.9);
-      --border: rgba(23,32,29,0.12);
-      --shadow: 0 20px 54px rgba(23,32,29,0.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
-        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
-        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
-    }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.9rem 1rem 1.2rem; }}
-    .masthead {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 0.3rem;
-    }}
-    .nav-row {{
-      display: inline-flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.65rem;
-      margin-bottom: 0;
-    }}
-    .nav-link {{
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.96rem;
-    }}
-    .nav-link-inline {{
-      color: #0c6d62;
-      text-decoration: underline;
-      text-underline-offset: 0.16em;
-      text-decoration-thickness: 0.08em;
-      font-size: 0.96rem;
-    }}
-    .meta {{ color: var(--muted); font-size: 0.92rem; text-align: right; }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 0.8rem;
-      margin-bottom: 0.85rem;
-    }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      box-shadow: var(--shadow);
-      padding: 0.8rem 0.9rem;
-      min-width: 0;
-    }}
-    .metric-label {{
-      color: var(--muted);
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }}
-    .metric-value {{
-      margin-top: 0.25rem;
-      font-size: 1.35rem;
-      letter-spacing: -0.04em;
-      font-weight: 700;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }}
-    .layout {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.8rem; }}
-    .section-title {{
-      margin: 0 0 0.65rem;
-      font-size: 0.95rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }}
-    .list {{ display: grid; gap: 0.55rem; }}
-    .row-card {{
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 0.65rem 0.75rem;
-      background: rgba(255,255,255,0.66);
-    }}
-    .mono {{
-      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
-      font-size: 0.86rem;
-      word-break: break-word;
-    }}
-    .summary-card {{
-      display: grid;
-      gap: 0.6rem;
-      margin-top: 0.5rem;
-    }}
-    .summary-row {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 0.75rem;
-      align-items: center;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 0.58rem 0.72rem;
-      background: rgba(255,255,255,0.66);
-    }}
-    .summary-label {{
-      font-weight: 700;
-      line-height: 1.2;
-      margin-bottom: 0.35rem;
-    }}
-    .summary-bar {{
-      height: 0.4rem;
-      border-radius: 999px;
-      background: linear-gradient(90deg, #0c6d62, #1d8b78);
-    }}
-    .summary-value {{
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: #0c6d62;
-      white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-    }}
-    .dim {{ color: var(--muted); }}
-    .empty {{
-      border: 1px dashed var(--border);
-      border-radius: 14px;
-      padding: 0.8rem;
-      color: var(--muted);
-      background: rgba(255,255,255,0.45);
-    }}
-    a {{ color: #0c6d62; }}
-    @media (max-width: 1080px) {{
-      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .meta {{ text-align: left; }}
-    }}
-    {_theme_override_css()}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <div class="masthead">
-      <div class="nav-row">
-        <span class="nav-link">Overview</span>
-        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
-        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
-      </div>
-      <div class="meta">
-        <a href="/">Back to all field sites</a>
-      </div>
-    </div>
-    <div class="grid">
-      <section class="panel"><div class="metric-label">Client Status</div><div class="metric-value">{escape_html(site['status_message'] or ('Active' if site['is_active'] else 'Inactive'))}</div></section>
-      <section class="panel"><div class="metric-label">Hostname</div><div class="metric-value">{escape_html(site['hostname'] or 'unknown')}</div></section>
-      <section class="panel"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{escape_html(site['wg_ip'])}</div></section>
-      <section class="panel"><div class="metric-label">Last Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'No check-in yet')}</div></section>
-      <section class="panel"><div class="metric-label">Public Site</div><div class="metric-value"><a href="{escape_html(site['public_url'])}">Open site dashboard</a></div></section>
-    </div>
-    <div class="layout">
-      <section class="panel">
-        <h2 class="section-title">Top 5 Species (Weighted)</h2>
-        <div class="dim"><a href="{escape_html(site['birdnet_rankings_url'])}">Open full BirdNET rankings</a></div>
-        <div class="summary-card">{top_species_cards}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Infrastructure Details</h2>
-        <div class="list">{infra_cards}</div>
-      </section>
-    </div>
-  </div>
-{render_local_time_script()}
-</body>
-</html>"""
-
-
-def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
-    site = fetch_site_detail(site_id)
-    lookup_wg_ip = site["wg_ip"]
-    normalized_range = normalize_synoptic_range(range_key)
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT max(recorded_at)
-                FROM sensos.public_site_i2c_recent
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            latest_sensor_at = cur.fetchone()[0]
-            sensor_cutoff = window_cutoff_from_latest(
-                latest_sensor_at,
-                SYNOPTIC_RANGES[normalized_range],
-            )
-            if sensor_cutoff is None:
-                cur.execute(
-                    """
-                    SELECT recorded_at,
-                           sensor_type,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """,
-                    (lookup_wg_ip,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT recorded_at,
-                           sensor_type,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                      AND recorded_at >= %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """,
-                    (lookup_wg_ip, sensor_cutoff),
-                )
-            sensor_rows = cur.fetchall()
-
-    sensor_series_map: dict[str, list[dict]] = {}
-    for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_rows):
-        series_key = f"{sensor_type} · {reading_key}"
-        sensor_series_map.setdefault(series_key, []).append(
-            {
-                "recorded_at": format_rfc3339_utc(recorded_at),
-                "value": float(reading_value),
-            }
-        )
-    sensor_series = sorted(
-        (
-            {
-                "label": label,
-                "points": downsample_points(points, 160),
-                "latest_value": points[-1]["value"],
-                "latest_at": points[-1]["recorded_at"],
-            }
-            for label, points in sensor_series_map.items()
-            if points
-        ),
-        key=lambda item: len(item["points"]),
-        reverse=True,
-    )[:6]
-
-    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
-    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
-    site["synoptic_range"] = normalized_range
-    site["sensor_series"] = sensor_series
-    return site
-
-
-def fetch_site_birdnet_rankings(
-    site_id: str,
-    sort_key: str | None = None,
-    range_key: str | None = None,
-) -> dict:
-    site = fetch_site_detail(site_id)
-    normalized_sort = normalize_birdnet_ranking_sort(sort_key)
-    normalized_range = normalize_birdnet_ranking_range(range_key)
-    range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
-    sort_config = BIRDNET_RANKING_SORTS[normalized_sort]
-
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            has_window_volume = relation_has_column(
-                cur,
-                "sensos",
-                "public_site_birdnet_detections",
-                "volume",
-            )
-            avg_volume_expr = (
-                "avg(volume) AS avg_volume"
-                if has_window_volume
-                else "NULL::double precision AS avg_volume"
-            )
-            if range_cutoff is None:
-                cur.execute(
-                    f"""
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                           sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                           max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                           max(top_score) AS max_score,
-                           max(coalesce(top_likely_score, top_score)) AS max_occup,
-                           {avg_volume_expr},
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY {sort_config["order_sql"]}
-                    """,
-                    (site["wg_ip"],),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s;
-                    """,
-                    (site["wg_ip"],),
-                )
-                latest_birdnet_at = cur.fetchone()[0]
-                anchored_cutoff = window_cutoff_from_latest(
-                    latest_birdnet_at, range_cutoff
-                )
-                if anchored_cutoff is None:
-                    cur.execute(
-                        f"""
-                        SELECT top_label,
-                               count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                               max(top_score) AS max_score,
-                               max(coalesce(top_likely_score, top_score)) AS max_occup,
-                               {avg_volume_expr},
-                               max(processed_at) AS latest_processed_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                        GROUP BY top_label
-                        ORDER BY {sort_config["order_sql"]}
-                        """,
-                        (site["wg_ip"],),
-                    )
-                else:
-                    cur.execute(
-                        f"""
-                        SELECT top_label,
-                               count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                               max(top_score) AS max_score,
-                               max(coalesce(top_likely_score, top_score)) AS max_occup,
-                               {avg_volume_expr},
-                               max(processed_at) AS latest_processed_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                          AND processed_at >= %s
-                        GROUP BY top_label
-                        ORDER BY {sort_config["order_sql"]}
-                        """,
-                        (site["wg_ip"], anchored_cutoff),
-                    )
-            ranking_rows = cur.fetchall()
-
-    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
-    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
-    site["birdnet_ranking_sort"] = normalized_sort
-    site["birdnet_ranking_range"] = normalized_range
-    site["birdnet_ranking_sort_label"] = sort_config["label"]
-    site["birdnet_ranking_metric_label"] = sort_config["metric_label"]
-    site["birdnet_ranking_description"] = sort_config["description"]
-    site["birdnet_rankings"] = [
-        {
-            "label": row[0],
-            "detection_count": int(row[1]),
-            "sum_score_x_likely": float(row[2]) if row[2] is not None else None,
-            "sum_score_x_occup": float(row[3]) if row[3] is not None else None,
-            "duration_sec": float(row[4]) if row[4] is not None else None,
-            "max_score_x_occup": float(row[5]) if row[5] is not None else None,
-            "max_score": float(row[6]) if row[6] is not None else None,
-            "max_occup": float(row[7]) if row[7] is not None else None,
-            "avg_volume": float(row[8]) if row[8] is not None else None,
-            "latest_processed_at": format_rfc3339_utc(row[9]),
-        }
-        for row in ranking_rows
-    ]
-    return site
-
-
-def fetch_site_birdnet_species(
-    site_id: str,
-    label: str,
-    range_key: str | None = None,
-) -> dict:
-    site = fetch_site_detail(site_id)
-    normalized_range = normalize_birdnet_ranking_range(range_key)
-    range_window = BIRDNET_RANKING_RANGES[normalized_range]
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            has_window_volume = relation_has_column(
-                cur,
-                "sensos",
-                "public_site_birdnet_detections",
-                "volume",
-            )
-            cur.execute(
-                """
-                SELECT max(processed_at)
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                  AND top_label = %s;
-                """,
-                (site["wg_ip"], label),
-            )
-            latest_at = cur.fetchone()[0]
-            anchored_cutoff = window_cutoff_from_latest(latest_at, range_window)
-            if anchored_cutoff is None:
-                cur.execute(
-                    (
-                        """
-                    SELECT processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                        if has_window_volume
-                        else """
-                    SELECT processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           NULL::double precision AS volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                    ),
-                    (site["wg_ip"], label),
-                )
-            else:
-                cur.execute(
-                    (
-                        """
-                    SELECT processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                        if has_window_volume
-                        else """
-                    SELECT processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           NULL::double precision AS volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                    ),
-                    (site["wg_ip"], label, anchored_cutoff),
-                )
-            rows = cur.fetchall()
-    score_points = []
-    occupancy_points = []
-    weighted_points = []
-    detections = []
-    for (
-        processed_at,
-        top_score,
-        top_likely_score,
-        start_sec,
-        end_sec,
-        source_path,
-        channel_index,
-        volume,
-    ) in rows:
-        processed_text = format_rfc3339_utc(processed_at)
-        if processed_text is None:
-            continue
-        score_value = float(top_score)
-        occupancy_value = float(top_likely_score) if top_likely_score is not None else score_value
-        duration_sec = max(float(end_sec) - float(start_sec), 0.0)
-        weighted_value = duration_sec * score_value * occupancy_value
-        score_points.append({"processed_at": processed_text, "value": score_value})
-        occupancy_points.append({"processed_at": processed_text, "value": occupancy_value})
-        weighted_points.append({"processed_at": processed_text, "activity": weighted_value})
-        detections.append(
-            {
-                "processed_at": processed_text,
-                "top_score": score_value,
-                "top_likely_score": float(top_likely_score) if top_likely_score is not None else None,
-                "start_sec": float(start_sec),
-                "end_sec": float(end_sec),
-                "source_path": source_path,
-                "channel_index": int(channel_index),
-                "volume": float(volume) if volume is not None else None,
-            }
-        )
-    site["species_label"] = label
-    site["species_range"] = normalized_range
-    site["species_range_window"] = range_window
-    site["birdnet_species_url"] = birdnet_species_url(site["peer_uuid"], label, normalized_range)
-    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
-    site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
-    site["species_score_series"] = downsample_points(score_points, 180)
-    site["species_occupancy_series"] = downsample_points(occupancy_points, 180)
-    site["species_weighted_series"] = downsample_points(weighted_points, 180)
-    site["species_detection_count"] = len(detections)
-    site["species_latest_at"] = (
-        detections[-1]["processed_at"] if detections else None
-    )
-    site["species_recent_detections"] = list(reversed(detections[-20:]))
-    return site
-
-
-def render_birdnet_species_html(site: dict) -> str:
-    selected_range = normalize_birdnet_ranking_range(site.get("species_range"))
-    range_links = "".join(
-        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key))}">{label}</a>'
-        for key, label in (
-            ("hour", "Hour"),
-            ("day", "Day"),
-            ("week", "Week"),
-            ("month", "Month"),
-            ("all", "All"),
-        )
-    )
-    score_chart = (
-        render_event_timeline_svg(site["species_score_series"], "value", _plot_color("accent"))
-        if site["species_score_series"]
-        else ""
-    )
-    occupancy_chart = (
-        render_line_chart_svg(site["species_occupancy_series"], "value", _plot_color("occupancy"))
-        if site["species_occupancy_series"]
-        else ""
-    )
-    weighted_chart = (
-        render_bar_chart_svg(site["species_weighted_series"], "activity", _plot_color("weighted"))
-        if site["species_weighted_series"]
-        else ""
-    )
-    recent_cards = (
-        "".join(
-            f"""
-        <article class="record-card">
-          <div><strong>{escape_html(site['species_label'])}</strong> <span class="dim">score {item['top_score']:.2f} · occup {'n/a' if item['top_likely_score'] is None else f"{item['top_likely_score']:.2f}"} · vol {'n/a' if item.get('volume') is None else f"{item['volume']:.3f}"}</span></div>
-          <div class="dim">{render_local_time(item['processed_at'])} · ch {item['channel_index']} · {item['start_sec']:.1f}s-{item['end_sec']:.1f}s</div>
-          <div class="mono">{escape_html(item['source_path'])}</div>
-        </article>
-        """
-            for item in site["species_recent_detections"]
-        )
-        or '<div class="empty">No detections for this species in the selected window.</div>'
-    )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_html(site['site_label'])} · {escape_html(site['species_label'])} · BirdNET Series</title>
-  <style>
-    :root {{
-      --bg: #eff3ea;
-      --ink: #17201d;
-      --muted: #61706a;
-      --panel: rgba(255,255,255,0.9);
-      --border: rgba(23,32,29,0.12);
-      --shadow: 0 20px 54px rgba(23,32,29,0.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
-        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
-        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
-    }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
-    .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:0.3rem; }}
-    .nav-row {{
-      display: inline-flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.65rem;
-      margin-bottom: 0;
-    }}
-    .nav-link {{
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.96rem;
-    }}
-    .nav-link strong {{ color: var(--ink); }}
-    .nav-link-inline {{
-      color: #0c6d62;
-      text-decoration: underline;
-      text-underline-offset: 0.16em;
-      text-decoration-thickness: 0.08em;
-      font-size: 0.96rem;
-    }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
-    .panel {{ background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 0.85rem 0.95rem; }}
-    .stack {{ display:grid; gap: 0.8rem; }}
-    .summary-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem; }}
-    .metric {{ border:1px solid var(--border); border-radius: 14px; padding: 0.65rem 0.75rem; background: rgba(255,255,255,0.7); }}
-    .metric-label {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }}
-    .metric-value {{ margin-top: 0.2rem; font-size: 1.28rem; font-weight: 700; letter-spacing: -0.04em; }}
-    .section-title {{ margin: 0 0 0.6rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }}
-    .range-pills {{ display:inline-flex; gap: 0.4rem; flex-wrap: wrap; }}
-    .range-pill {{ display:inline-flex; align-items:center; padding:0.28rem 0.6rem; border-radius:999px; border:1px solid var(--border); background: rgba(255,255,255,0.8); color: var(--ink); text-decoration:none; font-size:0.82rem; }}
-    .range-pill.active {{ background:#0c6d62; color:white; border-color:#0c6d62; }}
-    .chart-wrap {{ min-height: 16rem; border:1px solid rgba(23,32,29,0.08); border-radius: 16px; overflow-x:auto; background: rgba(255,255,255,0.55); }}
-    .chart-wrap svg {{ width:100%; min-width:920px; display:block; }}
-    .record-list {{ display:grid; gap:0.6rem; }}
-    .record-card {{ border:1px solid var(--border); border-radius:14px; padding: 0.68rem 0.75rem; background: rgba(255,255,255,0.68); }}
-    .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.86rem; word-break: break-word; }}
-    .dim {{ color: var(--muted); }}
-    .empty {{ border:1px dashed var(--border); border-radius:14px; padding: 0.85rem; color: var(--muted); background: rgba(255,255,255,0.45); }}
-    a {{ color: #0c6d62; }}
-    @media (max-width: 980px) {{
-      .masthead {{ flex-direction: column; }}
-      .summary-grid {{ grid-template-columns: 1fr; }}
-    }}
-    {_theme_override_css()}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <div class="masthead">
-      <div class="nav-row">
-        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
-        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
-      </div>
-      <div class="meta">
-        <a href="/">Back to all field sites</a>
-      </div>
-    </div>
-    <div class="stack">
-      <section class="panel">
-        <div class="range-pills">{range_links}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Detection Score Timeline</h2>
-        <div class="chart-wrap">{score_chart or '<div class="empty">No score timeline available.</div>'}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Occupancy Score</h2>
-        <div class="chart-wrap">{occupancy_chart or '<div class="empty">No occupancy series available.</div>'}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Duration-Weighted Activity</h2>
-        <div class="chart-wrap">{weighted_chart or '<div class="empty">No activity series available.</div>'}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Recent Detections</h2>
-        <div class="record-list">{recent_cards}</div>
-      </section>
-    </div>
-  </div>
-{render_local_time_script()}
-</body>
-</html>"""
-
-
-def render_site_detail_html(site: dict) -> str:
-    evidence_range = normalize_detail_range(site.get("evidence_range"))
-    evidence_range_links = "".join(
-        f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site["public_url"])}?range={key}">{label}</a>'
-        for key, label in (
-            ("hour", "Hour"),
-            ("day", "Day"),
-            ("week", "Week"),
-            ("month", "Month"),
-            ("all", "All Time"),
-        )
-    )
-    evidence_chart = render_horizontal_lollipop_svg(
-        site["top_birdnet_evidence"],
-        "evidence_weight",
-        _plot_color("accent"),
-        None,
-        width=1040,
-        row_height=26,
-    )
-    sensor_plot_series = site.get("sensor_plot_series") or []
-    synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
-    synoptic_range_url = f"{synoptic_url}?range={evidence_range}"
-    sensor_cards_html = "".join(
-        f"""
-            <article class="sensor-focus-card">
-              <h3 class="sensor-focus-title">{escape_html(series['label'])}</h3>
-              <a class="sensor-focus-link" href="{escape_html(synoptic_range_url)}">
-                <div class="sensor-focus-chart">{render_line_chart_svg(series['points'], 'value', _plot_color("accent"), width=560, height=186) or '<div class="empty">No data in this range.</div>'}</div>
-              </a>
-            </article>
-        """
-        for series in sensor_plot_series
-    )
-
-    birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
-    birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{site['site_label']} · SensOS Public Site</title>
-  <style>
-    :root {{
-      --bg: #f3efe6;
-      --ink: #1b2420;
-      --muted: #61706a;
-      --panel: rgba(255,255,255,0.86);
-      --border: rgba(27,36,32,0.12);
-      --accent: #0c6d62;
-      --accent-2: #b45309;
-      --shadow: 0 22px 58px rgba(27,36,32,0.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.18), transparent 26rem),
-        radial-gradient(circle at right, rgba(180,83,9,0.14), transparent 24rem),
-        linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
-    }}
-    a {{ color: var(--accent); }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
-    .masthead {{
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: center;
-      margin-bottom: 0.3rem;
-    }}
-    .nav-row {{
-      display: inline-flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.65rem;
-      margin-bottom: 0;
-    }}
-    .nav-link {{
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.96rem;
-    }}
-    .nav-link strong {{ color: var(--ink); }}
-    .nav-link-inline {{
-      color: var(--accent);
-      text-decoration: underline;
-      text-underline-offset: 0.16em;
-      text-decoration-thickness: 0.08em;
-      font-size: 0.96rem;
-    }}
-    .range-pills {{
-      display: inline-flex;
-      gap: 0.35rem;
-      align-items: center;
-      flex-wrap: wrap;
-    }}
-    .range-pill {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 3.6rem;
-      padding: 0.28rem 0.58rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.78);
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.82rem;
-      line-height: 1;
-    }}
-    .range-pill.active {{
-      background: #0c6d62;
-      border-color: #0c6d62;
-      color: #f7f4ed;
-    }}
-    .meta {{
-      color: var(--muted);
-      font-size: 0.95rem;
-      text-align: right;
-    }}
-    .layout {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 1rem;
-    }}
-    .stack {{ display: grid; gap: 0.6rem; align-content: start; }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
-      padding: 0.65rem 0.7rem;
-    }}
-    .summary-strip {{
-      display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 0.7rem;
-    }}
-    .evidence-chart-link {{
-      display: block;
-      text-decoration: none;
-      color: inherit;
-    }}
-    .evidence-chart-wrap {{
-      min-height: 10.5rem;
-      border: 1px solid rgba(23,32,29,0.08);
-      border-radius: 14px;
-      overflow-x: auto;
-      background: rgba(255,255,255,0.55);
-    }}
-    .evidence-chart-wrap svg {{
-      width: 100%;
-      min-width: 800px;
-      display: block;
-    }}
-    .sensor-focus-grid {{
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.6rem;
-    }}
-    .sensor-focus-card {{
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 0.5rem 0.55rem;
-      background: rgba(255,255,255,0.62);
-      min-width: 0;
-    }}
-    .sensor-focus-link {{
-      display: block;
-      text-decoration: none;
-      color: inherit;
-    }}
-    .sensor-focus-title {{
-      margin: 0 0 0.3rem;
-      color: var(--muted);
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }}
-    .sensor-focus-chart {{
-      height: 10.8rem;
-      border: 1px solid rgba(23,32,29,0.08);
-      border-radius: 12px;
-      overflow: hidden;
-      background: rgba(255,255,255,0.5);
-    }}
-    .sensor-focus-chart svg {{
-      width: 100%;
-      height: 100%;
-      display: block;
-    }}
-    .detail-grid {{
-      display: grid;
-      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-      gap: 1rem;
-    }}
-    .metric {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.8rem 0.85rem;
-      background: rgba(255,255,255,0.72);
-      min-width: 0;
-    }}
-    .metric-label {{
-      color: var(--muted);
-      font-size: 0.82rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }}
-    .metric-value {{
-      margin-top: 0.25rem;
-      font-size: 1.5rem;
-      letter-spacing: -0.05em;
-      font-weight: 700;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }}
-    .section-title {{
-      margin: 0 0 0.75rem;
-      font-size: 1rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }}
-    .record-list {{ display: grid; gap: 0.7rem; }}
-    .record-card {{
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 0.85rem 0.9rem;
-      background: rgba(255,255,255,0.7);
-    }}
-    .mono {{
-      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
-      font-size: 0.9rem;
-      word-break: break-word;
-    }}
-    .dim {{ color: var(--muted); }}
-    .empty {{
-      border: 1px dashed var(--border);
-      border-radius: 16px;
-      padding: 1rem;
-      color: var(--muted);
-      background: rgba(255,255,255,0.45);
-    }}
-    @media (max-width: 980px) {{
-      .masthead {{ grid-template-columns: 1fr; }}
-      .summary-strip, .detail-grid, .sensor-focus-grid {{ grid-template-columns: 1fr; }}
-      .meta {{ text-align: left; }}
-    }}
-    {_theme_override_css()}
-  </style>
-</head>
-  <body>
-  <div class="shell">
-    <div class="masthead">
-      <div class="nav-row">
-        <span class="nav-link">Overview</span>
-        <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
-        <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
-      </div>
-      <div class="meta">
-        <a href="/">Back to all field sites</a>
-      </div>
-    </div>
-    <div class="layout">
-      <main class="stack">
-        <section class="panel">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;">
-            <div>
-              <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species</h2>
-            </div>
-            <div class="range-pills">{evidence_range_links}</div>
-          </div>
-          <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
-            <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
-          </a>
-          {"<div class='sensor-focus-grid' style='margin-top:0.6rem;'>" + sensor_cards_html + "</div>" if sensor_cards_html else ""}
-        </section>
-      </main>
-    </div>
-  </div>
-  <script>
-    function goBack() {{
-      if (window.history.length > 1) {{
-        window.history.back();
-        return;
-      }}
-      window.location.assign("/");
-    }}
-  </script>
-{render_local_time_script()}
-</body>
-</html>"""
-
-
-def render_synoptic_html(site: dict) -> str:
-    range_key = normalize_synoptic_range(site.get("synoptic_range"))
-    species_href = lambda label: birdnet_species_url(site["peer_uuid"], str(label), range_key)
-    range_links = "".join(
-        f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(site["synoptic_url"])}?range={key}">{label}</a>'
-        for key, label in (
-            ("hour", "Hour"),
-            ("day", "Day"),
-            ("week", "Week"),
-            ("month", "Month"),
-        )
-    )
-    sensor_sections = (
-        "".join(
-            f"""
-        <section class="chart-card">
-          <div class="chart-head">
-            <div>
-              <strong>{escape_html(series['label'])}</strong>
-              <div class="dim">latest {series['latest_value']:.3f} at {render_local_time(series['latest_at'])}</div>
-            </div>
-          </div>
-          <div class="chart">{render_line_chart_svg(series['points'], 'value', _plot_color("accent"))}</div>
-        </section>
-        """
-            for series in site["sensor_series"]
-        )
-        or '<div class="empty">No sensor time series are visible yet for this site.</div>'
-    )
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_html(site['site_label'])} · Synoptic Time Series</title>
-    <style>
-    :root {{
-      --bg: #eff3ea;
-      --ink: #17201d;
-      --muted: #61706a;
-      --panel: rgba(255,255,255,0.9);
-      --border: rgba(23,32,29,0.12);
-      --shadow: 0 20px 54px rgba(23,32,29,0.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.15), transparent 24rem),
-        radial-gradient(circle at right, rgba(180,83,9,0.10), transparent 22rem),
-        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
-    }}
-    a {{ color: #0c6d62; }}
-    .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
-    .masthead {{
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: center;
-      margin-bottom: 0.3rem;
-    }}
-    .nav-row {{
-      display: inline-flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.65rem;
-      margin-bottom: 0;
-    }}
-    .nav-link {{
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.96rem;
-    }}
-    .nav-link strong {{ color: var(--ink); }}
-    .nav-link-inline {{
-      color: #0c6d62;
-      text-decoration: underline;
-      text-underline-offset: 0.16em;
-      text-decoration-thickness: 0.08em;
-      font-size: 0.96rem;
-    }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
-    .stack {{ display: grid; gap: 1rem; }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
-      padding: 0.8rem 0.9rem;
-    }}
-    .section-bar {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.7rem;
-      margin-bottom: 0.55rem;
-      flex-wrap: wrap;
-    }}
-    .section-title {{
-      margin: 0;
-      font-size: 1rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }}
-    .chart-grid {{ display: grid; gap: 0.75rem; }}
-    .chart-card {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.72rem 0.8rem;
-      background: rgba(255,255,255,0.72);
-    }}
-    .chart-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.45rem; }}
-    .chart {{
-      height: 180px;
-      border-radius: 14px;
-      background: linear-gradient(180deg, rgba(247,244,237,0.9), rgba(239,243,234,0.7));
-      border: 1px solid rgba(23,32,29,0.08);
-      overflow: hidden;
-    }}
-    .chart svg {{ width: 100%; height: 100%; display: block; }}
-    .empty {{
-      border: 1px dashed var(--border);
-      border-radius: 16px;
-      padding: 1rem;
-      color: var(--muted);
-      background: rgba(255,255,255,0.45);
-    }}
-    .dim {{ color: var(--muted); }}
-    .range-pills {{
-      display: inline-flex;
-      gap: 0.35rem;
-      align-items: center;
-      flex-wrap: wrap;
-    }}
-    .range-pill {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 3.5rem;
-      padding: 0.28rem 0.58rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.78);
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.82rem;
-      line-height: 1;
-    }}
-    .range-pill.active {{
-      background: #0c6d62;
-      border-color: #0c6d62;
-      color: #f7f4ed;
-    }}
-    {_theme_override_css()}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <div class="masthead">
-      <div class="nav-row">
-        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <span class="nav-link">Time series</span>
-        <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
-      </div>
-      <div class="meta">
-        <a href="/">Back to all field sites</a>
-      </div>
-    </div>
-    <div class="stack">
-      <section class="panel">
-        <div class="section-bar">
-          <h2 class="section-title">Environmental Sensor Time Series</h2>
-          <div class="range-pills">{range_links}</div>
-        </div>
-        <div class="chart-grid">{sensor_sections}</div>
-      </section>
-    </div>
-  </div>
-{render_local_time_script()}
-</body>
-</html>"""
-
-
-def render_birdnet_rankings_html(site: dict) -> str:
-    selected_sort = normalize_birdnet_ranking_sort(site.get("birdnet_ranking_sort"))
-    selected_range = normalize_birdnet_ranking_range(site.get("birdnet_ranking_range"))
-    selected_metric = BIRDNET_RANKING_SORTS[selected_sort]["value_key"]
-    plotted_species_count = sum(
-        1 for item in site["birdnet_rankings"] if item.get(selected_metric) is not None
-    )
-    species_href_map = {
-        str(item["label"]): birdnet_species_url(
-            site["peer_uuid"], str(item["label"]), selected_range
-        )
-        for item in site["birdnet_rankings"]
-    }
-
-    plot_markup = (
-        f'<div class="plot-shell">{render_horizontal_lollipop_svg(site["birdnet_rankings"], selected_metric, _plot_color("accent"), species_href_map, row_height=32, label_font_size=14)}</div>'
-        if plotted_species_count
-        else '<div class="empty">No values are available for the selected metric in this time window.</div>'
-    )
-
-    ranking_cards = (
-        "".join(
-            f"""
-        <article class="rank-card">
-          <div class="rank-main">
-            <strong><a href="{escape_html(species_href_map[str(item['label'])])}">{escape_html(item['label'])}</a></strong>
-            <span class="metric-pill">{escape_html(site['birdnet_ranking_metric_label'])}: {'n/a' if item.get(selected_metric) is None else _format_axis_value(float(item[selected_metric]))}</span>
-          </div>
-          <div class="dim">Detections {item['detection_count']} · max score {'n/a' if item['max_score'] is None else _format_axis_value(item['max_score'])} · max occup {'n/a' if item['max_occup'] is None else _format_axis_value(item['max_occup'])}</div>
-          <div class="dim">duration-weighted score x occup {'n/a' if item['sum_score_x_occup'] is None else _format_axis_value(item['sum_score_x_occup'])} · avg volume {'n/a' if item['avg_volume'] is None else _format_axis_value(item['avg_volume'])}</div>
-          <div class="dim">latest {render_local_time(item['latest_processed_at'])}</div>
-        </article>
-        """
-            for item in site["birdnet_rankings"]
-        )
-        or '<div class="empty">No ranked BirdNET species are visible for the selected time window.</div>'
-    )
-
-    sort_options = "".join(
-        f'<option value="{key}"{" selected" if key == selected_sort else ""}>{escape_html(config["label"])}</option>'
-        for key, config in BIRDNET_RANKING_SORTS.items()
-    )
-    range_options = "".join(
-        f'<option value="{key}"{" selected" if key == selected_range else ""}>{label}</option>'
-        for key, label in (
-            ("hour", "Hour"),
-            ("day", "Day"),
-            ("week", "Week"),
-            ("month", "Month"),
-            ("all", "All"),
-        )
-    )
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_html(site['site_label'])} · BirdNET Rankings</title>
-  <style>
-    :root {{
-      --bg: #edf1ea;
-      --panel: rgba(255,255,255,0.9);
-      --ink: #17201d;
-      --muted: #5c6760;
-      --accent: #0c6d62;
-      --accent-2: #d97706;
-      --border: rgba(23,32,29,0.12);
-      --shadow: 0 24px 60px rgba(23,32,29,0.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.18), transparent 28rem),
-        radial-gradient(circle at top right, rgba(217,119,6,0.14), transparent 22rem),
-        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
-    }}
-    a {{ color: var(--accent); }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.95rem 1.1rem 1.2rem; }}
-    .masthead {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 0.3rem;
-    }}
-    .nav-row {{
-      display: inline-flex;
-      gap: 0.65rem;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-bottom: 0;
-    }}
-    .nav-link {{
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.96rem;
-    }}
-    .nav-link strong {{ color: var(--ink); }}
-    .nav-link-inline {{
-      color: var(--accent);
-      text-decoration: none;
-      text-decoration: underline;
-      text-underline-offset: 0.16em;
-      text-decoration-thickness: 0.08em;
-      font-size: 0.96rem;
-    }}
-    .meta {{ color: var(--muted); font-size: 0.95rem; text-align: right; }}
-    .stack {{ display: grid; gap: 1.2rem; }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(18px);
-      padding: 1.15rem;
-    }}
-    .panel.rankings-panel {{
-      padding-top: 0.8rem;
-      padding-bottom: 0.95rem;
-    }}
-    .controls {{
-      display: grid;
-      grid-template-columns: minmax(340px, 2.3fr) minmax(180px, 1fr);
-      gap: 0.65rem;
-      align-items: center;
-    }}
-    select {{
-      width: 100%;
-      padding: 0.36rem 0.82rem;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.88);
-      color: var(--ink);
-      font: inherit;
-      font-size: 0.82rem;
-      line-height: 1.2;
-    }}
-    .section-title {{
-      margin: 0;
-      font-size: 0.88rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }}
-    .section-bar {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.45rem;
-      margin-bottom: 0.55rem;
-      flex-wrap: wrap;
-    }}
-    .plot-shell {{
-      min-height: 19rem;
-      border-radius: 18px;
-      border: 1px solid rgba(23,32,29,0.08);
-      background: linear-gradient(180deg, rgba(247,244,237,0.92), rgba(237,241,234,0.72));
-      overflow-x: auto;
-      overflow-y: hidden;
-    }}
-    .plot-shell svg {{ width: 100%; min-width: 1120px; display: block; }}
-    .rank-list {{ display: grid; gap: 0.7rem; }}
-    .rank-card {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.85rem 0.9rem;
-      background: rgba(255,255,255,0.72);
-    }}
-    .rank-main {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.8rem;
-      flex-wrap: wrap;
-      margin-bottom: 0.25rem;
-    }}
-    .metric-pill {{
-      display: inline-flex;
-      align-items: center;
-      padding: 0.25rem 0.55rem;
-      border-radius: 999px;
-      background: rgba(12,109,98,0.12);
-      color: var(--accent);
-      font-size: 0.82rem;
-    }}
-    .dim {{ color: var(--muted); }}
-    .empty {{
-      border: 1px dashed var(--border);
-      border-radius: 16px;
-      padding: 1rem;
-      color: var(--muted);
-      background: rgba(255,255,255,0.45);
-    }}
-    @media (max-width: 980px) {{
-      .masthead {{ flex-direction: column; }}
-      .controls {{ grid-template-columns: 1fr; }}
-    }}
-    {_theme_override_css()}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <div class="masthead">
-      <div class="nav-row">
-        <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
-        <span class="nav-link">BirdNET rankings</span>
-      </div>
-      <div class="meta">
-        <a href="/">Back to all field sites</a>
-      </div>
-    </div>
-    <div class="stack">
-      <section class="panel rankings-panel">
-        <div class="section-bar">
-          <h2 class="section-title">Rankings</h2>
-          <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
-            <select name="sort" onchange="submitBirdnetRankingControls()" aria-label="Sort criteria">{sort_options}</select>
-            <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
-          </form>
-        </div>
-        {plot_markup}
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Ranked Species</h2>
-        <div class="rank-list">{ranking_cards}</div>
-      </section>
-    </div>
-  </div>
-  <script>
-    function submitBirdnetRankingControls() {{
-      const form = document.getElementById("birdnetRankingControls");
-      if (!form) return;
-      form.requestSubmit();
-    }}
-  </script>
-{render_local_time_script()}
-</body>
-</html>"""
-
-
 def render_index_html() -> str:
+    """Render the public field-site map.
+
+    Drop-in replacement for the previous custom canvas map.
+
+    Behavior:
+    - loads sites from /api/sites
+    - uses Leaflet for pan/zoom/touch behavior
+    - uses Esri World Imagery as the satellite basemap
+    - clicking a marker opens the site's public dashboard by default
+    - holding Shift/Cmd/Ctrl/Alt while clicking shows a small popup instead
+    - the "Open selected site" button is enabled after selecting a marker
+
+    Notes:
+    - Leaflet itself is open source. The satellite imagery service is not "open
+      source"; replace SATELLITE_TILES below if you later self-host imagery.
+    - For fully offline/self-hosted deployments, vendor leaflet.css and
+      leaflet.js under /static/vendor/leaflet/ and change the two CDN URLs.
+    """
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SensOS Public Dashboard</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIINfQ2ATbK3qsfNHh8Qw9DyJw3y7pFvDo8="
+    crossorigin=""
+  >
   <style>
     :root {{
       --bg: #edf1ea;
@@ -2979,12 +38,16 @@ def render_index_html() -> str:
       --muted: #5c6760;
       --accent: #0c6d62;
       --accent-2: #d97706;
-      --border: rgba(23,32,29,0.12);
+      --border: rgba(23,32,29,0.14);
       --shadow: 0 24px 60px rgba(23,32,29,0.12);
       --marker: #0c6d62;
       --marker-active: #d97706;
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{
+      width: 100%;
+      height: 100%;
+    }}
     body {{
       margin: 0;
       color: var(--ink);
@@ -2994,873 +57,301 @@ def render_index_html() -> str:
         radial-gradient(circle at top right, rgba(217,119,6,0.14), transparent 22rem),
         linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
     }}
-    .shell {{ max-width: 1480px; margin: 0 auto; padding: 0.7rem 0.9rem; }}
-    .masthead {{
-      display: flex; justify-content: space-between; align-items: baseline;
-      gap: 0.7rem; margin-bottom: 0.55rem;
-    }}
-    h1 {{ margin: 0; font-size: clamp(1.35rem, 2.2vw, 1.9rem); letter-spacing: -0.03em; }}
-    .subhead {{ color: var(--muted); max-width: 52rem; margin-top: 0.45rem; }}
-    .meta {{ color: var(--muted); font-size: 0.85rem; }}
-    .layout {{
+    .shell {{
+      height: 100vh;
+      min-height: 28rem;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
-      gap: 1rem;
-      height: calc(100vh - 4.2rem);
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 0.7rem;
+      padding: 0.7rem 0.9rem;
     }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(18px);
-      overflow: hidden;
-    }}
-    .map-wrap {{
-      position: relative;
-      min-height: 100%;
-      background: linear-gradient(180deg, #dfeae6 0%, #cedbd4 100%);
-    }}
-    .map-toolbar {{
-      position: absolute;
-      top: 0.7rem;
-      left: 0.7rem;
-      z-index: 4;
+    .masthead {{
       display: flex;
-      gap: 0.6rem;
-      align-items: center;
-      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.7rem;
+      min-width: 0;
     }}
-    .toolbar-button {{
-      border-radius: 999px;
+    h1 {{
+      margin: 0;
+      font-size: clamp(1.35rem, 2.2vw, 1.9rem);
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+    }}
+    .meta {{
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }}
+    .map-shell {{
+      position: relative;
+      min-height: 0;
       border: 1px solid var(--border);
-      background: rgba(255,255,255,0.82);
-      color: var(--ink);
-      padding: 0.65rem 0.9rem;
-      font: inherit;
-      box-shadow: 0 10px 30px rgba(23,32,29,0.08);
-    }}
-    .toolbar-button {{
-      cursor: pointer;
-    }}
-    .map-stage {{
-      position: absolute;
-      inset: 0;
+      border-radius: 22px;
       overflow: hidden;
+      background: #dfeae6;
+      box-shadow: var(--shadow);
     }}
-    canvas#mapCanvas {{
+    #fieldSitesMap {{
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
+      z-index: 1;
+      background: #dfeae6;
     }}
-    .markers {{
+    .map-toolbar {{
       position: absolute;
-      inset: 0;
+      left: 0.7rem;
+      top: 0.7rem;
+      z-index: 500;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      max-width: calc(100% - 1.4rem);
       pointer-events: none;
     }}
-    .marker {{
-      position: absolute;
-      width: 18px;
-      height: 18px;
-      margin-left: -9px;
-      margin-top: -9px;
+    .toolbar-button,
+    .toolbar-pill {{
       border-radius: 999px;
-      border: 3px solid rgba(255,255,255,0.96);
-      background: var(--marker);
-      box-shadow: 0 0 0 1px rgba(23,32,29,0.18), 0 8px 18px rgba(12,109,98,0.25);
-      pointer-events: none;
-      opacity: 0.9;
-      transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.86);
+      color: var(--ink);
+      padding: 0.58rem 0.82rem;
+      font: inherit;
+      box-shadow: 0 10px 30px rgba(23,32,29,0.10);
+      backdrop-filter: blur(14px);
+      pointer-events: auto;
     }}
-    .marker.active {{
-      background: var(--marker-active);
-      transform: scale(1.22);
-      opacity: 1;
-      z-index: 3;
+    .toolbar-button {{
+      cursor: pointer;
     }}
-    .marker.dim {{
+    .toolbar-button:disabled {{
+      cursor: default;
       opacity: 0.58;
+    }}
+    .toolbar-pill {{
+      color: var(--muted);
+      font-size: 0.86rem;
     }}
     .map-caption {{
       position: absolute;
       right: 0.7rem;
       bottom: 0.7rem;
-      z-index: 4;
+      z-index: 500;
       color: var(--muted);
       font-size: 0.82rem;
-      max-width: 20rem;
+      max-width: min(30rem, calc(100% - 1.4rem));
       text-align: right;
-      background: rgba(255,255,255,0.7);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 0.3rem 0.6rem;
-    }}
-    .sidebar {{
-      padding: 0.75rem;
-      display: grid;
-      gap: 0.75rem;
-      align-content: start;
-      overflow: auto;
-    }}
-    .sidebar h2 {{
-      margin: 0;
-      font-size: 1.4rem;
-      letter-spacing: -0.04em;
-    }}
-    .sidebar p, .dim {{
-      color: var(--muted);
-    }}
-    .metric-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.7rem;
-    }}
-    .summary-link {{
-      display: block;
-      text-decoration: none;
-      color: inherit;
-    }}
-    .summary-link:hover .summary-card {{
-      border-color: rgba(12,109,98,0.45);
-      box-shadow: 0 10px 24px rgba(12,109,98,0.12);
-    }}
-    .summary-card {{
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 0.75rem 0.8rem;
-      background: rgba(255,255,255,0.72);
-      transition: box-shadow 140ms ease, border-color 140ms ease;
-    }}
-    .summary-row {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(3.8rem, auto);
-      gap: 0.5rem;
-      align-items: center;
-      margin-bottom: 0.42rem;
-    }}
-    .summary-row:last-child {{
-      margin-bottom: 0;
-    }}
-    .summary-label {{
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-size: 0.9rem;
-    }}
-    .summary-bar {{
-      height: 0.46rem;
-      border-radius: 999px;
-      background: linear-gradient(90deg, rgba(12,109,98,0.92), rgba(217,119,6,0.85));
-      box-shadow: inset 0 0 0 1px rgba(23,32,29,0.08);
-    }}
-    .summary-value {{
-      text-align: right;
-      color: var(--muted);
-      font-size: 0.82rem;
-      font-variant-numeric: tabular-nums;
-    }}
-    .mini-plots {{
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.55rem;
-    }}
-    .mini-plot {{
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 0.45rem 0.5rem 0.5rem;
-      background: rgba(255,255,255,0.7);
-      min-height: 5.9rem;
-      display: grid;
-      grid-template-rows: auto auto 1fr;
-      gap: 0.2rem;
-    }}
-    .mini-plot-title {{
-      font-size: 0.76rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin: 0;
-      line-height: 1.1;
-    }}
-    .mini-plot-value {{
-      font-size: 0.96rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      margin: 0;
-      line-height: 1.1;
-    }}
-    .mini-plot-svg {{
-      width: 100%;
-      height: 3.2rem;
-      display: block;
-    }}
-    .metric {{
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 0.85rem 0.9rem;
-      background: rgba(255,255,255,0.62);
-      min-width: 0;
-    }}
-    .metric-value {{
-      font-size: 1.5rem;
-      font-weight: 700;
-      letter-spacing: -0.05em;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }}
-    .section-title {{
-      margin: 0 0 0.55rem;
-      font-size: 1rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }}
-    .site-list {{
-      display: grid;
-      gap: 0.65rem;
-    }}
-    .site-list button {{
-      width: 100%;
-      text-align: left;
       background: rgba(255,255,255,0.76);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 0.8rem 0.9rem;
-      cursor: pointer;
+      border-radius: 999px;
+      padding: 0.34rem 0.66rem;
+      backdrop-filter: blur(14px);
+      pointer-events: none;
+    }}
+    .site-marker {{
+      width: 19px;
+      height: 19px;
+      border-radius: 999px;
+      border: 3px solid rgba(255,255,255,0.96);
+      background: var(--marker);
+      box-shadow:
+        0 0 0 1px rgba(23,32,29,0.24),
+        0 8px 18px rgba(12,109,98,0.30);
+    }}
+    .site-marker.is-inactive {{
+      opacity: 0.68;
+      filter: grayscale(0.35);
+    }}
+    .site-marker.is-selected {{
+      background: var(--marker-active);
+      transform: scale(1.22);
+      box-shadow:
+        0 0 0 1px rgba(23,32,29,0.28),
+        0 0 0 7px rgba(217,119,6,0.20),
+        0 10px 22px rgba(217,119,6,0.32);
+    }}
+    .site-popup {{
+      min-width: 14rem;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      color: var(--ink);
+    }}
+    .site-popup-title {{
+      margin: 0 0 0.25rem;
+      font-size: 1rem;
+      line-height: 1.2;
+    }}
+    .site-popup-meta {{
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.35;
+      margin-bottom: 0.55rem;
+    }}
+    .site-popup-actions {{
+      display: flex;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+    }}
+    .site-popup-actions a {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      background: rgba(12,109,98,0.10);
+      color: var(--accent);
+      text-decoration: none;
+      padding: 0.32rem 0.52rem;
+      font-weight: 700;
+      font-size: 0.86rem;
+    }}
+    .leaflet-container {{
       font: inherit;
       color: var(--ink);
     }}
-    .record-list {{
-      display: grid;
-      gap: 0.65rem;
-      max-height: 12.5rem;
-      overflow: auto;
+    .leaflet-control-attribution {{
+      font-size: 0.68rem;
+      background: rgba(255,255,255,0.72);
     }}
-    .record-card {{
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 0.8rem 0.9rem;
-      background: rgba(255,255,255,0.7);
+    .leaflet-control-layers,
+    .leaflet-control-zoom a {{
+      border-color: var(--border) !important;
     }}
+    .leaflet-control-zoom a {{
+      color: var(--ink) !important;
+      background: rgba(255,255,255,0.88) !important;
+    }}
+    .dim {{ color: var(--muted); }}
     .mono {{
       font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
-      font-size: 0.92rem;
+      font-size: 0.86rem;
     }}
-    @media (max-width: 980px) {{
-      .layout {{ grid-template-columns: 1fr; }}
-      .layout {{ height: auto; }}
-      .map-wrap {{ min-height: 68vh; }}
-      .mini-plots {{ grid-template-columns: 1fr; }}
-      .sidebar {{ display: none; }}
+    a {{ color: var(--accent); }}
+    @media (max-width: 760px) {{
+      .shell {{
+        padding: 0;
+        gap: 0;
+      }}
+      .masthead {{
+        position: absolute;
+        left: 0.7rem;
+        right: 0.7rem;
+        top: 0.7rem;
+        z-index: 510;
+        pointer-events: none;
+      }}
+      .masthead h1 {{
+        display: none;
+      }}
+      .meta {{
+        display: none;
+      }}
+      .map-shell {{
+        border-radius: 0;
+        border: 0;
+      }}
+      .map-toolbar {{
+        top: 0.7rem;
+      }}
+      .toolbar-pill {{
+        display: none;
+      }}
+      .map-caption {{
+        left: 0.7rem;
+        right: auto;
+        text-align: left;
+        max-width: calc(100% - 1.4rem);
+      }}
     }}
+    {_theme_override_css()}
   </style>
 </head>
 <body>
   <div class="shell">
-    <div class="masthead">
+    <header class="masthead">
       <div><h1>Field Sites</h1></div>
       <div class="meta">Public dashboard · version {current_version()}</div>
-    </div>
-    <div class="layout">
-      <section class="panel map-wrap">
-        <div class="map-toolbar">
-          <button class="toolbar-button" id="resetViewButton" type="button">Reset View</button>
-        </div>
-        <div class="map-stage" id="mapStage">
-          <canvas id="mapCanvas"></canvas>
-          <div class="markers" id="markersLayer"></div>
-        </div>
-        <div class="map-caption" id="mapCaption">Loading mapped sites…</div>
-      </section>
-      <aside class="panel sidebar">
-        <div>
-          <h2><a id="siteTitleLink" href="#" class="summary-link" style="display:inline;color:inherit;text-decoration:none;"><span id="siteTitle">Map</span></a></h2>
-          <p id="siteSubtitle"></p>
-        </div>
-        <section>
-          <div class="section-title">Top Species (Weighted)</div>
-          <a id="birdnetSummaryLink" class="summary-link" href="#">
-            <div id="birdnetSummary" class="summary-card"></div>
-          </a>
-        </section>
-        <section>
-          <div id="sensorMiniPlots" class="mini-plots"></div>
-        </section>
-        <div class="metric-grid" id="metricGrid"></div>
-        <section>
-          <div class="section-title">Nearest Sites</div>
-          <div id="nearestSitesBlock" class="site-list"></div>
-        </section>
-        <section>
-          <div class="section-title">Recent BirdNET Results</div>
-          <div id="birdnetList" class="record-list"></div>
-        </section>
-        <section>
-          <div class="section-title">Recent Sensor Data</div>
-          <div id="i2cList" class="record-list"></div>
-        </section>
-      </aside>
-    </div>
-  </div>
-  <script>
-    const worldBounds = {{ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }};
-    const minLonSpan = 0.01;
-    const minLatSpan = 0.01;
-    const markerDiameterPx = 18;
-    const clusterSeparationTargetPx = markerDiameterPx * 2;
-    const tileSize = 256;
-    const maxTileZoom = 17;
-    const mapFitMode = "cover";
-    const satelliteTileTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
-    let currentView = {{ ...worldBounds }};
-    let sites = [];
-    let activeSiteId = null;
-    const tileCache = new Map();
+    </header>
 
-    const mapStage = document.getElementById("mapStage");
-    const canvas = document.getElementById("mapCanvas");
-    const markersLayer = document.getElementById("markersLayer");
+    <main class="map-shell">
+      <div id="fieldSitesMap" aria-label="Mapped field sites"></div>
+
+      <div class="map-toolbar">
+        <button class="toolbar-button" id="resetViewButton" type="button">Reset view</button>
+        <button class="toolbar-button" id="openSelectedButton" type="button" disabled>Open selected site</button>
+        <span class="toolbar-pill" id="mapStatus">Loading mapped sites…</span>
+      </div>
+
+      <div class="map-caption" id="mapCaption">
+        Click a field site to open its data page. Shift-click previews details.
+      </div>
+    </main>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const SATELLITE_TILES =
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
+
+    const SATELLITE_ATTRIBUTION =
+      "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community";
+
+    const DEFAULT_CENTER = [30.2672, -97.7431];
+    const DEFAULT_ZOOM = 5;
+
+    let sites = [];
+    let selectedSite = null;
+    let selectedMarker = null;
+    const markersBySiteId = new Map();
+
+    const mapStatus = document.getElementById("mapStatus");
     const mapCaption = document.getElementById("mapCaption");
     const resetViewButton = document.getElementById("resetViewButton");
-    const siteTitleLink = document.getElementById("siteTitleLink");
-    const siteTitle = document.getElementById("siteTitle");
-    const siteSubtitle = document.getElementById("siteSubtitle");
-    const birdnetSummaryLink = document.getElementById("birdnetSummaryLink");
-    const birdnetSummary = document.getElementById("birdnetSummary");
-    const sensorMiniPlots = document.getElementById("sensorMiniPlots");
-    const metricGrid = document.getElementById("metricGrid");
-    const nearestSitesBlock = document.getElementById("nearestSitesBlock");
-    const birdnetList = document.getElementById("birdnetList");
-    const i2cList = document.getElementById("i2cList");
+    const openSelectedButton = document.getElementById("openSelectedButton");
 
-    function clampView(view) {{
-      const lonSpan = Math.max(view.lonMax - view.lonMin, minLonSpan);
-      const latSpan = Math.max(view.latMax - view.latMin, minLatSpan);
-      const lonCenter = (view.lonMin + view.lonMax) / 2;
-      const latCenter = (view.latMin + view.latMax) / 2;
-      return {{
-        lonMin: Math.max(-180, lonCenter - lonSpan / 2),
-        lonMax: Math.min(180, lonCenter + lonSpan / 2),
-        latMin: Math.max(-90, latCenter - latSpan / 2),
-        latMax: Math.min(90, latCenter + latSpan / 2),
-      }};
-    }}
+    const map = L.map("fieldSitesMap", {{
+      zoomControl: true,
+      preferCanvas: true,
+      worldCopyJump: true,
+    }}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
-    function isAtMaxZoom() {{
-      return (currentView.lonMax - currentView.lonMin) <= minLonSpan * 1.02 &&
-             (currentView.latMax - currentView.latMin) <= minLatSpan * 1.02;
-    }}
+    const satelliteLayer = L.tileLayer(SATELLITE_TILES, {{
+      attribution: SATELLITE_ATTRIBUTION,
+      maxZoom: 19,
+      detectRetina: true,
+    }}).addTo(map);
 
-    function resizeCanvas() {{
-      const rect = mapStage.getBoundingClientRect();
-      canvas.width = rect.width * window.devicePixelRatio;
-      canvas.height = rect.height * window.devicePixelRatio;
-      canvas.style.width = rect.width + "px";
-      canvas.style.height = rect.height + "px";
-      render();
-    }}
+    const markerLayer = L.featureGroup().addTo(map);
 
-    function project(lon, lat) {{
-      const rect = mapStage.getBoundingClientRect();
-      const viewport = mercatorViewport(rect);
-      const point = mercatorWorldPoint(lon, lat, 0);
-      return {{
-        x: viewport.offsetX + (point.x - viewport.topLeft.x) * viewport.scale,
-        y: viewport.offsetY + (point.y - viewport.topLeft.y) * viewport.scale,
-      }};
-    }}
-
-    function visibleSites() {{
-      return sites.filter((site) =>
-        site.longitude >= currentView.lonMin &&
-        site.longitude <= currentView.lonMax &&
-        site.latitude >= currentView.latMin &&
-        site.latitude <= currentView.latMax
-      );
-    }}
-
-    function drawMap() {{
-      const ctx = canvas.getContext("2d");
-      const rect = mapStage.getBoundingClientRect();
-      ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-      ctx.clearRect(0, 0, rect.width, rect.height);
-      drawSatelliteBasemap(ctx, rect);
-
-      ctx.strokeStyle = "rgba(23,32,29,0.12)";
-      ctx.lineWidth = 1;
-
-      const lonStep = (currentView.lonMax - currentView.lonMin) > 40 ? 10 : 5;
-      const latStep = (currentView.latMax - currentView.latMin) > 30 ? 10 : 5;
-
-      for (let lon = Math.ceil(currentView.lonMin / lonStep) * lonStep; lon <= currentView.lonMax; lon += lonStep) {{
-        const p = project(lon, 0);
-        ctx.beginPath();
-        ctx.moveTo(p.x, 0);
-        ctx.lineTo(p.x, rect.height);
-        ctx.stroke();
-      }}
-
-      for (let lat = Math.ceil(currentView.latMin / latStep) * latStep; lat <= currentView.latMax; lat += latStep) {{
-        const p = project(0, lat);
-        ctx.beginPath();
-        ctx.moveTo(0, p.y);
-        ctx.lineTo(rect.width, p.y);
-        ctx.stroke();
-      }}
-
-      ctx.strokeStyle = "rgba(23,32,29,0.35)";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(0.75, 0.75, rect.width - 1.5, rect.height - 1.5);
-    }}
-
-    function clampLatitude(lat) {{
-      return Math.max(-85.05112878, Math.min(85.05112878, lat));
-    }}
-
-    function mercatorWorldPoint(lon, lat, zoom) {{
-      const scale = tileSize * (2 ** zoom);
-      const clampedLat = clampLatitude(lat);
-      const sinLat = Math.sin((clampedLat * Math.PI) / 180);
-      const x = ((lon + 180) / 360) * scale;
-      const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
-      return {{ x, y }};
-    }}
-
-    function mercatorLatFromWorldY(y, zoom) {{
-      const scale = tileSize * (2 ** zoom);
-      const normalized = Math.max(0, Math.min(scale, y)) / scale;
-      const n = Math.PI * (1 - 2 * normalized);
-      return (Math.atan(Math.sinh(n)) * 180) / Math.PI;
-    }}
-
-    function expandViewToViewportAspect(view, rect) {{
-      if (!rect.width || !rect.height) return view;
-      const targetRatio = rect.width / rect.height;
-      if (!Number.isFinite(targetRatio) || targetRatio <= 0) return view;
-
-      const tl = mercatorWorldPoint(view.lonMin, view.latMax, 0);
-      const br = mercatorWorldPoint(view.lonMax, view.latMin, 0);
-      const worldWidth = Math.max(1e-9, br.x - tl.x);
-      const worldHeight = Math.max(1e-9, br.y - tl.y);
-      const currentRatio = worldWidth / worldHeight;
-
-      if (Math.abs(currentRatio - targetRatio) < 1e-6) return view;
-
-      if (currentRatio < targetRatio) {{
-        const requiredWorldWidth = worldHeight * targetRatio;
-        const requiredLonSpan = (requiredWorldWidth / tileSize) * 360;
-        const lonCenter = (view.lonMin + view.lonMax) / 2;
-        return {{
-          ...view,
-          lonMin: lonCenter - requiredLonSpan / 2,
-          lonMax: lonCenter + requiredLonSpan / 2,
-        }};
-      }}
-
-      const requiredWorldHeight = worldWidth / targetRatio;
-      const centerY = (tl.y + br.y) / 2;
-      const topY = centerY - requiredWorldHeight / 2;
-      const bottomY = centerY + requiredWorldHeight / 2;
-      return {{
-        ...view,
-        latMax: mercatorLatFromWorldY(topY, 0),
-        latMin: mercatorLatFromWorldY(bottomY, 0),
-      }};
-    }}
-
-    function mapViewport(rect, zoom) {{
-      return mapViewportForView(currentView, rect, zoom);
-    }}
-
-    function mapViewportForView(view, rect, zoom) {{
-      const topLeft = mercatorWorldPoint(view.lonMin, view.latMax, zoom);
-      const bottomRight = mercatorWorldPoint(view.lonMax, view.latMin, zoom);
-      const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
-      const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
-      const scaleToContain = Math.min(rect.width / worldWidth, rect.height / worldHeight);
-      const scaleToCover = Math.max(rect.width / worldWidth, rect.height / worldHeight);
-      const scale = mapFitMode === "cover" ? scaleToCover : scaleToContain;
-      const drawWidth = worldWidth * scale;
-      const drawHeight = worldHeight * scale;
-      return {{
-        topLeft,
-        bottomRight,
-        worldWidth,
-        worldHeight,
-        scale,
-        offsetX: (rect.width - drawWidth) / 2,
-        offsetY: (rect.height - drawHeight) / 2,
-      }};
-    }}
-
-    function chooseBasemapZoom(rect) {{
-      const viewport = mapViewport(rect, 0);
-      const zoom = Math.floor(Math.log2(viewport.scale));
-      if (!Number.isFinite(zoom)) return 1;
-      return Math.max(1, Math.min(maxTileZoom, zoom));
-    }}
-
-    function mercatorViewport(rect) {{
-      return mapViewport(rect, 0);
-    }}
-
-    function tileUrl(z, x, y) {{
-      return satelliteTileTemplate
-        .replace("{{z}}", String(z))
-        .replace("{{x}}", String(x))
-        .replace("{{y}}", String(y));
-    }}
-
-    function requestTile(z, x, y) {{
-      const maxIndex = 2 ** z;
-      if (y < 0 || y >= maxIndex) return null;
-      const wrappedX = ((x % maxIndex) + maxIndex) % maxIndex;
-      const key = `${{z}}/${{wrappedX}}/${{y}}`;
-      let entry = tileCache.get(key);
-      if (entry) return entry;
-      const image = new Image();
-      image.crossOrigin = "anonymous";
-      entry = {{ status: "loading", image }};
-      image.onload = () => {{
-        entry.status = "ready";
-        render();
-      }};
-      image.onerror = () => {{
-        entry.status = "error";
-        render();
-      }};
-      image.src = tileUrl(z, wrappedX, y);
-      tileCache.set(key, entry);
-      return entry;
-    }}
-
-    function drawSatelliteBasemap(ctx, rect) {{
-      const bg = ctx.createLinearGradient(0, 0, 0, rect.height);
-      bg.addColorStop(0, "#16332f");
-      bg.addColorStop(1, "#6d8376");
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, 0, rect.width, rect.height);
-
-      const zoom = chooseBasemapZoom(rect);
-      const viewport = mapViewport(rect, zoom);
-      const topLeft = viewport.topLeft;
-      const bottomRight = viewport.bottomRight;
-      const scale = viewport.scale;
-      const offsetX = viewport.offsetX;
-      const offsetY = viewport.offsetY;
-
-      const xStart = Math.floor(topLeft.x / tileSize);
-      const xEnd = Math.floor(bottomRight.x / tileSize);
-      const yStart = Math.floor(topLeft.y / tileSize);
-      const yEnd = Math.floor(bottomRight.y / tileSize);
-
-      for (let tileX = xStart; tileX <= xEnd; tileX += 1) {{
-        for (let tileY = yStart; tileY <= yEnd; tileY += 1) {{
-          const screenX = offsetX + (tileX * tileSize - topLeft.x) * scale;
-          const screenY = offsetY + (tileY * tileSize - topLeft.y) * scale;
-          const screenW = tileSize * scale;
-          const screenH = tileSize * scale;
-          const tile = requestTile(zoom, tileX, tileY);
-
-          if (tile && tile.status === "ready") {{
-            ctx.drawImage(tile.image, screenX, screenY, screenW, screenH);
-            continue;
-          }}
-
-          ctx.fillStyle = "rgba(255,255,255,0.08)";
-          ctx.fillRect(screenX, screenY, screenW, screenH);
-        }}
-      }}
-
-      const haze = ctx.createLinearGradient(0, 0, rect.width, rect.height);
-      haze.addColorStop(0, "rgba(12,109,98,0.12)");
-      haze.addColorStop(0.55, "rgba(255,255,255,0.02)");
-      haze.addColorStop(1, "rgba(17,24,39,0.16)");
-      ctx.fillStyle = haze;
-      ctx.fillRect(0, 0, rect.width, rect.height);
-    }}
-
-    function renderMarkers() {{
-      markersLayer.innerHTML = "";
-      for (const site of visibleSites()) {{
-        const pos = project(site.longitude, site.latitude);
-        const el = document.createElement("div");
-        el.className = "marker";
-        if (activeSiteId && site.site_id === activeSiteId) {{
-          el.classList.add("active");
-        }} else if (activeSiteId) {{
-          el.classList.add("dim");
-        }}
-        el.style.left = pos.x + "px";
-        el.style.top = pos.y + "px";
-        el.dataset.siteId = site.site_id;
-        markersLayer.appendChild(el);
-      }}
-    }}
-
-    function render() {{
-      drawMap();
-      renderMarkers();
-      mapCaption.textContent = `${{sites.length}} sites`;
-      renderNearestSites();
-    }}
-
-    function fitSites(targetSites) {{
-      if (!targetSites.length) return;
-      const lonValues = targetSites.map((site) => site.longitude);
-      const latValues = targetSites.map((site) => site.latitude);
-      const lonPad = Math.max((Math.max(...lonValues) - Math.min(...lonValues)) * 0.35, 0.25);
-      const latPad = Math.max((Math.max(...latValues) - Math.min(...latValues)) * 0.35, 0.2);
-      const baseView = clampView({{
-        lonMin: Math.min(...lonValues) - lonPad,
-        lonMax: Math.max(...lonValues) + lonPad,
-        latMin: Math.min(...latValues) - latPad,
-        latMax: Math.max(...latValues) + latPad,
-      }});
-      const rect = mapStage.getBoundingClientRect();
-      currentView = clampView(expandViewToViewportAspect(baseView, rect));
-      render();
+    function escapeHtml(value) {{
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
     }}
 
     function displaySiteName(site) {{
       const note = String(site?.note || "").trim();
       if (note) return note;
+      const label = String(site?.site_label || "").trim();
+      if (label) return label;
       const hostname = String(site?.hostname || "").trim();
       if (hostname) return hostname;
       return String(site?.wg_ip || "unknown");
     }}
 
-    function haversineKm(lat1, lon1, lat2, lon2) {{
-      const toRad = (deg) => (deg * Math.PI) / 180;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-      return 2 * 6371 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    }}
-
-    function nearestSitesByCenter() {{
-      if (!sites.length) return [];
-      const centerLon = (currentView.lonMin + currentView.lonMax) / 2;
-      const centerLat = (currentView.latMin + currentView.latMax) / 2;
-      return sites
-        .map((site) => ({{
-          site,
-          distanceKm: haversineKm(centerLat, centerLon, site.latitude, site.longitude),
-        }}))
-        .sort((a, b) => a.distanceKm - b.distanceKm);
-    }}
-
-    function nearestSiteRowLimit() {{
-      const rect = nearestSitesBlock.getBoundingClientRect();
-      if (!rect.height || rect.height < 10) return 8;
-      return Math.max(3, Math.floor(rect.height / 60));
-    }}
-
-    function renderNearestSites() {{
-      const ranked = nearestSitesByCenter();
-      if (!ranked.length) {{
-        nearestSitesBlock.innerHTML = '<div class="dim">No sites are visible yet.</div>';
-        return;
-      }}
-      const rowLimit = nearestSiteRowLimit();
-      nearestSitesBlock.innerHTML = "";
-      for (const entry of ranked.slice(0, rowLimit)) {{
-        const button = document.createElement("button");
-        button.type = "button";
-        button.innerHTML =
-          `<strong>${{escapeHtml(displaySiteName(entry.site))}}</strong>` +
-          `<div class="dim mono">${{escapeHtml(entry.site.wg_ip)}} · ${{escapeHtml(formatNumber(entry.distanceKm, 1))}} km</div>`;
-        button.addEventListener("click", () => openSiteDashboard(entry.site));
-        nearestSitesBlock.appendChild(button);
-      }}
-    }}
-
-    function escapeHtml(text) {{
-      const replacements = {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}};
-      return String(text ?? "").replace(/[&<>"']/g, (ch) => replacements[ch]);
-    }}
-
-    function formatNumber(value, digits = 2) {{
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "n/a";
-      return Number(value).toFixed(digits).replace(/\\.0+$/, "").replace(/(\\.\\d*?)0+$/, "$1");
-    }}
-
-    function basename(path) {{
-      const text = String(path ?? "");
-      const parts = text.split("/");
-      return parts[parts.length - 1] || text;
-    }}
-
-    function openSiteDashboard(site) {{
-      if (!site || !site.public_url) return;
-      window.location.assign(site.public_url);
-    }}
-
-    function birdnetSpeciesUrl(site, label) {{
-      const range = site && site.evidence_range ? site.evidence_range : "day";
-      return `${{site.public_url}}/birdnet-species/${{encodeURIComponent(String(label || ""))}}?range=${{encodeURIComponent(range)}}`;
-    }}
-
-    function renderBirdnetSummary(site) {{
-      const rankingUrl = `${{site.public_url}}/birdnet-rankings?sort=sum_score_x_likely&range=${{encodeURIComponent(site.evidence_range || "day")}}`;
-      birdnetSummaryLink.href = rankingUrl;
-      const rows = Array.isArray(site.top_birdnet_evidence) ? site.top_birdnet_evidence.slice(0, 5) : [];
-      if (!rows.length) {{
-        birdnetSummary.innerHTML = '<div class="dim">No weighted BirdNET detections in this period.</div>';
-        return;
-      }}
-      const maxWeight = Math.max(...rows.map((row) => Number(row.evidence_weight) || 0), 0);
-      birdnetSummary.innerHTML = rows.map((row) => {{
-        const value = Number(row.evidence_weight) || 0;
-        const widthPct = maxWeight > 0 ? Math.max((value / maxWeight) * 100, 3) : 3;
-        const href = birdnetSpeciesUrl(site, row.label);
-        return `
-          <div class="summary-row">
-            <div>
-              <div class="summary-label"><a href="${{escapeHtml(href)}}">${{escapeHtml(row.label)}}</a></div>
-              <div class="summary-bar" style="width:${{widthPct.toFixed(1)}}%"></div>
-            </div>
-            <div class="summary-value">${{escapeHtml(formatNumber(value, 2))}}</div>
-          </div>
-        `;
-      }}).join("");
-    }}
-
-    function sensorSeriesFromRecentReadings(readings, kind) {{
-      const values = [];
-      const ordered = Array.isArray(readings) ? [...readings].reverse() : [];
-      for (const row of ordered) {{
-        const key = String(row.reading_key || "").toLowerCase();
-        const sensorType = String(row.sensor_type || "").toLowerCase();
-        const value = Number(row.reading_value);
-        if (!Number.isFinite(value)) continue;
-        if (kind === "temperature" && (key.includes("temp") || sensorType.includes("temp"))) {{
-          values.push(value);
-          continue;
-        }}
-        if (kind === "humidity" && (key.includes("humid") || sensorType.includes("humid") || key === "rh")) {{
-          values.push(value);
-          continue;
-        }}
-        if (kind === "co2" && (key.includes("co2") || key.includes("ppm") || sensorType.includes("co2"))) {{
-          values.push(value);
-          continue;
-        }}
-      }}
-      return values.slice(-20);
-    }}
-
-    function sparklineSvg(values) {{
-      const width = 180;
-      const height = 56;
-      const padX = 4;
-      const padY = 5;
-      if (!values.length) {{
-        return `<svg class="mini-plot-svg" viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none"></svg>`;
-      }}
-      const minV = Math.min(...values);
-      const maxV = Math.max(...values);
-      const span = Math.max(maxV - minV, 1e-9);
-      const xStep = values.length > 1 ? (width - padX * 2) / (values.length - 1) : 0;
-      const points = values.map((v, idx) => {{
-        const x = padX + idx * xStep;
-        const y = padY + (height - padY * 2) * (1 - ((v - minV) / span));
-        return `${{x.toFixed(2)}},${{y.toFixed(2)}}`;
-      }}).join(" ");
-      const last = values[values.length - 1];
-      const dotX = padX + (values.length - 1) * xStep;
-      const dotY = padY + (height - padY * 2) * (1 - ((last - minV) / span));
-      return `
-        <svg class="mini-plot-svg" viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none" aria-hidden="true">
-          <polyline fill="none" stroke="rgba(12,109,98,0.92)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" points="${{points}}"></polyline>
-          <circle cx="${{dotX.toFixed(2)}}" cy="${{dotY.toFixed(2)}}" r="2.6" fill="rgba(217,119,6,0.95)"></circle>
-        </svg>
-      `;
-    }}
-
-    function renderMiniPlots(site) {{
-      const metrics = [
-        {{ kind: "temperature", label: "Temperature", unit: "°", valueDigits: 1 }},
-        {{ kind: "humidity", label: "Humidity", unit: "%", valueDigits: 1 }},
-        {{ kind: "co2", label: "CO₂", unit: "ppm", valueDigits: 0 }},
-      ];
-      sensorMiniPlots.innerHTML = metrics.map((metric) => {{
-        const series = sensorSeriesFromRecentReadings(site.recent_i2c_readings, metric.kind);
-        const latest = series.length ? series[series.length - 1] : null;
-        const valueText = latest === null ? "n/a" : `${{formatNumber(latest, metric.valueDigits)}}${{metric.unit ? " " + metric.unit : ""}}`;
-        return `
-          <article class="mini-plot">
-            <p class="mini-plot-title">${{escapeHtml(metric.label)}}</p>
-            <p class="mini-plot-value">${{escapeHtml(valueText)}}</p>
-            ${{sparklineSvg(series)}}
-          </article>
-        `;
-      }}).join("");
-    }}
-
-    async function loadSiteDetail(siteId) {{
-      const response = await fetch(`/api/sites/${{encodeURIComponent(siteId)}}`);
-      if (!response.ok) return;
-      const site = await response.json();
-      activeSiteId = site.site_id;
-      siteTitle.textContent = site.site_label;
-      siteTitleLink.href = `${{site.public_url}}/status`;
-      siteSubtitle.innerHTML = `<a href="${{escapeHtml(site.public_url)}}" target="_blank" rel="noopener">Open public site page</a> · <span class="mono">${{escapeHtml(site.wg_ip)}}</span> · ${{escapeHtml(site.network_name)}}`;
-      renderBirdnetSummary(site);
-      renderMiniPlots(site);
-      metricGrid.innerHTML = `
-        <div class="metric"><div class="section-title">Latest Check-In</div><div class="metric-value">${{escapeHtml(relativeTime(site.last_check_in))}}</div></div>
-        <div class="metric"><div class="section-title">BirdNET Detections</div><div class="metric-value">${{site.birdnet_detection_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_birdnet_result_at))}}</div></div>
-        <div class="metric"><div class="section-title">Sensor Readings</div><div class="metric-value">${{site.i2c_reading_count}}</div><div class="dim">${{escapeHtml(relativeTime(site.latest_i2c_reading_at))}}</div></div>
-        <div class="metric"><div class="section-title">BirdNET Sources</div><div class="metric-value">${{site.birdnet_source_count}}</div></div>
-        <div class="metric"><div class="section-title">Coordinates</div><div class="metric-value mono">${{site.latitude.toFixed(4)}}, ${{site.longitude.toFixed(4)}}</div></div>
-      `;
-      birdnetList.innerHTML = "";
-      if (!site.recent_birdnet_detections.length) {{
-        birdnetList.innerHTML = '<div class="dim">No BirdNET detections are visible yet for this site.</div>';
-      }} else {{
-        for (const detection of site.recent_birdnet_detections) {{
-          const labelHref = birdnetSpeciesUrl(site, detection.top_label);
-          const card = document.createElement("div");
-          card.className = "record-card";
-          card.innerHTML = `
-            <div><strong><a href="${{escapeHtml(labelHref)}}">${{escapeHtml(detection.top_label)}}</a></strong> <span class="dim">· score ${{escapeHtml(formatNumber(detection.top_score, 2))}} · vol ${{escapeHtml(formatNumber(detection.volume, 3))}}</span></div>
-            <div class="dim">${{escapeHtml(basename(detection.source_path))}} · processed ${{escapeHtml(relativeTime(detection.processed_at))}}</div>
-            <div class="dim">ch ${{detection.channel_index}} · ${{escapeHtml(formatNumber(detection.start_sec, 1))}}s-${{escapeHtml(formatNumber(detection.end_sec, 1))}}s</div>
-            <div class="mono">${{escapeHtml(detection.source_path)}}</div>
-          `;
-          birdnetList.appendChild(card);
-        }}
-      }}
-      i2cList.innerHTML = "";
-      if (!site.recent_i2c_readings.length) {{
-        i2cList.innerHTML = '<div class="dim">No sensor readings are visible yet for this site.</div>';
-      }} else {{
-        for (const reading of site.recent_i2c_readings) {{
-          const card = document.createElement("div");
-          card.className = "record-card";
-          card.innerHTML = `
-            <div><strong>${{escapeHtml(reading.sensor_type)}}</strong> <span class="dim">· ${{escapeHtml(reading.reading_key)}}</span></div>
-            <div class="dim">value ${{escapeHtml(formatNumber(reading.reading_value, 3))}} · recorded ${{escapeHtml(relativeTime(reading.recorded_at))}}</div>
-            <div class="dim">device ${{escapeHtml(reading.device_address)}}</div>
-          `;
-          i2cList.appendChild(card);
-        }}
-      }}
-      const selected = sites.find((site) => site.site_id === siteId);
-      if (selected) {{
-        fitSites([selected]);
-      }}
-      render();
-    }}
-
-    function relativeTime(value) {{
-      if (!value) return "Never";
-      const deltaMs = Date.now() - Date.parse(value);
-      if (!Number.isFinite(deltaMs)) return value;
+    function formatRelativeTime(value) {{
+      if (!value) return "never";
+      const parsed = Date.parse(value);
+      if (!Number.isFinite(parsed)) return value;
+      const deltaMs = Date.now() - parsed;
       const sec = Math.max(0, Math.floor(deltaMs / 1000));
       if (sec < 60) return `${{sec}}s ago`;
       if (sec < 3600) return `${{Math.floor(sec / 60)}}m ago`;
@@ -3868,220 +359,167 @@ def render_index_html() -> str:
       return `${{Math.floor(sec / 86400)}}d ago`;
     }}
 
-    function resolveClick(clientX, clientY) {{
-      const rect = mapStage.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
-      const candidates = visibleSites()
-        .map((site) => {{
-          const pos = project(site.longitude, site.latitude);
-          const dx = pos.x - x;
-          const dy = pos.y - y;
-          return {{ site, distance: Math.sqrt(dx * dx + dy * dy) }};
-        }})
-        .filter((entry) => entry.distance <= 24)
-        .sort((a, b) => a.distance - b.distance);
-
-      if (!candidates.length) return;
-      if (candidates.length === 1) {{
-        openSiteDashboard(candidates[0].site);
-        return;
-      }}
-
-      const matchedSites = candidates.map((entry) => entry.site);
-      const clusterMinDistancePx = minimumPairDistancePx(matchedSites);
-      if (clusterMinDistancePx < clusterSeparationTargetPx && !isAtMaxZoom()) {{
-        zoomIntoSites(matchedSites);
-        return;
-      }}
-      openSiteDashboard(matchedSites[0]);
+    function markerClassName(site, isSelected) {{
+      return [
+        "site-marker",
+        site?.is_active ? "" : "is-inactive",
+        isSelected ? "is-selected" : "",
+      ].filter(Boolean).join(" ");
     }}
 
-    function minimumPairDistancePx(targetSites) {{
-      if (!Array.isArray(targetSites) || targetSites.length < 2) return Number.POSITIVE_INFINITY;
-      let minDistance = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < targetSites.length - 1; i += 1) {{
-        const a = project(targetSites[i].longitude, targetSites[i].latitude);
-        for (let j = i + 1; j < targetSites.length; j += 1) {{
-          const b = project(targetSites[j].longitude, targetSites[j].latitude);
-          const dx = a.x - b.x;
-          const dy = a.y - b.y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          if (distance < minDistance) minDistance = distance;
+    function makeMarkerIcon(site, isSelected = false) {{
+      return L.divIcon({{
+        className: "",
+        html: `<div class="${{markerClassName(site, isSelected)}}"></div>`,
+        iconSize: [19, 19],
+        iconAnchor: [9.5, 9.5],
+        popupAnchor: [0, -12],
+      }});
+    }}
+
+    function popupHtml(site) {{
+      const siteUrl = site.public_url || `/sites/${{encodeURIComponent(site.site_id)}}`;
+      const statusUrl = site.status_url || `${{siteUrl}}/status`;
+      const synopticUrl = site.synoptic_url || `${{siteUrl}}/synoptic`;
+      const birdnetUrl = site.birdnet_rankings_url || `${{siteUrl}}/birdnet-rankings`;
+
+      return `
+        <div class="site-popup">
+          <h2 class="site-popup-title">${{escapeHtml(displaySiteName(site))}}</h2>
+          <div class="site-popup-meta">
+            <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
+            <div>${{escapeHtml(site.network_name || "unknown network")}}</div>
+            <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in))}}</div>
+            <div>BirdNET detections: ${{escapeHtml(site.birdnet_detection_count ?? 0)}}</div>
+          </div>
+          <div class="site-popup-actions">
+            <a href="${{escapeHtml(siteUrl)}}">Dashboard</a>
+            <a href="${{escapeHtml(statusUrl)}}">Status</a>
+            <a href="${{escapeHtml(synopticUrl)}}">Time series</a>
+            <a href="${{escapeHtml(birdnetUrl)}}">BirdNET</a>
+          </div>
+        </div>
+      `;
+    }}
+
+    function setSelectedSite(site, marker) {{
+      if (selectedMarker && selectedSite) {{
+        selectedMarker.setIcon(makeMarkerIcon(selectedSite, false));
+      }}
+
+      selectedSite = site || null;
+      selectedMarker = marker || null;
+
+      if (selectedMarker && selectedSite) {{
+        selectedMarker.setIcon(makeMarkerIcon(selectedSite, true));
+        openSelectedButton.disabled = !selectedSite.public_url;
+        mapCaption.textContent =
+          `${{displaySiteName(selectedSite)}} · click button to open, or shift-click markers to preview`;
+      }} else {{
+        openSelectedButton.disabled = true;
+        mapCaption.textContent =
+          "Click a field site to open its data page. Shift-click previews details.";
+      }}
+    }}
+
+    function openSite(site) {{
+      if (!site) return;
+      const url = site.public_url || `/sites/${{encodeURIComponent(site.site_id)}}`;
+      window.location.assign(url);
+    }}
+
+    function addSiteMarker(site) {{
+      if (!Number.isFinite(site.latitude) || !Number.isFinite(site.longitude)) return;
+
+      const marker = L.marker([site.latitude, site.longitude], {{
+        icon: makeMarkerIcon(site, false),
+        title: displaySiteName(site),
+        riseOnHover: true,
+      }});
+
+      marker.bindTooltip(displaySiteName(site), {{
+        direction: "top",
+        opacity: 0.92,
+        sticky: true,
+      }});
+
+      marker.bindPopup(() => popupHtml(site), {{
+        maxWidth: 320,
+        closeButton: true,
+      }});
+
+      marker.on("click", (event) => {{
+        setSelectedSite(site, marker);
+
+        // Default behavior is the clean map-only flow: click point -> data page.
+        // Modified clicks give you an inspection mode without adding a sidebar.
+        const original = event.originalEvent || {{}};
+        if (original.shiftKey || original.metaKey || original.ctrlKey || original.altKey) {{
+          marker.openPopup();
+          return;
         }}
-      }}
-      return minDistance;
+
+        openSite(site);
+      }});
+
+      marker.addTo(markerLayer);
+      markersBySiteId.set(site.site_id, marker);
     }}
 
-    function zoomIntoSites(targetSites) {{
-      if (!Array.isArray(targetSites) || !targetSites.length) return;
-      const rect = mapStage.getBoundingClientRect();
-      const centerLon =
-        targetSites.reduce((sum, site) => sum + site.longitude, 0) / targetSites.length;
-      const centerLat =
-        targetSites.reduce((sum, site) => sum + site.latitude, 0) / targetSites.length;
-
-      const currentLonSpan = Math.max(currentView.lonMax - currentView.lonMin, minLonSpan);
-      const currentLatSpan = Math.max(currentView.latMax - currentView.latMin, minLatSpan);
-      const targetLonSpan = Math.max(currentLonSpan / 2, minLonSpan);
-      const targetLatSpan = Math.max(currentLatSpan / 2, minLatSpan);
-
-      const rawView = {{
-        lonMin: centerLon - targetLonSpan / 2,
-        lonMax: centerLon + targetLonSpan / 2,
-        latMin: centerLat - targetLatSpan / 2,
-        latMax: centerLat + targetLatSpan / 2,
-      }};
-      const candidateView = clampView(expandViewToViewportAspect(clampView(rawView), rect));
-
-      if (!viewHasVisibleSites(candidateView, targetSites, rect)) {{
+    function fitToSites() {{
+      if (!markerLayer.getLayers().length) {{
+        map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
         return;
       }}
-
-      currentView = candidateView;
-      render();
-    }}
-
-    function projectForView(lon, lat, view, rect) {{
-      const viewport = mapViewportForView(view, rect, 0);
-      const point = mercatorWorldPoint(lon, lat, 0);
-      return {{
-        x: viewport.offsetX + (point.x - viewport.topLeft.x) * viewport.scale,
-        y: viewport.offsetY + (point.y - viewport.topLeft.y) * viewport.scale,
-      }};
-    }}
-
-    function viewHasVisibleSites(view, targetSites, rect) {{
-      const margin = markerDiameterPx / 2;
-      return targetSites.some((site) => {{
-        const pos = projectForView(site.longitude, site.latitude, view, rect);
-        return (
-          Number.isFinite(pos.x) &&
-          Number.isFinite(pos.y) &&
-          pos.x >= -margin &&
-          pos.x <= rect.width + margin &&
-          pos.y >= -margin &&
-          pos.y <= rect.height + margin
-        );
+      map.fitBounds(markerLayer.getBounds(), {{
+        padding: [42, 42],
+        maxZoom: 16,
       }});
     }}
 
     async function boot() {{
-      const response = await fetch("/api/sites");
-      sites = await response.json();
-      render();
-      if (sites.length) {{
-        fitSites(sites);
+      try {{
+        const response = await fetch("/api/sites", {{
+          headers: {{ "Accept": "application/json" }},
+        }});
+        if (!response.ok) {{
+          throw new Error(`HTTP ${{response.status}}`);
+        }}
+
+        sites = await response.json();
+        markerLayer.clearLayers();
+        markersBySiteId.clear();
+
+        for (const site of sites) {{
+          addSiteMarker(site);
+        }}
+
+        fitToSites();
+        mapStatus.textContent = `${{sites.length}} mapped site${{sites.length === 1 ? "" : "s"}}`;
+      }} catch (error) {{
+        console.error(error);
+        mapStatus.textContent = "Map failed to load";
+        mapCaption.textContent = "Could not load /api/sites.";
       }}
     }}
 
-    mapStage.addEventListener("click", (event) => resolveClick(event.clientX, event.clientY));
     resetViewButton.addEventListener("click", () => {{
-      currentView = {{ ...worldBounds }};
-      activeSiteId = null;
-      siteTitle.textContent = "Map";
-      siteTitleLink.href = "#";
-      siteSubtitle.textContent = "";
-      birdnetSummaryLink.href = "#";
-      birdnetSummary.innerHTML = "";
-      sensorMiniPlots.innerHTML = "";
-      metricGrid.innerHTML = "";
-      birdnetList.innerHTML = "";
-      i2cList.innerHTML = "";
-      render();
-      if (sites.length) fitSites(sites);
+      setSelectedSite(null, null);
+      fitToSites();
     }});
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
+
+    openSelectedButton.addEventListener("click", () => {{
+      openSite(selectedSite);
+    }});
+
+    window.addEventListener("keydown", (event) => {{
+      if (event.key === "Escape") {{
+        map.closePopup();
+        setSelectedSite(null, null);
+      }}
+    }});
+
     boot();
   </script>
 </body>
 </html>"""
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.ready = False
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM sensos.public_sites;")
-                cur.fetchone()
-        app.state.ready = True
-    except Exception:
-        app.state.ready = False
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-@app.get("/healthz")
-def healthz():
-    if getattr(app.state, "ready", False):
-        return {"status": "ok"}
-    return JSONResponse(status_code=503, content={"status": "starting"})
-
-
-@app.get("/api/sites")
-def api_sites():
-    return fetch_sites()
-
-
-@app.get("/api/sites/{site_id}")
-def api_site(site_id: str, request: Request):
-    return fetch_site_detail(site_id, request.query_params.get("range"))
-
-
-@app.get("/sites/{site_id}", response_class=HTMLResponse)
-def site_page(site_id: str, request: Request):
-    return HTMLResponse(
-        render_site_detail_html(
-            fetch_site_detail(site_id, request.query_params.get("range"))
-        )
-    )
-
-
-@app.get("/sites/{site_id}/synoptic", response_class=HTMLResponse)
-def synoptic_site_page(site_id: str, request: Request):
-    return HTMLResponse(
-        render_synoptic_html(
-            fetch_site_synoptic(site_id, request.query_params.get("range"))
-        )
-    )
-
-
-@app.get("/sites/{site_id}/birdnet-rankings", response_class=HTMLResponse)
-def birdnet_rankings_site_page(site_id: str, request: Request):
-    return HTMLResponse(
-        render_birdnet_rankings_html(
-            fetch_site_birdnet_rankings(
-                site_id,
-                request.query_params.get("sort"),
-                request.query_params.get("range"),
-            )
-        )
-    )
-
-
-@app.get("/sites/{site_id}/birdnet-species/{label}", response_class=HTMLResponse)
-def birdnet_species_site_page(site_id: str, label: str, request: Request):
-    return HTMLResponse(
-        render_birdnet_species_html(
-            fetch_site_birdnet_species(
-                site_id,
-                label,
-                request.query_params.get("range"),
-            )
-        )
-    )
-
-
-@app.get("/sites/{site_id}/status", response_class=HTMLResponse)
-def status_site_page(site_id: str):
-    return HTMLResponse(render_site_status_html(fetch_site_status(site_id)))
-
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return HTMLResponse(render_index_html())
