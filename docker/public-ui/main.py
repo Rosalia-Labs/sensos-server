@@ -3304,8 +3304,10 @@ def render_index_html() -> str:
   </div>
   <script>
     const worldBounds = {{ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }};
-    const minLonSpan = 1.4;
-    const minLatSpan = 1.0;
+    const minLonSpan = 0.01;
+    const minLatSpan = 0.01;
+    const markerDiameterPx = 18;
+    const clusterSeparationTargetPx = markerDiameterPx * 2;
     const tileSize = 256;
     const maxTileZoom = 17;
     const mapFitMode = "cover";
@@ -3468,8 +3470,12 @@ def render_index_html() -> str:
     }}
 
     function mapViewport(rect, zoom) {{
-      const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
-      const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
+      return mapViewportForView(currentView, rect, zoom);
+    }}
+
+    function mapViewportForView(view, rect, zoom) {{
+      const topLeft = mercatorWorldPoint(view.lonMin, view.latMax, zoom);
+      const bottomRight = mercatorWorldPoint(view.lonMax, view.latMin, zoom);
       const worldWidth = Math.max(1, bottomRight.x - topLeft.x);
       const worldHeight = Math.max(1, bottomRight.y - topLeft.y);
       const scaleToContain = Math.min(rect.width / worldWidth, rect.height / worldHeight);
@@ -3846,13 +3852,83 @@ def render_index_html() -> str:
       }}
 
       const matchedSites = candidates.map((entry) => entry.site);
-      if (!isAtMaxZoom()) {{
-        fitSites(matchedSites);
+      const clusterMinDistancePx = minimumPairDistancePx(matchedSites);
+      if (clusterMinDistancePx < clusterSeparationTargetPx && !isAtMaxZoom()) {{
+        zoomIntoSites(matchedSites);
         setChooserSites([]);
         return;
       }}
 
       setChooserSites(matchedSites);
+    }}
+
+    function minimumPairDistancePx(targetSites) {{
+      if (!Array.isArray(targetSites) || targetSites.length < 2) return Number.POSITIVE_INFINITY;
+      let minDistance = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < targetSites.length - 1; i += 1) {{
+        const a = project(targetSites[i].longitude, targetSites[i].latitude);
+        for (let j = i + 1; j < targetSites.length; j += 1) {{
+          const b = project(targetSites[j].longitude, targetSites[j].latitude);
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < minDistance) minDistance = distance;
+        }}
+      }}
+      return minDistance;
+    }}
+
+    function zoomIntoSites(targetSites) {{
+      if (!Array.isArray(targetSites) || !targetSites.length) return;
+      const rect = mapStage.getBoundingClientRect();
+      const centerLon =
+        targetSites.reduce((sum, site) => sum + site.longitude, 0) / targetSites.length;
+      const centerLat =
+        targetSites.reduce((sum, site) => sum + site.latitude, 0) / targetSites.length;
+
+      const currentLonSpan = Math.max(currentView.lonMax - currentView.lonMin, minLonSpan);
+      const currentLatSpan = Math.max(currentView.latMax - currentView.latMin, minLatSpan);
+      const targetLonSpan = Math.max(currentLonSpan / 2, minLonSpan);
+      const targetLatSpan = Math.max(currentLatSpan / 2, minLatSpan);
+
+      const rawView = {{
+        lonMin: centerLon - targetLonSpan / 2,
+        lonMax: centerLon + targetLonSpan / 2,
+        latMin: centerLat - targetLatSpan / 2,
+        latMax: centerLat + targetLatSpan / 2,
+      }};
+      const candidateView = clampView(expandViewToViewportAspect(clampView(rawView), rect));
+
+      if (!viewHasVisibleSites(candidateView, targetSites, rect)) {{
+        return;
+      }}
+
+      currentView = candidateView;
+      render();
+    }}
+
+    function projectForView(lon, lat, view, rect) {{
+      const viewport = mapViewportForView(view, rect, 0);
+      const point = mercatorWorldPoint(lon, lat, 0);
+      return {{
+        x: viewport.offsetX + (point.x - viewport.topLeft.x) * viewport.scale,
+        y: viewport.offsetY + (point.y - viewport.topLeft.y) * viewport.scale,
+      }};
+    }}
+
+    function viewHasVisibleSites(view, targetSites, rect) {{
+      const margin = markerDiameterPx / 2;
+      return targetSites.some((site) => {{
+        const pos = projectForView(site.longitude, site.latitude, view, rect);
+        return (
+          Number.isFinite(pos.x) &&
+          Number.isFinite(pos.y) &&
+          pos.x >= -margin &&
+          pos.x <= rect.width + margin &&
+          pos.y >= -margin &&
+          pos.y <= rect.height + margin
+        );
+      }});
     }}
 
     async function boot() {{
