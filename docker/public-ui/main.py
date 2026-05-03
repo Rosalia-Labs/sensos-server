@@ -3055,9 +3055,9 @@ def render_index_html() -> str:
     """Render the public field-site map as a minimal Leaflet view.
 
     The root page is intentionally map-first:
-    - click a point to open a compact details popup
+    - click an ambiguous point cluster to zoom in
+    - click an isolated point to open a compact details popup
     - use the popup links to open the dashboard, status, time series, or BirdNET page
-    - hover a point to identify it
 
     The critical Leaflet CSS is kept inline so the map still lays out correctly if
     CDN CSS fails to load or if application CSS would otherwise alter image sizing.
@@ -3492,12 +3492,13 @@ def render_index_html() -> str:
 
     assertLeafletCssLooksLoaded();
 
-    const map = L.map("map", {
+    const map = L.map("map", {{
       zoomControl: false,
       preferCanvas: true,
       worldCopyJump: true,
       scrollWheelZoom: false,
-    }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+      doubleClickZoom: true,
+    }}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
     L.control.zoom({{ position: "bottomright" }}).addTo(map);
 
@@ -3516,6 +3517,7 @@ def render_index_html() -> str:
     }});
 
     const markerLayer = L.featureGroup().addTo(map);
+    const siteMarkers = [];
 
     L.control.layers(
       {{
@@ -3617,6 +3619,8 @@ def render_index_html() -> str:
         riseOnHover: true,
       }});
 
+      marker.site = site;
+
       marker.bindTooltip(displaySiteName(site), {{
         direction: "top",
         sticky: true,
@@ -3629,10 +3633,56 @@ def render_index_html() -> str:
       }});
 
       marker.on("click", () => {{
-        marker.openPopup();
+        handleSiteMarkerClick(marker);
       }});
 
       marker.addTo(markerLayer);
+      siteMarkers.push(marker);
+    }}
+
+    function markersNearMarker(clickedMarker, pixelRadius = 34) {{
+      const clickedPoint = map.latLngToLayerPoint(clickedMarker.getLatLng());
+
+      return siteMarkers.filter((candidate) => {{
+        if (!map.hasLayer(candidate)) return false;
+        const candidatePoint = map.latLngToLayerPoint(candidate.getLatLng());
+        return clickedPoint.distanceTo(candidatePoint) <= pixelRadius;
+      }});
+    }}
+
+    function zoomIntoMarkerGroup(markers) {{
+      if (!markers.length) return;
+
+      const bounds = L.latLngBounds(markers.map((marker) => marker.getLatLng()));
+      const currentZoom = map.getZoom();
+      const maxZoom = map.getMaxZoom() || 19;
+      const targetZoom = Math.min(currentZoom + 2, maxZoom);
+
+      if (currentZoom >= maxZoom - 1) {{
+        markers[0].openPopup();
+        return;
+      }}
+
+      map.closePopup();
+
+      if (bounds.isValid()) {{
+        map.flyToBounds(bounds, {{
+          padding: [90, 90],
+          maxZoom: targetZoom,
+          duration: 0.35,
+        }});
+      }}
+    }}
+
+    function handleSiteMarkerClick(marker) {{
+      const nearby = markersNearMarker(marker, 34);
+
+      if (nearby.length > 1) {{
+        zoomIntoMarkerGroup(nearby);
+        return;
+      }}
+
+      marker.openPopup();
     }}
 
     function fitToSites() {{
@@ -3658,6 +3708,7 @@ def render_index_html() -> str:
 
       sites = await response.json();
       markerLayer.clearLayers();
+      siteMarkers.length = 0;
 
       for (const site of sites) {{
         addSite(site);
