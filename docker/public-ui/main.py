@@ -3052,30 +3052,19 @@ def index():
 
 
 def render_index_html() -> str:
-    """Render the public field-site map.
+    """Render a full-screen Leaflet map of public field sites.
 
-    Drop-in replacement for the previous custom canvas map.
-
-    Behavior:
-    - loads sites from /api/sites
-    - uses Leaflet for pan/zoom/touch behavior
-    - uses Esri World Imagery as the satellite basemap
-    - clicking a marker opens the site's public dashboard by default
-    - holding Shift/Cmd/Ctrl/Alt while clicking shows a small popup instead
-    - the "Open selected site" button is enabled after selecting a marker
-
-    Notes:
-    - Leaflet itself is open source. The satellite imagery service is not "open
-      source"; replace SATELLITE_TILES below if you later self-host imagery.
-    - For fully offline/self-hosted deployments, vendor leaflet.css and
-      leaflet.js under /static/vendor/leaflet/ and change the two CDN URLs.
+    The page is intentionally thin: FastAPI serves this HTML shell, /api/sites
+    provides the live site JSON, and Leaflet handles browser-side map
+    interaction. Clicking a marker opens the site's public dashboard.
+    Shift/Cmd/Ctrl/Alt-click opens an inspection popup instead.
     """
-    return f"""<!doctype html>
+    page = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SensOS Public Dashboard</title>
+  <title>SensOS Field Sites</title>
 
   <link
     rel="stylesheet"
@@ -3083,263 +3072,286 @@ def render_index_html() -> str:
     integrity="sha256-p4NxAoJBhIINfQ2ATbK3qsfNHh8Qw9DyJw3y7pFvDo8="
     crossorigin=""
   >
+
   <style>
-    :root {{
+    :root {
       --bg: #edf1ea;
-      --panel: rgba(255,255,255,0.9);
+      --panel: rgba(255,255,255,0.88);
       --ink: #17201d;
       --muted: #5c6760;
       --accent: #0c6d62;
       --accent-2: #d97706;
       --border: rgba(23,32,29,0.14);
-      --shadow: 0 24px 60px rgba(23,32,29,0.12);
+      --shadow: 0 18px 48px rgba(0,0,0,0.18);
       --marker: #0c6d62;
-      --marker-active: #d97706;
-    }}
-    * {{ box-sizing: border-box; }}
-    html, body {{
+      --marker-inactive: #6f7973;
+      --marker-recent: #0c6d62;
+      --marker-stale: #d97706;
+      --marker-old: #b91c1c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
       width: 100%;
       height: 100%;
-    }}
-    body {{
       margin: 0;
+      overflow: hidden;
+    }
+
+    body {
       color: var(--ink);
       font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(12,109,98,0.18), transparent 28rem),
-        radial-gradient(circle at top right, rgba(217,119,6,0.14), transparent 22rem),
-        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
-    }}
-    .shell {{
-      height: 100vh;
-      min-height: 28rem;
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      gap: 0.7rem;
-      padding: 0.7rem 0.9rem;
-    }}
-    .masthead {{
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 0.7rem;
-      min-width: 0;
-    }}
-    h1 {{
-      margin: 0;
-      font-size: clamp(1.35rem, 2.2vw, 1.9rem);
-      letter-spacing: -0.03em;
-      white-space: nowrap;
-    }}
-    .meta {{
-      color: var(--muted);
-      font-size: 0.85rem;
-      text-align: right;
-      overflow-wrap: anywhere;
-    }}
-    .map-shell {{
-      position: relative;
-      min-height: 0;
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      overflow: hidden;
-      background: #dfeae6;
-      box-shadow: var(--shadow);
-    }}
-    #fieldSitesMap {{
-      position: absolute;
+      background: #111;
+    }
+
+    #fieldSitesMap {
+      position: fixed;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100vw;
+      height: 100vh;
       z-index: 1;
       background: #dfeae6;
-    }}
-    .map-toolbar {{
-      position: absolute;
-      left: 0.7rem;
-      top: 0.7rem;
-      z-index: 500;
+    }
+
+    /*
+      Critical: global app CSS such as img { max-width: 100%; height: auto; }
+      breaks Leaflet raster tiles. Keep Leaflet's tile sizing untouched.
+    */
+    .leaflet-container img,
+    .leaflet-container .leaflet-tile {
+      max-width: none !important;
+      max-height: none !important;
+    }
+
+    .leaflet-tile {
+      width: 256px !important;
+      height: 256px !important;
+    }
+
+    .topbar {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 1000;
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 0.5rem;
-      max-width: calc(100% - 1.4rem);
-      pointer-events: none;
-    }}
-    .toolbar-button,
-    .toolbar-pill {{
-      border-radius: 999px;
+      gap: 0.65rem;
+      max-width: calc(100vw - 24px);
+      padding: 0.56rem 0.72rem;
       border: 1px solid var(--border);
-      background: rgba(255,255,255,0.86);
+      border-radius: 999px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      white-space: nowrap;
+    }
+
+    .topbar-title {
+      font-weight: 700;
+      font-size: 1.02rem;
+      letter-spacing: -0.02em;
+    }
+
+    .topbar-meta {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .map-button {
+      appearance: none;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.78);
       color: var(--ink);
-      padding: 0.58rem 0.82rem;
       font: inherit;
-      box-shadow: 0 10px 30px rgba(23,32,29,0.10);
-      backdrop-filter: blur(14px);
-      pointer-events: auto;
-    }}
-    .toolbar-button {{
+      padding: 0.34rem 0.58rem;
       cursor: pointer;
-    }}
-    .toolbar-button:disabled {{
+    }
+
+    .map-button:hover {
+      background: rgba(255,255,255,0.96);
+    }
+
+    .map-button:disabled {
       cursor: default;
-      opacity: 0.58;
-    }}
-    .toolbar-pill {{
-      color: var(--muted);
-      font-size: 0.86rem;
-    }}
-    .map-caption {{
-      position: absolute;
-      right: 0.7rem;
-      bottom: 0.7rem;
-      z-index: 500;
-      color: var(--muted);
-      font-size: 0.82rem;
-      max-width: min(30rem, calc(100% - 1.4rem));
-      text-align: right;
-      background: rgba(255,255,255,0.76);
+      opacity: 0.55;
+    }
+
+    .hint {
+      position: fixed;
+      right: 12px;
+      bottom: 22px;
+      z-index: 1000;
+      max-width: min(34rem, calc(100vw - 24px));
+      padding: 0.43rem 0.7rem;
       border: 1px solid var(--border);
       border-radius: 999px;
-      padding: 0.34rem 0.66rem;
+      color: var(--muted);
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.14);
       backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      font-size: 0.86rem;
+      text-align: right;
       pointer-events: none;
-    }}
-    .site-marker {{
+    }
+
+    .site-dot {
       width: 19px;
       height: 19px;
       border-radius: 999px;
       border: 3px solid rgba(255,255,255,0.96);
       background: var(--marker);
       box-shadow:
-        0 0 0 1px rgba(23,32,29,0.24),
-        0 8px 18px rgba(12,109,98,0.30);
-    }}
-    .site-marker.is-inactive {{
-      opacity: 0.68;
-      filter: grayscale(0.35);
-    }}
-    .site-marker.is-selected {{
-      background: var(--marker-active);
-      transform: scale(1.22);
+        0 0 0 1px rgba(23,32,29,0.26),
+        0 5px 16px rgba(0,0,0,0.32);
+    }
+
+    .site-dot.recent {
+      background: var(--marker-recent);
+    }
+
+    .site-dot.stale {
+      background: var(--marker-stale);
+    }
+
+    .site-dot.old {
+      background: var(--marker-old);
+    }
+
+    .site-dot.inactive {
+      background: var(--marker-inactive);
+      opacity: 0.72;
+      filter: grayscale(0.24);
+    }
+
+    .site-dot.selected {
+      transform: scale(1.26);
       box-shadow:
         0 0 0 1px rgba(23,32,29,0.28),
-        0 0 0 7px rgba(217,119,6,0.20),
-        0 10px 22px rgba(217,119,6,0.32);
-    }}
-    .site-popup {{
+        0 0 0 7px rgba(217,119,6,0.24),
+        0 8px 22px rgba(0,0,0,0.34);
+    }
+
+    .site-popup {
       min-width: 14rem;
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      max-width: 20rem;
       color: var(--ink);
-    }}
-    .site-popup-title {{
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+    }
+
+    .site-popup h2 {
       margin: 0 0 0.25rem;
-      font-size: 1rem;
-      line-height: 1.2;
-    }}
-    .site-popup-meta {{
+      font-size: 1.02rem;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+    }
+
+    .site-popup-meta {
+      display: grid;
+      gap: 0.15rem;
+      margin: 0 0 0.65rem;
       color: var(--muted);
       font-size: 0.88rem;
       line-height: 1.35;
-      margin-bottom: 0.55rem;
-    }}
-    .site-popup-actions {{
+    }
+
+    .site-popup-actions {
       display: flex;
-      gap: 0.45rem;
       flex-wrap: wrap;
-    }}
-    .site-popup-actions a {{
+      gap: 0.42rem;
+    }
+
+    .site-popup-actions a {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      background: rgba(12,109,98,0.10);
-      color: var(--accent);
-      text-decoration: none;
       padding: 0.32rem 0.52rem;
+      color: var(--accent);
+      background: rgba(12,109,98,0.11);
+      text-decoration: none;
       font-weight: 700;
       font-size: 0.86rem;
-    }}
-    .leaflet-container {{
-      font: inherit;
-      color: var(--ink);
-    }}
-    .leaflet-control-attribution {{
-      font-size: 0.68rem;
-      background: rgba(255,255,255,0.72);
-    }}
-    .leaflet-control-layers,
-    .leaflet-control-zoom a {{
-      border-color: var(--border) !important;
-    }}
-    .leaflet-control-zoom a {{
-      color: var(--ink) !important;
-      background: rgba(255,255,255,0.88) !important;
-    }}
-    .dim {{ color: var(--muted); }}
-    .mono {{
+    }
+
+    .mono {
       font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
       font-size: 0.86rem;
-    }}
-    a {{ color: var(--accent); }}
-    @media (max-width: 760px) {{
-      .shell {{
-        padding: 0;
-        gap: 0;
-      }}
-      .masthead {{
-        position: absolute;
-        left: 0.7rem;
-        right: 0.7rem;
-        top: 0.7rem;
-        z-index: 510;
-        pointer-events: none;
-      }}
-      .masthead h1 {{
-        display: none;
-      }}
-      .meta {{
-        display: none;
-      }}
-      .map-shell {{
-        border-radius: 0;
-        border: 0;
-      }}
-      .map-toolbar {{
-        top: 0.7rem;
-      }}
-      .toolbar-pill {{
-        display: none;
-      }}
-      .map-caption {{
-        left: 0.7rem;
-        right: auto;
+    }
+
+    .leaflet-container {
+      font: inherit;
+      color: var(--ink);
+    }
+
+    .leaflet-control-attribution {
+      background: rgba(255,255,255,0.72);
+      font-size: 0.68rem;
+    }
+
+    .leaflet-control-zoom a,
+    .leaflet-control-layers {
+      border-color: var(--border) !important;
+    }
+
+    .leaflet-control-zoom a {
+      color: var(--ink) !important;
+      background: rgba(255,255,255,0.88) !important;
+    }
+
+    .leaflet-control-layers {
+      background: rgba(255,255,255,0.88) !important;
+      color: var(--ink);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    @media (max-width: 720px) {
+      .topbar {
+        right: 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        border-radius: 18px;
+        white-space: normal;
+      }
+
+      .topbar-title {
+        width: 100%;
+      }
+
+      .hint {
+        left: 12px;
+        right: 12px;
         text-align: left;
-        max-width: calc(100% - 1.4rem);
-      }}
-    }}
-    {_theme_override_css()}
+        border-radius: 18px;
+      }
+    }
+
+    __THEME_OVERRIDE_CSS__
   </style>
 </head>
+
 <body>
-  <div class="shell">
-    <header class="masthead">
-      <div><h1>Field Sites</h1></div>
-      <div class="meta">Public dashboard · version {current_version()}</div>
-    </header>
+  <div id="fieldSitesMap" aria-label="Mapped field sites"></div>
 
-    <main class="map-shell">
-      <div id="fieldSitesMap" aria-label="Mapped field sites"></div>
+  <div class="topbar">
+    <span class="topbar-title">Field Sites</span>
+    <span class="topbar-meta" id="siteCount">Loading…</span>
+    <button class="map-button" id="resetViewButton" type="button">Reset</button>
+    <button class="map-button" id="openSelectedButton" type="button" disabled>Open selected</button>
+  </div>
 
-      <div class="map-toolbar">
-        <button class="toolbar-button" id="resetViewButton" type="button">Reset view</button>
-        <button class="toolbar-button" id="openSelectedButton" type="button" disabled>Open selected site</button>
-        <span class="toolbar-pill" id="mapStatus">Loading mapped sites…</span>
-      </div>
-
-      <div class="map-caption" id="mapCaption">
-        Click a field site to open its data page. Shift-click previews details.
-      </div>
-    </main>
+  <div class="hint" id="mapHint">
+    Click a site to open its data page. Shift-click previews details.
   </div>
 
   <script
@@ -3347,232 +3359,334 @@ def render_index_html() -> str:
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
+
   <script>
+    const DEFAULT_CENTER = [30.2672, -97.7431];
+    const DEFAULT_ZOOM = 5;
+
     const SATELLITE_TILES =
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
     const SATELLITE_ATTRIBUTION =
       "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community";
 
-    const DEFAULT_CENTER = [30.2672, -97.7431];
-    const DEFAULT_ZOOM = 5;
+    const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
-    let sites = [];
+    const OSM_ATTRIBUTION =
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+    const markerLayer = L.featureGroup();
     let selectedSite = null;
     let selectedMarker = null;
-    const markersBySiteId = new Map();
+    let loadedSites = [];
 
-    const mapStatus = document.getElementById("mapStatus");
-    const mapCaption = document.getElementById("mapCaption");
+    const siteCount = document.getElementById("siteCount");
+    const mapHint = document.getElementById("mapHint");
     const resetViewButton = document.getElementById("resetViewButton");
     const openSelectedButton = document.getElementById("openSelectedButton");
 
-    const map = L.map("fieldSitesMap", {{
+    const map = L.map("fieldSitesMap", {
       zoomControl: true,
       preferCanvas: true,
       worldCopyJump: true,
-    }}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+    }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
-    const satelliteLayer = L.tileLayer(SATELLITE_TILES, {{
+    const satelliteLayer = L.tileLayer(SATELLITE_TILES, {
       attribution: SATELLITE_ATTRIBUTION,
       maxZoom: 19,
-      detectRetina: true,
-    }}).addTo(map);
+      tileSize: 256,
+      zoomOffset: 0,
+      detectRetina: false,
+    });
 
-    const markerLayer = L.featureGroup().addTo(map);
+    const osmLayer = L.tileLayer(OSM_TILES, {
+      attribution: OSM_ATTRIBUTION,
+      maxZoom: 19,
+      tileSize: 256,
+      zoomOffset: 0,
+      detectRetina: false,
+    });
 
-    function escapeHtml(value) {{
+    satelliteLayer.addTo(map);
+    markerLayer.addTo(map);
+
+    L.control.layers(
+      {
+        "Satellite": satelliteLayer,
+        "OpenStreetMap": osmLayer,
+      },
+      {
+        "Field sites": markerLayer,
+      },
+      {
+        collapsed: true,
+      }
+    ).addTo(map);
+
+    function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#039;");
-    }}
+    }
 
-    function displaySiteName(site) {{
+    function siteName(site) {
       const note = String(site?.note || "").trim();
       if (note) return note;
+
       const label = String(site?.site_label || "").trim();
       if (label) return label;
+
       const hostname = String(site?.hostname || "").trim();
       if (hostname) return hostname;
-      return String(site?.wg_ip || "unknown");
-    }}
 
-    function formatRelativeTime(value) {{
+      const wgIp = String(site?.wg_ip || "").trim();
+      if (wgIp) return wgIp;
+
+      return "Unnamed site";
+    }
+
+    function validCoordinates(site) {
+      const lat = Number(site?.latitude);
+      const lon = Number(site?.longitude);
+
+      return (
+        Number.isFinite(lat) &&
+        Number.isFinite(lon) &&
+        Math.abs(lat) <= 90 &&
+        Math.abs(lon) <= 180 &&
+        !(lat === 0 && lon === 0)
+      );
+    }
+
+    function siteUrl(site) {
+      if (site?.public_url) return site.public_url;
+      return `/sites/${encodeURIComponent(site?.site_id || site?.peer_uuid || site?.wg_ip || "")}`;
+    }
+
+    function statusUrl(site) {
+      return `${siteUrl(site)}/status`;
+    }
+
+    function synopticUrl(site) {
+      return `${siteUrl(site)}/synoptic`;
+    }
+
+    function birdnetUrl(site) {
+      return `${siteUrl(site)}/birdnet-rankings`;
+    }
+
+    function ageClass(site) {
+      if (!site?.is_active) return "inactive";
+      if (!site?.last_check_in) return "old";
+
+      const parsed = Date.parse(site.last_check_in);
+      if (!Number.isFinite(parsed)) return "old";
+
+      const ageHours = Math.max(0, (Date.now() - parsed) / 36e5);
+      if (ageHours <= 24) return "recent";
+      if (ageHours <= 168) return "stale";
+      return "old";
+    }
+
+    function relativeTime(value) {
       if (!value) return "never";
+
       const parsed = Date.parse(value);
       if (!Number.isFinite(parsed)) return value;
-      const deltaMs = Date.now() - parsed;
-      const sec = Math.max(0, Math.floor(deltaMs / 1000));
-      if (sec < 60) return `${{sec}}s ago`;
-      if (sec < 3600) return `${{Math.floor(sec / 60)}}m ago`;
-      if (sec < 86400) return `${{Math.floor(sec / 3600)}}h ago`;
-      return `${{Math.floor(sec / 86400)}}d ago`;
-    }}
 
-    function markerClassName(site, isSelected) {{
-      return [
-        "site-marker",
-        site?.is_active ? "" : "is-inactive",
-        isSelected ? "is-selected" : "",
-      ].filter(Boolean).join(" ");
-    }}
+      const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+      if (seconds < 60) return `${seconds}s ago`;
 
-    function makeMarkerIcon(site, isSelected = false) {{
-      return L.divIcon({{
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+
+      const hours = Math.floor(minutes / 60);
+      if (hours < 48) return `${hours}h ago`;
+
+      const days = Math.floor(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function iconForSite(site, selected = false) {
+      const classes = ["site-dot", ageClass(site)];
+      if (selected) classes.push("selected");
+
+      return L.divIcon({
         className: "",
-        html: `<div class="${{markerClassName(site, isSelected)}}"></div>`,
+        html: `<div class="${classes.join(" ")}"></div>`,
         iconSize: [19, 19],
         iconAnchor: [9.5, 9.5],
-        popupAnchor: [0, -12],
-      }});
-    }}
+        popupAnchor: [0, -13],
+      });
+    }
 
-    function popupHtml(site) {{
-      const siteUrl = site.public_url || `/sites/${{encodeURIComponent(site.site_id)}}`;
-      const statusUrl = site.status_url || `${{siteUrl}}/status`;
-      const synopticUrl = site.synoptic_url || `${{siteUrl}}/synoptic`;
-      const birdnetUrl = site.birdnet_rankings_url || `${{siteUrl}}/birdnet-rankings`;
-
+    function popupHtml(site) {
       return `
         <div class="site-popup">
-          <h2 class="site-popup-title">${{escapeHtml(displaySiteName(site))}}</h2>
+          <h2>${escapeHtml(siteName(site))}</h2>
           <div class="site-popup-meta">
-            <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
-            <div>${{escapeHtml(site.network_name || "unknown network")}}</div>
-            <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in))}}</div>
-            <div>BirdNET detections: ${{escapeHtml(site.birdnet_detection_count ?? 0)}}</div>
+            <div><span class="mono">${escapeHtml(site.wg_ip || "")}</span></div>
+            <div>${escapeHtml(site.network_name || "unknown network")}</div>
+            <div>Last check-in: ${escapeHtml(relativeTime(site.last_check_in))}</div>
+            <div>BirdNET detections: ${escapeHtml(site.birdnet_detection_count ?? 0)}</div>
           </div>
           <div class="site-popup-actions">
-            <a href="${{escapeHtml(siteUrl)}}">Dashboard</a>
-            <a href="${{escapeHtml(statusUrl)}}">Status</a>
-            <a href="${{escapeHtml(synopticUrl)}}">Time series</a>
-            <a href="${{escapeHtml(birdnetUrl)}}">BirdNET</a>
+            <a href="${escapeHtml(siteUrl(site))}">Dashboard</a>
+            <a href="${escapeHtml(statusUrl(site))}">Status</a>
+            <a href="${escapeHtml(synopticUrl(site))}">Time series</a>
+            <a href="${escapeHtml(birdnetUrl(site))}">BirdNET</a>
           </div>
         </div>
       `;
-    }}
+    }
 
-    function setSelectedSite(site, marker) {{
-      if (selectedMarker && selectedSite) {{
-        selectedMarker.setIcon(makeMarkerIcon(selectedSite, false));
-      }}
+    function setSelected(site, marker) {
+      if (selectedMarker && selectedSite) {
+        selectedMarker.setIcon(iconForSite(selectedSite, false));
+      }
 
       selectedSite = site || null;
       selectedMarker = marker || null;
 
-      if (selectedMarker && selectedSite) {{
-        selectedMarker.setIcon(makeMarkerIcon(selectedSite, true));
-        openSelectedButton.disabled = !selectedSite.public_url;
-        mapCaption.textContent =
-          `${{displaySiteName(selectedSite)}} · click button to open, or shift-click markers to preview`;
-      }} else {{
+      if (selectedMarker && selectedSite) {
+        selectedMarker.setIcon(iconForSite(selectedSite, true));
+        openSelectedButton.disabled = false;
+        mapHint.textContent = `${siteName(selectedSite)} selected. Click Open selected, or Shift-click a point to preview.`;
+      } else {
         openSelectedButton.disabled = true;
-        mapCaption.textContent =
-          "Click a field site to open its data page. Shift-click previews details.";
-      }}
-    }}
+        mapHint.textContent = "Click a site to open its data page. Shift-click previews details.";
+      }
+    }
 
-    function openSite(site) {{
+    function openSite(site) {
       if (!site) return;
-      const url = site.public_url || `/sites/${{encodeURIComponent(site.site_id)}}`;
-      window.location.assign(url);
-    }}
+      window.location.assign(siteUrl(site));
+    }
 
-    function addSiteMarker(site) {{
-      if (!Number.isFinite(site.latitude) || !Number.isFinite(site.longitude)) return;
+    function addSite(site) {
+      if (!validCoordinates(site)) return;
 
-      const marker = L.marker([site.latitude, site.longitude], {{
-        icon: makeMarkerIcon(site, false),
-        title: displaySiteName(site),
+      const marker = L.marker([Number(site.latitude), Number(site.longitude)], {
+        icon: iconForSite(site),
+        title: siteName(site),
         riseOnHover: true,
-      }});
+      });
 
-      marker.bindTooltip(displaySiteName(site), {{
+      marker.bindTooltip(siteName(site), {
         direction: "top",
-        opacity: 0.92,
         sticky: true,
-      }});
+        opacity: 0.92,
+      });
 
-      marker.bindPopup(() => popupHtml(site), {{
-        maxWidth: 320,
+      marker.bindPopup(() => popupHtml(site), {
         closeButton: true,
-      }});
+        maxWidth: 340,
+      });
 
-      marker.on("click", (event) => {{
-        setSelectedSite(site, marker);
+      marker.on("click", (event) => {
+        setSelected(site, marker);
 
-        // Default behavior is the clean map-only flow: click point -> data page.
-        // Modified clicks give you an inspection mode without adding a sidebar.
-        const original = event.originalEvent || {{}};
-        if (original.shiftKey || original.metaKey || original.ctrlKey || original.altKey) {{
+        const original = event.originalEvent || {};
+        if (
+          original.shiftKey ||
+          original.metaKey ||
+          original.ctrlKey ||
+          original.altKey
+        ) {
           marker.openPopup();
           return;
-        }}
+        }
 
         openSite(site);
-      }});
+      });
 
       marker.addTo(markerLayer);
-      markersBySiteId.set(site.site_id, marker);
-    }}
+    }
 
-    function fitToSites() {{
-      if (!markerLayer.getLayers().length) {{
+    function fitToMarkers() {
+      const markers = markerLayer.getLayers();
+      if (!markers.length) {
         map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
         return;
-      }}
-      map.fitBounds(markerLayer.getBounds(), {{
-        padding: [42, 42],
-        maxZoom: 16,
-      }});
-    }}
+      }
 
-    async function boot() {{
-      try {{
-        const response = await fetch("/api/sites", {{
-          headers: {{ "Accept": "application/json" }},
-        }});
-        if (!response.ok) {{
-          throw new Error(`HTTP ${{response.status}}`);
-        }}
+      map.fitBounds(markerLayer.getBounds(), {
+        padding: [44, 44],
+        maxZoom: 15,
+      });
+    }
 
-        sites = await response.json();
-        markerLayer.clearLayers();
-        markersBySiteId.clear();
+    async function loadSites() {
+      const response = await fetch("/api/sites", {
+        headers: { "Accept": "application/json" },
+      });
 
-        for (const site of sites) {{
-          addSiteMarker(site);
-        }}
+      if (!response.ok) {
+        throw new Error(`Could not load /api/sites: HTTP ${response.status}`);
+      }
 
-        fitToSites();
-        mapStatus.textContent = `${{sites.length}} mapped site${{sites.length === 1 ? "" : "s"}}`;
-      }} catch (error) {{
-        console.error(error);
-        mapStatus.textContent = "Map failed to load";
-        mapCaption.textContent = "Could not load /api/sites.";
-      }}
-    }}
+      loadedSites = await response.json();
 
-    resetViewButton.addEventListener("click", () => {{
-      setSelectedSite(null, null);
-      fitToSites();
-    }});
+      markerLayer.clearLayers();
+      setSelected(null, null);
 
-    openSelectedButton.addEventListener("click", () => {{
+      for (const site of loadedSites) {
+        addSite(site);
+      }
+
+      const mappedCount = markerLayer.getLayers().length;
+      siteCount.textContent =
+        `${mappedCount} mapped site${mappedCount === 1 ? "" : "s"}`;
+
+      if (mappedCount !== loadedSites.length) {
+        siteCount.textContent += ` (${loadedSites.length - mappedCount} hidden)`;
+      }
+
+      requestAnimationFrame(() => {
+        map.invalidateSize(true);
+        fitToMarkers();
+      });
+    }
+
+    resetViewButton.addEventListener("click", () => {
+      setSelected(null, null);
+      map.closePopup();
+      map.invalidateSize(true);
+      fitToMarkers();
+    });
+
+    openSelectedButton.addEventListener("click", () => {
       openSite(selectedSite);
-    }});
+    });
 
-    window.addEventListener("keydown", (event) => {{
-      if (event.key === "Escape") {{
+    window.addEventListener("load", () => {
+      map.invalidateSize(true);
+    });
+
+    window.addEventListener("resize", () => {
+      map.invalidateSize(true);
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
         map.closePopup();
-        setSelectedSite(null, null);
-      }}
-    }});
+        setSelected(null, null);
+      }
+    });
 
-    boot();
+    loadSites().catch((error) => {
+      console.error(error);
+      siteCount.textContent = "Map failed to load";
+      mapHint.textContent = "Could not load /api/sites. Check the browser console and server logs.";
+      map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+      map.invalidateSize(true);
+    });
   </script>
 </body>
 </html>"""
+    return page.replace("__VERSION__", escape_html(current_version())).replace(
+        "__THEME_OVERRIDE_CSS__", _theme_override_css()
+    )
