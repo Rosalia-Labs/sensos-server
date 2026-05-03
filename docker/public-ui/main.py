@@ -3425,6 +3425,48 @@ def render_index_html() -> str:
       return {{ x, y }};
     }}
 
+    function mercatorLatFromWorldY(y, zoom) {{
+      const scale = tileSize * (2 ** zoom);
+      const normalized = Math.max(0, Math.min(scale, y)) / scale;
+      const n = Math.PI * (1 - 2 * normalized);
+      return (Math.atan(Math.sinh(n)) * 180) / Math.PI;
+    }}
+
+    function expandViewToViewportAspect(view, rect) {{
+      if (!rect.width || !rect.height) return view;
+      const targetRatio = rect.width / rect.height;
+      if (!Number.isFinite(targetRatio) || targetRatio <= 0) return view;
+
+      const tl = mercatorWorldPoint(view.lonMin, view.latMax, 0);
+      const br = mercatorWorldPoint(view.lonMax, view.latMin, 0);
+      const worldWidth = Math.max(1e-9, br.x - tl.x);
+      const worldHeight = Math.max(1e-9, br.y - tl.y);
+      const currentRatio = worldWidth / worldHeight;
+
+      if (Math.abs(currentRatio - targetRatio) < 1e-6) return view;
+
+      if (currentRatio < targetRatio) {{
+        const requiredWorldWidth = worldHeight * targetRatio;
+        const requiredLonSpan = (requiredWorldWidth / tileSize) * 360;
+        const lonCenter = (view.lonMin + view.lonMax) / 2;
+        return {{
+          ...view,
+          lonMin: lonCenter - requiredLonSpan / 2,
+          lonMax: lonCenter + requiredLonSpan / 2,
+        }};
+      }}
+
+      const requiredWorldHeight = worldWidth / targetRatio;
+      const centerY = (tl.y + br.y) / 2;
+      const topY = centerY - requiredWorldHeight / 2;
+      const bottomY = centerY + requiredWorldHeight / 2;
+      return {{
+        ...view,
+        latMax: mercatorLatFromWorldY(topY, 0),
+        latMin: mercatorLatFromWorldY(bottomY, 0),
+      }};
+    }}
+
     function mapViewport(rect, zoom) {{
       const topLeft = mercatorWorldPoint(currentView.lonMin, currentView.latMax, zoom);
       const bottomRight = mercatorWorldPoint(currentView.lonMax, currentView.latMin, zoom);
@@ -3563,12 +3605,14 @@ def render_index_html() -> str:
       const latValues = targetSites.map((site) => site.latitude);
       const lonPad = Math.max((Math.max(...lonValues) - Math.min(...lonValues)) * 0.35, 0.25);
       const latPad = Math.max((Math.max(...latValues) - Math.min(...latValues)) * 0.35, 0.2);
-      currentView = clampView({{
+      const baseView = clampView({{
         lonMin: Math.min(...lonValues) - lonPad,
         lonMax: Math.max(...lonValues) + lonPad,
         latMin: Math.min(...latValues) - latPad,
         latMax: Math.max(...latValues) + latPad,
       }});
+      const rect = mapStage.getBoundingClientRect();
+      currentView = clampView(expandViewToViewportAspect(baseView, rect));
       render();
     }}
 
