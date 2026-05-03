@@ -3066,12 +3066,7 @@ def render_index_html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SensOS Field Sites</title>
 
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIINfQ2ATbK3qsfNHh8Qw9DyJw3y7pFvDo8="
-    crossorigin=""
-  >
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 
   <style>
     :root {
@@ -3130,6 +3125,236 @@ def render_index_html() -> str:
     .leaflet-tile {
       width: 256px !important;
       height: 256px !important;
+    }
+
+
+    /*
+      Critical Leaflet layout CSS.
+
+      Keep these rules inline even when loading leaflet.css from a CDN. If the
+      external CSS fails to load, or if app-wide CSS touches img/div positioning,
+      Leaflet tiles otherwise appear as scattered 256px image chunks.
+    */
+    .leaflet-container {
+      position: relative;
+      overflow: hidden;
+      outline: 0;
+      touch-action: none;
+      background: #d8e4df;
+    }
+
+    .leaflet-pane,
+    .leaflet-tile,
+    .leaflet-marker-icon,
+    .leaflet-marker-shadow,
+    .leaflet-tile-container,
+    .leaflet-pane > svg,
+    .leaflet-pane > canvas,
+    .leaflet-zoom-box,
+    .leaflet-image-layer,
+    .leaflet-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    .leaflet-container img.leaflet-tile,
+    .leaflet-container .leaflet-tile {
+      width: 256px !important;
+      height: 256px !important;
+      max-width: none !important;
+      max-height: none !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      border: 0 !important;
+      object-fit: fill !important;
+      box-sizing: content-box !important;
+    }
+
+    .leaflet-container img.leaflet-marker-icon,
+    .leaflet-container img.leaflet-marker-shadow,
+    .leaflet-container .leaflet-image-layer {
+      max-width: none !important;
+      max-height: none !important;
+    }
+
+    .leaflet-tile {
+      filter: inherit;
+      visibility: hidden;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .leaflet-tile-loaded {
+      visibility: inherit;
+    }
+
+    .leaflet-zoom-animated {
+      transform-origin: 0 0;
+    }
+
+    .leaflet-interactive {
+      cursor: pointer;
+    }
+
+    .leaflet-control {
+      position: relative;
+      z-index: 800;
+      pointer-events: auto;
+      float: left;
+      clear: both;
+    }
+
+    .leaflet-top,
+    .leaflet-bottom {
+      position: absolute;
+      z-index: 900;
+      pointer-events: none;
+    }
+
+    .leaflet-top {
+      top: 0;
+    }
+
+    .leaflet-right {
+      right: 0;
+    }
+
+    .leaflet-bottom {
+      bottom: 0;
+    }
+
+    .leaflet-left {
+      left: 0;
+    }
+
+    .leaflet-control-zoom {
+      margin-left: 10px;
+      margin-top: 10px;
+      border: 2px solid rgba(0,0,0,0.18);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .leaflet-control-zoom a {
+      display: block;
+      width: 30px;
+      height: 30px;
+      line-height: 30px;
+      text-align: center;
+      text-decoration: none;
+      background: rgba(255,255,255,0.92);
+      color: #111;
+      font: bold 18px/30px system-ui, sans-serif;
+      border-bottom: 1px solid rgba(0,0,0,0.16);
+    }
+
+    .leaflet-control-zoom a:last-child {
+      border-bottom: 0;
+    }
+
+    .leaflet-control-attribution {
+      margin: 0;
+      padding: 0 5px;
+      color: #333;
+      background: rgba(255,255,255,0.72);
+      font-size: 11px;
+    }
+
+    .leaflet-bottom .leaflet-control {
+      margin-bottom: 0;
+    }
+
+    .leaflet-right .leaflet-control {
+      margin-right: 0;
+    }
+
+    .leaflet-popup {
+      position: absolute;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .leaflet-popup-content-wrapper {
+      padding: 1px;
+      text-align: left;
+      border-radius: 12px;
+      background: white;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.28);
+    }
+
+    .leaflet-popup-content {
+      margin: 13px 19px;
+      line-height: 1.4;
+      font-size: 13px;
+      min-height: 1px;
+    }
+
+    .leaflet-popup-tip-container {
+      width: 40px;
+      height: 20px;
+      position: absolute;
+      left: 50%;
+      margin-top: -1px;
+      margin-left: -20px;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .leaflet-popup-tip {
+      width: 17px;
+      height: 17px;
+      padding: 1px;
+      margin: -10px auto 0;
+      transform: rotate(45deg);
+      background: white;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.28);
+    }
+
+    .leaflet-popup-close-button {
+      position: absolute;
+      top: 0;
+      right: 0;
+      padding: 4px 4px 0 0;
+      border: none;
+      text-align: center;
+      width: 18px;
+      height: 14px;
+      font: 16px/14px Tahoma, Verdana, sans-serif;
+      color: #757575;
+      text-decoration: none;
+      background: transparent;
+    }
+
+    .leaflet-tooltip {
+      position: absolute;
+      padding: 6px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(0,0,0,0.18);
+      border-radius: 4px;
+      color: #222;
+      white-space: nowrap;
+      user-select: none;
+      pointer-events: none;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.22);
+    }
+
+    .leaflet-tooltip-top {
+      margin-top: -6px;
+    }
+
+    .leaflet-tooltip-bottom {
+      margin-top: 6px;
+    }
+
+    .leaflet-tooltip-left {
+      margin-left: -6px;
+    }
+
+    .leaflet-tooltip-right {
+      margin-left: 6px;
     }
 
     .topbar {
@@ -3384,6 +3609,21 @@ def render_index_html() -> str:
     const mapHint = document.getElementById("mapHint");
     const resetViewButton = document.getElementById("resetViewButton");
     const openSelectedButton = document.getElementById("openSelectedButton");
+
+
+    function assertLeafletCssLooksLoaded() {
+      const probe = document.createElement("div");
+      probe.className = "leaflet-pane";
+      probe.style.visibility = "hidden";
+      document.body.appendChild(probe);
+      const position = window.getComputedStyle(probe).position;
+      document.body.removeChild(probe);
+      if (position !== "absolute") {
+        console.warn("Leaflet critical CSS is not active; map tiles may render incorrectly.");
+      }
+    }
+
+    assertLeafletCssLooksLoaded();
 
     const map = L.map("fieldSitesMap", {
       zoomControl: true,
