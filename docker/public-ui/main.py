@@ -1288,8 +1288,9 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             for label, points in sensor_series_map.items()
             if points
         ),
-        key=lambda item: (item["label"]),
-    )
+        key=lambda item: len(item["points"]),
+        reverse=True,
+    )[:3]
 
     return {
         "peer_uuid": row[0],
@@ -1311,6 +1312,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "birdnet_source_count": int(row[15]),
         "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
         "public_url": f"/sites/{row[0]}",
+        "status_url": f"/sites/{row[0]}/status",
         "evidence_range": normalized_evidence_range,
         "birdnet_detection_count": int(
             (birdnet_summary[0] or 0) if birdnet_summary else 0
@@ -2496,6 +2498,7 @@ def render_site_detail_html(site: dict) -> str:
     <div class="masthead">
       <div class="nav-row">
         <span class="nav-link">Overview</span>
+        <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
         <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
         <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
       </div>
@@ -3743,3 +3746,4 @@ def render_index_html() -> str:
   </script>
 </body>
 </html>"""
+
