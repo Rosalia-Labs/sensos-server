@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Rosalia Labs LLC
 
 import json
+import logging
 import os
 import html
 import re
@@ -16,9 +17,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 POSTGRES_USER = "sensos_public"
 POSTGRES_PASSWORD = os.getenv("PUBLIC_DB_PASSWORD", "sensos-public")
-DATABASE_URL = (
-    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
-)
+POSTGRES_HOST = "sensos-database"
+POSTGRES_DB = "postgres"
+
+logger = logging.getLogger(__name__)
 
 VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
 VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")
@@ -174,7 +176,13 @@ def get_db(retries: int = 10, delay: int = 3):
 
     for attempt in range(retries):
         try:
-            return psycopg.connect(DATABASE_URL, autocommit=True)
+            return psycopg.connect(
+                host=POSTGRES_HOST,
+                dbname=POSTGRES_DB,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                autocommit=True,
+            )
         except psycopg.OperationalError:
             if attempt == retries - 1:
                 raise
@@ -3025,6 +3033,7 @@ async def lifespan(app: FastAPI):
                 cur.fetchone()
         app.state.ready = True
     except Exception:
+        logger.exception("public-ui startup health probe failed")
         app.state.ready = False
     yield
 

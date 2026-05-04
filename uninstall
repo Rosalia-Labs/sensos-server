@@ -12,8 +12,8 @@ DOCKER_DIR="${REPO_ROOT}/docker"
 SYSTEM_INSTALL_STATE_FILE="/var/lib/sensos-server/install-state.env"
 LOCAL_INSTALL_STATE_FILE="${REPO_ROOT}/.sensos-server/install-state.env"
 SERVICE_NAME="${SENSOS_SERVICE_NAME:-sensos-server}"
-PURGE_DATA=0
-PURGE_IMAGES=0
+PURGE_DATA=1
+PURGE_IMAGES=1
 REMOVE_SERVICE=1
 NO_BACKUP=0
 ASSUME_YES=0
@@ -35,9 +35,9 @@ Stop the local SensOS server stack and remove optional host integration for this
 repo checkout.
 
 Options:
-  --purge-data      Remove Docker volumes and host state for a fresh reinstall
-  --purge-images    Remove Docker images used by this repo's Compose stack
-  --keep-service    Leave the optional ${SERVICE_NAME} systemd unit installed
+  --no-remove-data     Keep Docker volumes and host state
+  --no-remove-images   Keep Docker images used by this repo's Compose stack
+  --no-remove-service  Keep the optional ${SERVICE_NAME} systemd unit installed
   --no-backup       Skip backups when removing Docker volumes
   --yes             Skip the confirmation prompt
   --help            Show this help and exit
@@ -56,13 +56,13 @@ repo_owner() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --purge-data)
-                PURGE_DATA=1
+            --no-remove-data)
+                PURGE_DATA=0
                 ;;
-            --purge-images)
-                PURGE_IMAGES=1
+            --no-remove-images)
+                PURGE_IMAGES=0
                 ;;
-            --keep-service)
+            --no-remove-service)
                 REMOVE_SERVICE=0
                 ;;
             --no-backup)

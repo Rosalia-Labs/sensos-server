@@ -30,9 +30,8 @@ POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 if not POSTGRES_PASSWORD:
     raise ValueError("POSTGRES_PASSWORD is not set. Exiting.")
-DATABASE_URL = (
-    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
-)
+POSTGRES_HOST = "sensos-database"
+POSTGRES_DB = "postgres"
 
 ADMIN_API_PASSWORD = os.getenv("ADMIN_API_PASSWORD", "")
 CLIENT_API_PASSWORD = os.getenv("CLIENT_API_PASSWORD", "")
@@ -163,7 +162,13 @@ def authenticate_sensos_client(credentials: HTTPBasicCredentials = Depends(secur
 def get_db(retries: int = 10, delay: int = 3):
     for attempt in range(retries):
         try:
-            return psycopg.connect(DATABASE_URL, autocommit=True)
+            return psycopg.connect(
+                host=POSTGRES_HOST,
+                dbname=POSTGRES_DB,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                autocommit=True,
+            )
         except psycopg.OperationalError:
             if attempt == retries - 1:
                 raise
