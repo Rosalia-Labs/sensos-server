@@ -96,9 +96,10 @@ psql_value() {
 }
 
 print_config() {
-    local api_port admin_set client_set pg_set
+    local api_port public_ui_port admin_set client_set pg_set
 
     api_port="${API_PORT:-unset}"
+    public_ui_port="${PUBLIC_UI_PORT:-8780}"
 
     if [[ -n "${ADMIN_API_PASSWORD:-}" ]]; then admin_set=yes; else admin_set=no; fi
     if [[ -n "${CLIENT_API_PASSWORD:-}" ]]; then client_set=yes; else client_set=no; fi
@@ -107,16 +108,19 @@ print_config() {
     print_line "Config"
     print_line "  env file: ${ENV_PRESENT}"
     print_line "  api port: ${api_port}"
+    print_line "  public ui port: ${public_ui_port}"
     print_line "  passwords set: postgres=${pg_set} admin=${admin_set} client=${client_set}"
 }
 
 print_runtime() {
-    local controller_state wireguard_state database_state proxy_state
+    local controller_state wireguard_state database_state proxy_state ops_state public_ui_state
 
     controller_state="$(container_state sensos-controller)"
     wireguard_state="$(container_state sensos-wireguard)"
     database_state="$(container_state sensos-database)"
     proxy_state="$(container_state sensos-api-proxy)"
+    ops_state="$(container_state sensos-ops)"
+    public_ui_state="$(container_state sensos-public-ui)"
 
     print_line "Runtime"
     print_line "  docker access: yes"
@@ -125,6 +129,8 @@ print_runtime() {
     print_line "  sensos-wireguard: ${wireguard_state}"
     print_line "  sensos-database: ${database_state}"
     print_line "  sensos-api-proxy: ${proxy_state}"
+    print_line "  sensos-ops: ${ops_state}"
+    print_line "  sensos-public-ui: ${public_ui_state}"
 }
 
 print_database() {
