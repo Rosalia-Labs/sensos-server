@@ -15,7 +15,8 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 if not POSTGRES_PASSWORD:
     raise ValueError("POSTGRES_PASSWORD is required")
 
-DATABASE_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@sensos-database/postgres"
+POSTGRES_HOST = "sensos-database"
+POSTGRES_DB = "postgres"
 COMPONENT = "sensos-wireguard"
 ROLE = "server"
 PUBLIC_PORT_START = 51281
@@ -34,7 +35,13 @@ def log(message: str) -> None:
 def get_db(retries: int = 10, delay: int = 3):
     for attempt in range(retries):
         try:
-            return psycopg.connect(DATABASE_URL, autocommit=True)
+            return psycopg.connect(
+                host=POSTGRES_HOST,
+                dbname=POSTGRES_DB,
+                user="postgres",
+                password=POSTGRES_PASSWORD,
+                autocommit=True,
+            )
         except psycopg.OperationalError:
             if attempt == retries - 1:
                 raise
