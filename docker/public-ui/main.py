@@ -3287,6 +3287,10 @@ def render_index_html() -> str:
       backdrop-filter: blur(10px);
     }}
 
+    .network-filter-control {{
+      margin-top: 8px;
+    }}
+
     .leaflet-control-layers-toggle {{
       width: 34px;
       height: 34px;
@@ -3504,6 +3508,10 @@ def render_index_html() -> str:
         margin-right: 8px;
       }}
 
+      .network-filter-control {{
+        margin-top: 6px;
+      }}
+
       .leaflet-control-zoom {{
         margin-right: 8px;
         margin-bottom: 20px;
@@ -3579,19 +3587,27 @@ def render_index_html() -> str:
       className: "basemap-tile",
     }});
 
-    const markerLayer = L.featureGroup().addTo(map);
     const siteMarkers = [];
+    const networkLayerGroups = new Map();
+    let networkControl = null;
 
     L.control.layers(
       {{
         "Satellite": satelliteLayer,
         "OpenStreetMap": osmLayer,
       }},
-      {{
-        "Sites": markerLayer,
-      }},
+      null,
       {{ position: "topright", collapsed: true }}
     ).addTo(map);
+
+    function networkLabel(site) {{
+      const name = String(site?.network_name || "").trim();
+      return name || "Unassigned";
+    }}
+
+    function markerVisible(marker) {{
+      return map.hasLayer(marker);
+    }}
 
     function escapeHtml(value) {{
       return String(value ?? "")
@@ -3693,8 +3709,44 @@ def render_index_html() -> str:
         handleSiteMarkerClick(marker);
       }});
 
-      marker.addTo(markerLayer);
+      const network = networkLabel(site);
+      let networkGroup = networkLayerGroups.get(network);
+      if (!networkGroup) {{
+        networkGroup = L.layerGroup();
+        networkLayerGroups.set(network, networkGroup);
+      }}
+
+      marker.addTo(networkGroup);
       siteMarkers.push(marker);
+    }}
+
+    function renderNetworkControl() {{
+      if (networkControl) {{
+        networkControl.remove();
+      }}
+
+      const overlays = {{}};
+      const orderedNames = Array.from(networkLayerGroups.keys()).sort((a, b) =>
+        a.localeCompare(b)
+      );
+
+      for (const name of orderedNames) {{
+        const group = networkLayerGroups.get(name);
+        if (!group) continue;
+        overlays[name] = group;
+        group.addTo(map);
+      }}
+
+      networkControl = L.control.layers({{}}, overlays, {{
+        position: "topright",
+        collapsed: true,
+      }});
+      networkControl.addTo(map);
+
+      const controlContainer = networkControl.getContainer();
+      if (controlContainer) {{
+        controlContainer.classList.add("network-filter-control");
+      }}
     }}
 
     function markersNearMarker(clickedMarker, pixelRadius = 34) {{
@@ -3750,16 +3802,23 @@ def render_index_html() -> str:
     }}
 
     function fitToSites() {{
-      if (!markerLayer.getLayers().length) {{
+      const visibleMarkers = siteMarkers.filter((marker) => markerVisible(marker));
+      if (!visibleMarkers.length) {{
         map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
         return;
       }}
 
-      map.fitBounds(markerLayer.getBounds(), {{
+      const bounds = L.latLngBounds(visibleMarkers.map((marker) => marker.getLatLng()));
+      map.fitBounds(bounds, {{
         paddingTopLeft: [96, 96],
         paddingBottomRight: [96, 96],
         maxZoom: 10,
       }});
+    }}
+
+    function updateMappedCount() {{
+      const mappedCount = siteMarkers.filter((marker) => markerVisible(marker)).length;
+      siteCount.textContent = `${{mappedCount}} mapped site${{mappedCount === 1 ? "" : "s"}}`;
     }}
 
     async function loadSites() {{
@@ -3771,15 +3830,25 @@ def render_index_html() -> str:
       }}
 
       sites = await response.json();
-      markerLayer.clearLayers();
       siteMarkers.length = 0;
+      for (const group of networkLayerGroups.values()) {{
+        group.clearLayers();
+        map.removeLayer(group);
+      }}
+      networkLayerGroups.clear();
 
       for (const site of sites) {{
         addSite(site);
       }}
 
-      const mappedCount = markerLayer.getLayers().length;
-      siteCount.textContent = `${{mappedCount}} mapped site${{mappedCount === 1 ? "" : "s"}}`;
+      renderNetworkControl();
+
+      map.off("overlayadd", updateMappedCount);
+      map.off("overlayremove", updateMappedCount);
+      map.on("overlayadd", updateMappedCount);
+      map.on("overlayremove", updateMappedCount);
+
+      updateMappedCount();
 
       requestAnimationFrame(() => {{
         map.invalidateSize();
