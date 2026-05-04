@@ -3,14 +3,14 @@ services:
     build:
       context: ./controller
       args:
-        VERSION_MAJOR: ${VERSION_MAJOR}
-        VERSION_MINOR: ${VERSION_MINOR}
-        VERSION_PATCH: ${VERSION_PATCH}
-        VERSION_SUFFIX: ${VERSION_SUFFIX}
-        GIT_COMMIT: ${GIT_COMMIT}
-        GIT_BRANCH: ${GIT_BRANCH}
-        GIT_TAG: ${GIT_TAG}
-        GIT_DIRTY: ${GIT_DIRTY}
+        VERSION_MAJOR: ${VERSION_MAJOR:-unknown}
+        VERSION_MINOR: ${VERSION_MINOR:-unknown}
+        VERSION_PATCH: ${VERSION_PATCH:-unknown}
+        VERSION_SUFFIX: ${VERSION_SUFFIX:-}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        GIT_TAG: ${GIT_TAG:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-false}
     container_name: sensos-controller
     restart: always
     depends_on:
@@ -19,14 +19,14 @@ services:
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      VERSION_MAJOR: ${VERSION_MAJOR}
-      VERSION_MINOR: ${VERSION_MINOR}
-      VERSION_PATCH: ${VERSION_PATCH}
-      VERSION_SUFFIX: ${VERSION_SUFFIX}
-      GIT_COMMIT: ${GIT_COMMIT}
-      GIT_BRANCH: ${GIT_BRANCH}
-      GIT_TAG: ${GIT_TAG}
-      GIT_DIRTY: ${GIT_DIRTY}
+      VERSION_MAJOR: ${VERSION_MAJOR:-unknown}
+      VERSION_MINOR: ${VERSION_MINOR:-unknown}
+      VERSION_PATCH: ${VERSION_PATCH:-unknown}
+      VERSION_SUFFIX: ${VERSION_SUFFIX:-}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_BRANCH: ${GIT_BRANCH:-unknown}
+      GIT_TAG: ${GIT_TAG:-unknown}
+      GIT_DIRTY: ${GIT_DIRTY:-false}
       PUBLIC_DB_PASSWORD: ${PUBLIC_DB_PASSWORD}
     expose:
       - "8765"
@@ -137,14 +137,14 @@ services:
     build:
       context: ./public-ui
       args:
-        VERSION_MAJOR: ${VERSION_MAJOR}
-        VERSION_MINOR: ${VERSION_MINOR}
-        VERSION_PATCH: ${VERSION_PATCH}
-        VERSION_SUFFIX: ${VERSION_SUFFIX}
-        GIT_COMMIT: ${GIT_COMMIT}
-        GIT_BRANCH: ${GIT_BRANCH}
-        GIT_TAG: ${GIT_TAG}
-        GIT_DIRTY: ${GIT_DIRTY}
+        VERSION_MAJOR: ${VERSION_MAJOR:-unknown}
+        VERSION_MINOR: ${VERSION_MINOR:-unknown}
+        VERSION_PATCH: ${VERSION_PATCH:-unknown}
+        VERSION_SUFFIX: ${VERSION_SUFFIX:-}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        GIT_TAG: ${GIT_TAG:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-false}
     container_name: sensos-public-ui
     restart: always
     depends_on:
@@ -155,14 +155,14 @@ services:
     env_file: .env
     environment:
       PUBLIC_DB_PASSWORD: ${PUBLIC_DB_PASSWORD}
-      VERSION_MAJOR: ${VERSION_MAJOR}
-      VERSION_MINOR: ${VERSION_MINOR}
-      VERSION_PATCH: ${VERSION_PATCH}
-      VERSION_SUFFIX: ${VERSION_SUFFIX}
-      GIT_COMMIT: ${GIT_COMMIT}
-      GIT_BRANCH: ${GIT_BRANCH}
-      GIT_TAG: ${GIT_TAG}
-      GIT_DIRTY: ${GIT_DIRTY}
+      VERSION_MAJOR: ${VERSION_MAJOR:-unknown}
+      VERSION_MINOR: ${VERSION_MINOR:-unknown}
+      VERSION_PATCH: ${VERSION_PATCH:-unknown}
+      VERSION_SUFFIX: ${VERSION_SUFFIX:-}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_BRANCH: ${GIT_BRANCH:-unknown}
+      GIT_TAG: ${GIT_TAG:-unknown}
+      GIT_DIRTY: ${GIT_DIRTY:-false}
     ports:
       - "${PUBLIC_UI_PORT:-8780}:8780"
     healthcheck:
