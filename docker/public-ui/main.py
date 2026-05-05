@@ -423,6 +423,51 @@ def _to_rfc3339_utc_string(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _solar_declination_and_eqtime(day_of_year: int) -> tuple[float, float]:
+    gamma = (2.0 * math.pi / 365.0) * (day_of_year - 1)
+    decl = (
+        0.006918
+        - 0.399912 * math.cos(gamma)
+        + 0.070257 * math.sin(gamma)
+        - 0.006758 * math.cos(2.0 * gamma)
+        + 0.000907 * math.sin(2.0 * gamma)
+        - 0.002697 * math.cos(3.0 * gamma)
+        + 0.00148 * math.sin(3.0 * gamma)
+    )
+    eqtime = 229.18 * (
+        0.000075
+        + 0.001868 * math.cos(gamma)
+        - 0.032077 * math.sin(gamma)
+        - 0.014615 * math.cos(2.0 * gamma)
+        - 0.040849 * math.sin(2.0 * gamma)
+    )
+    return decl, eqtime
+
+
+def is_daylight_at_site(latitude: float, longitude: float, ts_utc: datetime) -> bool:
+    if ts_utc.tzinfo is None:
+        ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+    ts_utc = ts_utc.astimezone(timezone.utc)
+    day_of_year = ts_utc.timetuple().tm_yday
+    decl, eqtime = _solar_declination_and_eqtime(day_of_year)
+    lat_rad = math.radians(latitude)
+    zenith = math.radians(90.833)
+    cos_ha = (math.cos(zenith) / (math.cos(lat_rad) * math.cos(decl))) - (
+        math.tan(lat_rad) * math.tan(decl)
+    )
+    minutes_utc = (ts_utc.hour * 60) + ts_utc.minute + (ts_utc.second / 60.0)
+    solar_noon = 720.0 - (4.0 * longitude) - eqtime
+    # Polar day / polar night handling.
+    if cos_ha <= -1.0:
+        return True
+    if cos_ha >= 1.0:
+        return False
+    hour_angle = math.degrees(math.acos(cos_ha))
+    sunrise = solar_noon - (4.0 * hour_angle)
+    sunset = solar_noon + (4.0 * hour_angle)
+    return sunrise <= minutes_utc <= sunset
+
+
 def detection_event_timestamp(
     source_path: str | None, start_sec: float | None, processed_at: datetime
 ) -> datetime:
@@ -445,17 +490,10 @@ def detection_event_timestamp(
 
 def _chart_bounds(width: int, height: int) -> dict:
     return {
-<<<<<<< Updated upstream
-        "left": 58,
-        "right": width - 18,
-        "top": 10,
-        "bottom": height - 34,
-=======
         "left": 62,
         "right": width - 28,
         "top": 18,
         "bottom": height - 26,
->>>>>>> Stashed changes
     }
 
 
@@ -706,15 +744,12 @@ def render_event_timeline_svg(
     min_ts = min(timestamps)
     max_ts = max(timestamps)
     total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
-<<<<<<< Updated upstream
     min_value = min(values)
     max_value = max(values)
     if max_value == min_value:
         max_value = min_value + 1.0
     span = max(max_value - min_value, 1e-9)
-=======
     mid_ts = min_ts + (max_ts - min_ts) / 2
->>>>>>> Stashed changes
     circles = []
     x_labels = [
         {"x": left, "utc": points[0][time_key]},
@@ -733,6 +768,109 @@ def render_event_timeline_svg(
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
         + "".join(guides)
         + "".join(circles)
+        + "</svg>"
+    )
+
+
+def build_histogram(values: list[float], bins: int = 20) -> list[dict]:
+    if not values:
+        return []
+    lo = min(values)
+    hi = max(values)
+    if hi <= lo:
+        return [{"start": lo, "end": lo + 1.0, "count": len(values)}]
+    bins = max(1, bins)
+    width = (hi - lo) / bins
+    counts = [0 for _ in range(bins)]
+    for value in values:
+        idx = min(int((value - lo) / width), bins - 1)
+        counts[idx] += 1
+    return [
+        {"start": lo + (idx * width), "end": lo + ((idx + 1) * width), "count": count}
+        for idx, count in enumerate(counts)
+    ]
+
+
+def render_histogram_svg(
+    bins: list[dict], fill: str, width: int = 760, height: int = 180
+) -> str:
+    if not bins:
+        return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    max_count = max(float(item["count"]) for item in bins)
+    if max_count <= 0:
+        max_count = 1.0
+    step_x = (right - left) / max(len(bins), 1)
+    bar_width = max(2, step_x - 1)
+    rects = []
+    for idx, item in enumerate(bins):
+        count = float(item["count"])
+        bar_height = (count / max_count) * (bottom - top)
+        x = left + idx * step_x + max((step_x - bar_width) / 2, 0)
+        y = bottom - bar_height
+        rects.append(
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="2" fill="{fill}" opacity="0.82"></rect>'
+        )
+    tick_indexes = sorted({0, len(bins) // 2, len(bins) - 1})
+    x_labels = []
+    for idx in tick_indexes:
+        item = bins[idx]
+        x_labels.append(
+            {
+                "x": left + idx * step_x + step_x / 2,
+                "label": _format_axis_value(float(item["start"])),
+            }
+        )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + _render_axes(bounds, 0.0, max_count, x_labels)
+        + "".join(rects)
+        + "</svg>"
+    )
+
+
+def render_two_bar_svg(
+    left_label: str,
+    left_value: int,
+    right_label: str,
+    right_value: int,
+    width: int = 760,
+    height: int = 180,
+) -> str:
+    points = [
+        {"label": left_label, "count": float(max(left_value, 0))},
+        {"label": right_label, "count": float(max(right_value, 0))},
+    ]
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    max_value = max(point["count"] for point in points)
+    if max_value <= 0:
+        max_value = 1.0
+    step_x = (right - left) / 2
+    bar_width = max(18, step_x * 0.55)
+    fills = [_plot_color("accent"), _plot_color("weighted")]
+    rects = []
+    x_labels = []
+    for idx, point in enumerate(points):
+        x_center = left + (idx * step_x) + (step_x / 2)
+        bar_height = (point["count"] / max_value) * (bottom - top)
+        x = x_center - (bar_width / 2)
+        y = bottom - bar_height
+        rects.append(
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fills[idx]}" opacity="0.86"></rect>'
+        )
+        x_labels.append({"x": x_center, "label": point["label"]})
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + _render_axes(bounds, 0.0, max_value, x_labels)
+        + "".join(rects)
         + "</svg>"
     )
 
@@ -2088,6 +2226,11 @@ def fetch_site_birdnet_species(
     occupancy_points = []
     weighted_points = []
     detections = []
+    score_values: list[float] = []
+    volume_dbfs_values: list[float] = []
+    processed_times: list[datetime] = []
+    daytime_count = 0
+    nighttime_count = 0
     for (
         processed_at,
         top_score,
@@ -2098,10 +2241,14 @@ def fetch_site_birdnet_species(
         channel_index,
         volume,
     ) in rows:
+        if processed_at.tzinfo is None:
+            processed_at = processed_at.replace(tzinfo=timezone.utc)
+        processed_times.append(processed_at.astimezone(timezone.utc))
         processed_text = format_rfc3339_utc(processed_at)
         if processed_text is None:
             continue
         score_value = float(top_score)
+        score_values.append(score_value)
         occupancy_value = (
             float(top_likely_score) if top_likely_score is not None else score_value
         )
@@ -2111,9 +2258,14 @@ def fetch_site_birdnet_species(
         if volume is not None:
             volume_value = float(volume)
             volume_dbfs = 20.0 * math.log10(max(volume_value, 1e-6))
+            volume_dbfs_values.append(volume_dbfs)
             volume_dbfs_points.append(
                 {"processed_at": processed_text, "value": volume_dbfs}
             )
+        if is_daylight_at_site(site["latitude"], site["longitude"], processed_at):
+            daytime_count += 1
+        else:
+            nighttime_count += 1
         occupancy_points.append(
             {"processed_at": processed_text, "value": occupancy_value}
         )
@@ -2149,6 +2301,31 @@ def fetch_site_birdnet_species(
     site["species_detection_count"] = len(detections)
     site["species_latest_at"] = detections[-1]["processed_at"] if detections else None
     site["species_recent_detections"] = list(reversed(detections[-20:]))
+    wait_seconds: list[float] = []
+    for idx in range(1, len(processed_times)):
+        delta_sec = (processed_times[idx] - processed_times[idx - 1]).total_seconds()
+        if delta_sec >= 0:
+            wait_seconds.append(delta_sec)
+    wait_mean_sec = (sum(wait_seconds) / len(wait_seconds)) if wait_seconds else None
+    wait_var_sec = (
+        sum((value - wait_mean_sec) ** 2 for value in wait_seconds) / len(wait_seconds)
+        if wait_mean_sec is not None and wait_seconds
+        else None
+    )
+    wait_vmr = (
+        (wait_var_sec / wait_mean_sec)
+        if wait_var_sec is not None and wait_mean_sec and wait_mean_sec > 0
+        else None
+    )
+    diurnal_log_ratio = math.log((daytime_count + 0.5) / (nighttime_count + 0.5))
+    site["species_daytime_count_utc"] = daytime_count
+    site["species_nighttime_count_utc"] = nighttime_count
+    site["species_diurnal_log_ratio"] = diurnal_log_ratio
+    site["species_wait_mean_sec"] = wait_mean_sec
+    site["species_wait_var_mean_ratio"] = wait_vmr
+    site["species_wait_hist"] = build_histogram(wait_seconds, bins=20)
+    site["species_score_hist"] = build_histogram(score_values, bins=20)
+    site["species_volume_dbfs_hist"] = build_histogram(volume_dbfs_values, bins=20)
     return site
 
 
@@ -2178,6 +2355,24 @@ def render_birdnet_species_html(site: dict) -> str:
         if site["species_volume_dbfs_series"]
         else ""
     )
+    diurnal_chart = render_two_bar_svg(
+        "Day (UTC)",
+        int(site.get("species_daytime_count_utc") or 0),
+        "Night (UTC)",
+        int(site.get("species_nighttime_count_utc") or 0),
+    )
+    wait_hist_chart = render_histogram_svg(
+        site.get("species_wait_hist") or [], _plot_color("accent")
+    )
+    score_hist_chart = render_histogram_svg(
+        site.get("species_score_hist") or [], _plot_color("accent")
+    )
+    volume_hist_chart = render_histogram_svg(
+        site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
+    )
+    wait_mean = site.get("species_wait_mean_sec")
+    wait_vmr = site.get("species_wait_var_mean_ratio")
+    diurnal_log_ratio = site.get("species_diurnal_log_ratio")
     recent_cards = (
         "".join(f"""
         <article class="record-card">
@@ -2279,12 +2474,37 @@ def render_birdnet_species_html(site: dict) -> str:
         <div class="range-pills">{range_links}</div>
       </section>
       <section class="panel">
+        <div class="summary-grid">
+          <div class="metric"><div class="metric-label">Detections</div><div class="metric-value">{site['species_detection_count']}</div></div>
+          <div class="metric"><div class="metric-label">Day/Night Log-Ratio</div><div class="metric-value">{'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div></div>
+          <div class="metric"><div class="metric-label">Waiting-Time VMR</div><div class="metric-value">{'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div></div>
+        </div>
+      </section>
+      <section class="panel">
         <h2 class="section-title">Detection Score Timeline</h2>
         <div class="chart-wrap">{score_chart or '<div class="empty">No score timeline available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Volume (dBFS)</h2>
         <div class="chart-wrap">{volume_dbfs_chart or '<div class="empty">No volume series available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Daytime vs Nighttime Detections</h2>
+        <div class="dim">UTC split (06:00-17:59 vs 18:00-05:59) · log-ratio ln((day+0.5)/(night+0.5)) = {'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div>
+        <div class="chart-wrap">{diurnal_chart}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Waiting-Time Distribution</h2>
+        <div class="dim">Inter-detection delay in seconds · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · variance-to-mean ratio {'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div>
+        <div class="chart-wrap">{wait_hist_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Score Distribution</h2>
+        <div class="chart-wrap">{score_hist_chart or '<div class="empty">No score distribution available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Volume Distribution (dBFS)</h2>
+        <div class="chart-wrap">{volume_hist_chart or '<div class="empty">No volume distribution available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Recent Detections</h2>
