@@ -306,10 +306,10 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_variable(value: str | None) -> str:
-    candidate = (value or "detection").strip().lower()
+    candidate = (value or "score").strip().lower()
     if candidate == "frequency":
         candidate = "detection"
-    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "detection"
+    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "score"
 
 
 def normalize_birdnet_ranking_statistic(value: str | None) -> str:
@@ -486,20 +486,47 @@ def classify_light_phase_at_site(
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     ts_utc = ts_utc.astimezone(timezone.utc)
     day_of_year = ts_utc.timetuple().tm_yday
-    _, eqtime = _solar_declination_and_eqtime(day_of_year)
+    decl, eqtime = _solar_declination_and_eqtime(day_of_year)
+    lat_rad = math.radians(latitude)
+    zenith_sunrise = math.radians(90.833)
+    zenith_civil = math.radians(96.0)
+    cos_ha_sunrise = (math.cos(zenith_sunrise) / (math.cos(lat_rad) * math.cos(decl))) - (
+        math.tan(lat_rad) * math.tan(decl)
+    )
+    cos_ha_civil = (math.cos(zenith_civil) / (math.cos(lat_rad) * math.cos(decl))) - (
+        math.tan(lat_rad) * math.tan(decl)
+    )
     minutes_utc = (ts_utc.hour * 60) + ts_utc.minute + (ts_utc.second / 60.0)
-    # Local solar clock minutes in [0, 1440), where 00:00 is solar midnight.
-    local_solar_minutes = (minutes_utc + eqtime + (4.0 * longitude)) % 1440.0
-    local_solar_hour = local_solar_minutes / 60.0
-    # Four equal 6-hour bins, centered on midnight for "night".
-    # Night: [21,24) U [0,3), Dawn: [3,9), Day: [9,15), Twilight: [15,21)
-    if local_solar_hour >= 21.0 or local_solar_hour < 3.0:
-        return "night"
-    if local_solar_hour < 9.0:
-        return "dawn"
-    if local_solar_hour < 15.0:
+    solar_noon = 720.0 - (4.0 * longitude) - eqtime
+    local_solar_minutes = minutes_utc + eqtime + (4.0 * longitude)
+    solar_hour_angle_deg = (local_solar_minutes / 4.0) - 180.0
+
+    if cos_ha_sunrise <= -1.0:
         return "day"
-    return "twilight"
+    if cos_ha_sunrise >= 1.0:
+        if cos_ha_civil >= 1.0:
+            return "night"
+        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
+
+    ha_sunrise_deg = math.degrees(math.acos(cos_ha_sunrise))
+    sunrise = solar_noon - (4.0 * ha_sunrise_deg)
+    sunset = solar_noon + (4.0 * ha_sunrise_deg)
+    if sunrise <= minutes_utc <= sunset:
+        return "day"
+
+    if cos_ha_civil >= 1.0:
+        return "night"
+    if cos_ha_civil <= -1.0:
+        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
+
+    ha_civil_deg = math.degrees(math.acos(cos_ha_civil))
+    civil_dawn = solar_noon - (4.0 * ha_civil_deg)
+    civil_dusk = solar_noon + (4.0 * ha_civil_deg)
+    if civil_dawn <= minutes_utc < sunrise:
+        return "dawn"
+    if sunset < minutes_utc <= civil_dusk:
+        return "twilight"
+    return "night"
 
 
 def detection_event_timestamp(
@@ -933,6 +960,74 @@ def render_category_bar_svg(
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
         + _render_axes(bounds, 0.0, max_value, x_labels)
         + "".join(rects)
+        + "</svg>"
+    )
+
+
+def render_phase_rate_svg(
+    phase_counts: dict[str, int],
+    phase_hours: dict[str, float],
+    width: int = 760,
+    height: int = 180,
+) -> str:
+    phases = [
+        ("dawn", "Dawn", _plot_color("occupancy")),
+        ("day", "Day", _plot_color("accent")),
+        ("twilight", "Twilight", _plot_color("weighted")),
+        ("night", "Night", _plot_color("line")),
+    ]
+    entries = []
+    for key, label, color in phases:
+        hours = max(float(phase_hours.get(key) or 0.0), 0.0)
+        count = max(int(phase_counts.get(key) or 0), 0)
+        rate = (count / hours) if hours > 0 else 0.0
+        entries.append({"key": key, "label": label, "color": color, "hours": hours, "rate": rate})
+    total_hours = sum(item["hours"] for item in entries)
+    if total_hours <= 0:
+        return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    span_x = max(right - left, 1)
+    max_rate = max(item["rate"] for item in entries)
+    if max_rate <= 0:
+        max_rate = 1.0
+    parts = [_render_axes(bounds, 0.0, max_rate, [])]
+    cursor_x = left
+    x_labels = []
+    for item in entries:
+        frac = item["hours"] / total_hours
+        bar_w = max(span_x * frac, 2.0)
+        bar_h = ((item["rate"] / max_rate) * (bottom - top)) if max_rate > 0 else 0.0
+        x = cursor_x
+        y = bottom - bar_h
+        parts.append(
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" height="{bar_h:.2f}" rx="3" fill="{item["color"]}" opacity="0.86"></rect>'
+        )
+        x_labels.append(
+            {
+                "x": x + (bar_w / 2.0),
+                "label": f'{item["label"]} ({item["hours"]:.1f}h)',
+            }
+        )
+        cursor_x += bar_w
+    # phase separators
+    cursor_x = left
+    for item in entries[:-1]:
+        cursor_x += span_x * (item["hours"] / total_hours)
+        parts.append(
+            f'<line x1="{cursor_x:.2f}" y1="{top}" x2="{cursor_x:.2f}" y2="{bottom}" stroke="rgba(23,32,29,0.20)" stroke-width="1" stroke-dasharray="3 4"></line>'
+        )
+    # custom x labels
+    for item in x_labels:
+        parts.append(
+            f'<text x="{item["x"]:.2f}" y="{bottom + 14}" text-anchor="middle" font-size="11" fill="rgba(23,32,29,0.62)">{escape_html(item["label"])}</text>'
+        )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + "".join(parts)
         + "</svg>"
     )
 
@@ -2385,20 +2480,43 @@ def fetch_site_birdnet_species(
         if wait_mean_sec is not None and wait_seconds
         else None
     )
-    wait_vmr = (
-        (wait_var_sec / wait_mean_sec)
-        if wait_var_sec is not None and wait_mean_sec and wait_mean_sec > 0
+    wait_sd_sec = math.sqrt(wait_var_sec) if wait_var_sec is not None else None
+    wait_burstiness = (
+        ((wait_sd_sec - wait_mean_sec) / (wait_sd_sec + wait_mean_sec))
+        if wait_sd_sec is not None
+        and wait_mean_sec is not None
+        and (wait_sd_sec + wait_mean_sec) > 0
         else None
     )
     total_phase_count = day_count + dawn_count + twilight_count + night_count
     night_fraction = (night_count / total_phase_count) if total_phase_count > 0 else None
+    phase_hours = {"dawn": 0.0, "day": 0.0, "twilight": 0.0, "night": 0.0}
+    if processed_times:
+        window_end = processed_times[-1]
+        if range_seconds is not None:
+            window_start = window_end - timedelta(seconds=range_seconds)
+        else:
+            window_start = processed_times[0]
+        total_minutes = max((window_end - window_start).total_seconds() / 60.0, 1.0)
+        step_minutes = max(1.0, math.ceil(total_minutes / 10000.0))
+        step = timedelta(minutes=step_minutes)
+        current = window_start
+        while current < window_end:
+            nxt = min(current + step, window_end)
+            phase = classify_light_phase_at_site(site["latitude"], site["longitude"], current)
+            phase_hours[phase] = phase_hours.get(phase, 0.0) + (
+                (nxt - current).total_seconds() / 3600.0
+            )
+            current = nxt
     site["species_day_count"] = day_count
     site["species_dawn_count"] = dawn_count
     site["species_twilight_count"] = twilight_count
     site["species_night_count"] = night_count
+    site["species_phase_hours"] = phase_hours
     site["species_night_fraction"] = night_fraction
     site["species_wait_mean_sec"] = wait_mean_sec
-    site["species_wait_var_mean_ratio"] = wait_vmr
+    site["species_wait_sd_sec"] = wait_sd_sec
+    site["species_wait_burstiness"] = wait_burstiness
     site["species_wait_hist"] = build_histogram(
         wait_seconds, bins=20, upper_clip_quantile=0.99
     )
@@ -2436,20 +2554,15 @@ def render_birdnet_species_html(site: dict) -> str:
         if site["species_volume_dbfs_series"]
         else ""
     )
-    diurnal_chart = render_category_bar_svg(
-        ["Day", "Dawn", "Twilight", "Night"],
-        [
-            int(site.get("species_day_count") or 0),
-            int(site.get("species_dawn_count") or 0),
-            int(site.get("species_twilight_count") or 0),
-            int(site.get("species_night_count") or 0),
-        ],
-        [
-            _plot_color("accent"),
-            _plot_color("occupancy"),
-            _plot_color("weighted"),
-            _plot_color("line"),
-        ],
+    phase_counts = {
+        "dawn": int(site.get("species_dawn_count") or 0),
+        "day": int(site.get("species_day_count") or 0),
+        "twilight": int(site.get("species_twilight_count") or 0),
+        "night": int(site.get("species_night_count") or 0),
+    }
+    diurnal_chart = render_phase_rate_svg(
+        phase_counts,
+        site.get("species_phase_hours") or {},
     )
     wait_hist_chart = render_histogram_svg(
         site.get("species_wait_hist") or [], _plot_color("accent")
@@ -2464,7 +2577,7 @@ def render_birdnet_species_html(site: dict) -> str:
         site.get("species_duration_hist") or [], _plot_color("occupancy")
     )
     wait_mean = site.get("species_wait_mean_sec")
-    wait_vmr = site.get("species_wait_var_mean_ratio")
+    wait_burstiness = site.get("species_wait_burstiness")
     night_fraction = site.get("species_night_fraction")
     recent_cards = (
         "".join(f"""
@@ -2570,7 +2683,7 @@ def render_birdnet_species_html(site: dict) -> str:
         <div class="summary-grid">
           <div class="metric"><div class="metric-label">Detections</div><div class="metric-value">{site['species_detection_count']}</div></div>
           <div class="metric"><div class="metric-label">Night Fraction</div><div class="metric-value">{'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div></div>
-          <div class="metric"><div class="metric-label">Waiting-Time VMR</div><div class="metric-value">{'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div></div>
+          <div class="metric"><div class="metric-label">Gap Burstiness B</div><div class="metric-value">{'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div></div>
         </div>
       </section>
       <section class="panel">
@@ -2583,12 +2696,12 @@ def render_birdnet_species_html(site: dict) -> str:
       </section>
       <section class="panel">
         <h2 class="section-title">Day/Dawn/Twilight/Night Detections</h2>
-        <div class="dim">Four equal 6-hour local-solar bins (night centered on solar midnight): Night 21-03, Dawn 03-09, Day 09-15, Twilight 15-21. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
+        <div class="dim">Astronomical solar phases from site latitude/longitude. Bar width = phase duration (hours in selected window). Bar height = detections per hour. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
-        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · x-axis clipped at p99 to reduce right-tail compression · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · variance-to-mean ratio {'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div>
+        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · x-axis clipped at p99 to reduce right-tail compression · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · burstiness B = (sd - mean) / (sd + mean) = {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
         <div class="chart-wrap">{wait_hist_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
       </section>
       <section class="panel">
