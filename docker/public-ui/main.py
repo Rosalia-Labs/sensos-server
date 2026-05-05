@@ -385,7 +385,11 @@ def _format_axis_value(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
-def _format_sensor_label(sensor_type: str | None, reading_key: str | None) -> str:
+def _format_sensor_label(
+    sensor_type: str | None,
+    reading_key: str | None,
+    device_address: str | None = None,
+) -> str:
     sensor = (sensor_type or "").strip()
     key = (reading_key or "").strip().replace("_", " ")
     key = " ".join(part for part in key.split() if part)
@@ -401,7 +405,11 @@ def _format_sensor_label(sensor_type: str | None, reading_key: str | None) -> st
         key = "Pressure hPa"
     else:
         key = key.title()
-    return f"{sensor} · {key}" if sensor else key
+    base = f"{sensor} · {key}" if sensor else key
+    addr = (device_address or "").strip()
+    if addr:
+        return f"{base} ({addr})"
+    return base
 
 
 def _format_time_tick(value: str) -> str:
@@ -685,17 +693,22 @@ def render_event_timeline_svg(
     min_ts = min(timestamps)
     max_ts = max(timestamps)
     total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
+    min_value = min(values)
+    max_value = max(values)
+    if max_value == min_value:
+        max_value = min_value + 1.0
+    span = max(max_value - min_value, 1e-9)
     circles = []
     x_labels = [
         {"x": left, "utc": points[0][time_key]},
         {"x": (left + right) / 2, "utc": points[len(points) // 2][time_key]},
         {"x": right, "utc": points[-1][time_key]},
     ]
-    guides = [_render_axes(bounds, 0.0, 1.0, x_labels)]
+    guides = [_render_axes(bounds, min_value, max_value, x_labels)]
     marker_radius = 2.2
     for ts, value, point in zip(timestamps, values, points):
         x = left + ((ts - min_ts).total_seconds() / total_seconds) * (right - left)
-        y = bottom - value * (bottom - top)
+        y = bottom - ((value - min_value) / span) * (bottom - top)
         circles.append(
             f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{marker_radius:.2f}" fill="{stroke}" opacity="0.9"><title>{escape_html(point[time_key])} · {value:.2f}</title></circle>'
         )
@@ -1204,6 +1217,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     """
                     SELECT recorded_at,
                            sensor_type,
+                           device_address,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -1215,6 +1229,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                     else """
                     SELECT recorded_at,
                            sensor_type,
+                           device_address,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -1233,10 +1248,12 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
             sensor_focus_rows = cur.fetchall()
 
     sensor_series_map: dict[str, list[dict]] = {}
-    for recorded_at, sensor_type, reading_key, reading_value in reversed(
+    for recorded_at, sensor_type, device_address, reading_key, reading_value in reversed(
         sensor_focus_rows
     ):
-        label = _format_sensor_label(sensor_type, reading_key)
+        if "GPS" in (sensor_type or "").upper():
+            continue
+        label = _format_sensor_label(sensor_type, reading_key, device_address)
         sensor_series_map.setdefault(label, []).append(
             {
                 "recorded_at": format_rfc3339_utc(recorded_at),
@@ -1702,6 +1719,7 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
                     """
                     SELECT recorded_at,
                            sensor_type,
+                           device_address,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -1716,6 +1734,7 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
                     """
                     SELECT recorded_at,
                            sensor_type,
+                           device_address,
                            reading_key,
                            reading_value
                     FROM sensos.public_site_i2c_recent
@@ -1729,8 +1748,10 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
             sensor_rows = cur.fetchall()
 
     sensor_series_map: dict[str, list[dict]] = {}
-    for recorded_at, sensor_type, reading_key, reading_value in reversed(sensor_rows):
-        series_key = f"{sensor_type} · {reading_key}"
+    for recorded_at, sensor_type, device_address, reading_key, reading_value in reversed(sensor_rows):
+        if "GPS" in (sensor_type or "").upper():
+            continue
+        series_key = _format_sensor_label(sensor_type, reading_key, device_address)
         sensor_series_map.setdefault(series_key, []).append(
             {
                 "recorded_at": format_rfc3339_utc(recorded_at),
@@ -1750,7 +1771,7 @@ def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
         ),
         key=lambda item: len(item["points"]),
         reverse=True,
-    )[:6]
+    )
 
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
