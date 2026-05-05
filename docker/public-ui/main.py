@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import html
+import math
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -45,7 +46,7 @@ DETAIL_EVIDENCE_RANGES = {
 BIRDNET_RANKING_RANGES = DETAIL_EVIDENCE_RANGES
 
 BIRDNET_RANKING_VARIABLES = {
-    "frequency": {"label": "Frequency"},
+    "detection": {"label": "Detection"},
     "duration": {"label": "Duration"},
     "score": {"label": "Score"},
     "occup": {"label": "Occupancy"},
@@ -53,6 +54,7 @@ BIRDNET_RANKING_VARIABLES = {
 }
 
 BIRDNET_RANKING_STATISTICS = {
+    "sum": {"label": "Sum"},
     "mean": {"label": "Mean"},
     "min": {"label": "Min"},
     "max": {"label": "Max"},
@@ -304,13 +306,15 @@ def normalize_birdnet_ranking_range(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_variable(value: str | None) -> str:
-    candidate = (value or "frequency").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "frequency"
+    candidate = (value or "detection").strip().lower()
+    if candidate == "frequency":
+        candidate = "detection"
+    return candidate if candidate in BIRDNET_RANKING_VARIABLES else "detection"
 
 
 def normalize_birdnet_ranking_statistic(value: str | None) -> str:
-    candidate = (value or "mean").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_STATISTICS else "mean"
+    candidate = (value or "sum").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_STATISTICS else "sum"
 
 
 def normalize_birdnet_ranking_weight(value: str | None) -> str:
@@ -543,32 +547,7 @@ def render_line_chart_svg(
             {"x": coords[index][0], "utc": points[index][time_key]}
             for index in tick_indexes
         ]
-    segment_bounds: list[tuple[int, int]] = []
-    if timestamps and len(timestamps) >= 2:
-        deltas = [
-            max((timestamps[idx] - timestamps[idx - 1]).total_seconds(), 0.0)
-            for idx in range(1, len(timestamps))
-        ]
-        positive_deltas = sorted(delta for delta in deltas if delta > 0)
-        if positive_deltas:
-            mid = len(positive_deltas) // 2
-            if len(positive_deltas) % 2 == 0:
-                median_delta = (positive_deltas[mid - 1] + positive_deltas[mid]) / 2.0
-            else:
-                median_delta = positive_deltas[mid]
-            # Split on unusually large gaps so discontinuous data does not appear continuous.
-            gap_break_threshold = median_delta * 1.1
-            start_idx = 0
-            for idx in range(1, len(timestamps)):
-                gap_sec = (timestamps[idx] - timestamps[idx - 1]).total_seconds()
-                if gap_sec > gap_break_threshold:
-                    if idx - start_idx >= 2:
-                        segment_bounds.append((start_idx, idx))
-                    start_idx = idx
-            if len(timestamps) - start_idx >= 2:
-                segment_bounds.append((start_idx, len(timestamps)))
-    if not segment_bounds:
-        segment_bounds = [(0, len(coords))]
+    segment_bounds: list[tuple[int, int]] = [(0, len(coords))]
 
     line_paths = []
     area_paths = []
@@ -1811,7 +1790,7 @@ def fetch_site_birdnet_rankings(
             )
 
             base_variable_expr_map = {
-                "frequency": "1::double precision",
+                "detection": "1::double precision",
                 "duration": "greatest(end_sec - start_sec, 0)::double precision",
                 "score": "top_score::double precision",
                 "occup": "coalesce(top_likely_score, top_score)::double precision",
@@ -1828,6 +1807,7 @@ def fetch_site_birdnet_rankings(
                 )
 
             statistic_expr_map = {
+                "sum": f"sum({variable_expr})",
                 "mean": f"avg({variable_expr})",
                 "min": f"min({variable_expr})",
                 "max": f"max({variable_expr})",
@@ -2050,6 +2030,7 @@ def fetch_site_birdnet_species(
                 )
             rows = cur.fetchall()
     score_points = []
+    volume_dbfs_points = []
     occupancy_points = []
     weighted_points = []
     detections = []
@@ -2073,6 +2054,12 @@ def fetch_site_birdnet_species(
         duration_sec = max(float(end_sec) - float(start_sec), 0.0)
         weighted_value = duration_sec * score_value * occupancy_value
         score_points.append({"processed_at": processed_text, "value": score_value})
+        if volume is not None:
+            volume_value = float(volume)
+            volume_dbfs = 20.0 * math.log10(max(volume_value, 1e-6))
+            volume_dbfs_points.append(
+                {"processed_at": processed_text, "value": volume_dbfs}
+            )
         occupancy_points.append(
             {"processed_at": processed_text, "value": occupancy_value}
         )
@@ -2102,6 +2089,7 @@ def fetch_site_birdnet_species(
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["species_score_series"] = downsample_points(score_points, 180)
+    site["species_volume_dbfs_series"] = downsample_points(volume_dbfs_points, 180)
     site["species_occupancy_series"] = downsample_points(occupancy_points, 180)
     site["species_weighted_series"] = downsample_points(weighted_points, 180)
     site["species_detection_count"] = len(detections)
@@ -2129,18 +2117,11 @@ def render_birdnet_species_html(site: dict) -> str:
         if site["species_score_series"]
         else ""
     )
-    occupancy_chart = (
+    volume_dbfs_chart = (
         render_line_chart_svg(
-            site["species_occupancy_series"], "value", _plot_color("occupancy")
+            site["species_volume_dbfs_series"], "value", _plot_color("weighted")
         )
-        if site["species_occupancy_series"]
-        else ""
-    )
-    weighted_chart = (
-        render_bar_chart_svg(
-            site["species_weighted_series"], "activity", _plot_color("weighted")
-        )
-        if site["species_weighted_series"]
+        if site["species_volume_dbfs_series"]
         else ""
     )
     recent_cards = (
@@ -2248,12 +2229,8 @@ def render_birdnet_species_html(site: dict) -> str:
         <div class="chart-wrap">{score_chart or '<div class="empty">No score timeline available.</div>'}</div>
       </section>
       <section class="panel">
-        <h2 class="section-title">Occupancy Score</h2>
-        <div class="chart-wrap">{occupancy_chart or '<div class="empty">No occupancy series available.</div>'}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Duration-Weighted Activity</h2>
-        <div class="chart-wrap">{weighted_chart or '<div class="empty">No activity series available.</div>'}</div>
+        <h2 class="section-title">Volume (dBFS)</h2>
+        <div class="chart-wrap">{volume_dbfs_chart or '<div class="empty">No volume series available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Recent Detections</h2>
