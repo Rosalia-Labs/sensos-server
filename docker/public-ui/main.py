@@ -921,7 +921,12 @@ def build_rank_accumulation_curve(values: list[float], max_points: int = 220) ->
         points.append({"x": idx / n, "y": running / total})
     if len(points) <= max_points:
         return points
-    return downsample_points(points, max_points)
+    if max_points <= 2:
+        return [points[0], points[-1]]
+    step = (len(points) - 1) / float(max_points - 1)
+    sampled = [points[min(round(i * step), len(points) - 1)] for i in range(max_points - 1)]
+    sampled.append(points[-1])
+    return sampled
 
 
 def render_xy_line_svg(
@@ -2709,6 +2714,14 @@ def render_birdnet_species_html(site: dict) -> str:
     }}
     .shell {{ max-width: 1320px; margin: 0 auto; padding: 0.7rem 1rem 1rem; }}
     .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:0.3rem; }}
+    .species-title {{
+      margin: 0;
+      font-size: clamp(1.25rem, 2.1vw, 1.9rem);
+      letter-spacing: -0.03em;
+      text-align: center;
+      flex: 1;
+      line-height: 1.05;
+    }}
     .nav-row {{
       display: inline-flex;
       align-items: center;
@@ -2753,6 +2766,7 @@ def render_birdnet_species_html(site: dict) -> str:
     a {{ color: #0c6d62; }}
     @media (max-width: 980px) {{
       .masthead {{ flex-direction: column; }}
+      .species-title {{ text-align: left; width: 100%; }}
       .summary-grid, .distribution-grid {{ grid-template-columns: 1fr; }}
     }}
     {_theme_override_css()}
@@ -2767,6 +2781,7 @@ def render_birdnet_species_html(site: dict) -> str:
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
+      <h1 class="species-title">{escape_html(site['species_label'])}</h1>
       <div class="meta">
         <a href="/">Back to all field sites</a>
       </div>
@@ -2797,15 +2812,15 @@ def render_birdnet_species_html(site: dict) -> str:
       </section>
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
-        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · burstiness B = (sd - mean) / (sd + mean) = {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
-        <div class="dim">Panels show rank-accumulation curves: sort detections by largest value first, x = ranked-detection fraction, y = cumulative share of total value.</div>
+        <div class="dim">Gaps between retained detections · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)}s · burstiness B {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
+        <div class="dim">x: top-ranked fraction · y: cumulative value share</div>
         <div class="distribution-grid">
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time Rank-Accumulation</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time</div>
             <div class="chart-wrap square">{wait_rank_accum_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
           </div>
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length Rank-Accumulation</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length</div>
             <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
           </div>
         </div>
