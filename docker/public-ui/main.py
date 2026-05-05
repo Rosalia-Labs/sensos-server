@@ -798,6 +798,90 @@ def render_horizontal_lollipop_svg(
     return "".join(parts)
 
 
+def render_species_score_timeline_svg(
+    points: list[dict],
+    width: int = 1120,
+    height: int = 260,
+) -> str:
+    if not points:
+        return ""
+    timestamps = [
+        datetime.fromisoformat(str(point["processed_at"]).replace("Z", "+00:00"))
+        for point in points
+        if point.get("processed_at") and point.get("score") is not None
+    ]
+    values = [
+        float(point["score"])
+        for point in points
+        if point.get("processed_at") and point.get("score") is not None
+    ]
+    if not timestamps or not values:
+        return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    min_ts = min(timestamps)
+    max_ts = max(timestamps)
+    total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
+    min_value = min(values)
+    max_value = max(values)
+    if max_value == min_value:
+        max_value = min_value + 1.0
+    span = max(max_value - min_value, 1e-9)
+    species = sorted({str(point.get("label") or "Unknown") for point in points})
+    palette = [
+        "#0c6d62",
+        "#b45309",
+        "#2563eb",
+        "#dc2626",
+        "#7c3aed",
+        "#0891b2",
+        "#65a30d",
+        "#be185d",
+    ]
+    color_map = {label: palette[idx % len(palette)] for idx, label in enumerate(species)}
+    tick_points = [points[0], points[len(points) // 2], points[-1]]
+    x_labels = [
+        {"x": left + ((datetime.fromisoformat(str(item["processed_at"]).replace("Z", "+00:00")) - min_ts).total_seconds() / total_seconds) * (right - left), "utc": item["processed_at"]}
+        for item in tick_points
+        if item.get("processed_at")
+    ]
+    guides = [_render_axes(bounds, min_value, max_value, x_labels)]
+    markers = []
+    for point in points:
+        processed_at = point.get("processed_at")
+        score = point.get("score")
+        if processed_at is None or score is None:
+            continue
+        ts = datetime.fromisoformat(str(processed_at).replace("Z", "+00:00"))
+        x = left + ((ts - min_ts).total_seconds() / total_seconds) * (right - left)
+        y = bottom - ((float(score) - min_value) / span) * (bottom - top)
+        label = str(point.get("label") or "Unknown")
+        color = color_map.get(label, "#0c6d62")
+        markers.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3.1" fill="{color}" opacity="0.86"><title>{escape_html(label)} · {float(score):.3f} · {escape_html(str(processed_at))}</title></circle>'
+        )
+    legend = []
+    legend_x = left
+    legend_y = top - 12
+    for label in species[:8]:
+        color = color_map[label]
+        legend.append(
+            f'<circle cx="{legend_x:.2f}" cy="{legend_y:.2f}" r="4.2" fill="{color}" opacity="0.92"></circle>'
+            f'<text x="{legend_x + 8:.2f}" y="{legend_y + 3:.2f}" font-size="11" fill="rgba(23,32,29,0.78)">{escape_html(label)}</text>'
+        )
+        legend_x += 132
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + "".join(guides)
+        + "".join(markers)
+        + "".join(legend)
+        + "</svg>"
+    )
+
+
 def fetch_sites() -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1795,6 +1879,7 @@ def fetch_site_birdnet_rankings(
         normalized_weight = "no"
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
+    anchored_cutoff = None
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1922,6 +2007,34 @@ def fetch_site_birdnet_rankings(
                         (site["wg_ip"], anchored_cutoff),
                     )
             ranking_rows = cur.fetchall()
+            top_labels = [str(row[0]) for row in ranking_rows[:8] if row[0]]
+            if top_labels:
+                if anchored_cutoff is None:
+                    cur.execute(
+                        """
+                        SELECT processed_at, top_label, top_score
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                          AND top_label = ANY(%s)
+                        ORDER BY processed_at ASC, top_label ASC;
+                        """,
+                        (site["wg_ip"], top_labels),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT processed_at, top_label, top_score
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                          AND top_label = ANY(%s)
+                          AND processed_at >= %s
+                        ORDER BY processed_at ASC, top_label ASC;
+                        """,
+                        (site["wg_ip"], top_labels, anchored_cutoff),
+                    )
+                top_species_points_rows = cur.fetchall()
+            else:
+                top_species_points_rows = []
 
     site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
@@ -1946,6 +2059,15 @@ def fetch_site_birdnet_rankings(
             "latest_processed_at": format_rfc3339_utc(row[10]),
         }
         for row in ranking_rows
+    ]
+    site["top_species_score_points"] = [
+        {
+            "processed_at": format_rfc3339_utc(row[0]),
+            "label": str(row[1]),
+            "score": float(row[2]),
+        }
+        for row in top_species_points_rows
+        if row[0] is not None and row[2] is not None
     ]
     return site
 
@@ -2790,6 +2912,11 @@ def render_birdnet_rankings_html(site: dict) -> str:
         if plotted_species_count
         else '<div class="empty">No values are available for the selected metric in this time window.</div>'
     )
+    top_species_timeline_markup = (
+        f'<div class="plot-shell">{render_species_score_timeline_svg(site.get("top_species_score_points") or [])}</div>'
+        if site.get("top_species_score_points")
+        else '<div class="empty">No species score timeline points are available for this window.</div>'
+    )
 
     ranking_cards = (
         "".join(f"""
@@ -3005,6 +3132,12 @@ def render_birdnet_rankings_html(site: dict) -> str:
           </form>
         </div>
         {plot_markup}
+      </section>
+      <section class="panel rankings-panel">
+        <div class="section-bar">
+          <h2 class="section-title">Top Species Score Timeline</h2>
+        </div>
+        {top_species_timeline_markup}
       </section>
       <section class="panel">
         <h2 class="section-title">Ranked Species</h2>
