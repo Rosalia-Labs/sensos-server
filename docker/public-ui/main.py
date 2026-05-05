@@ -1134,6 +1134,14 @@ def render_phase_rate_svg(
     total_hours = sum(item["hours"] for item in entries)
     if total_hours <= 0:
         return ""
+    # Keep zero-hour segments visible so phase ordering/axis stays stable.
+    min_phase_hours = max(total_hours * 0.01, 0.02)
+    effective_hours = [
+        (item["hours"] if item["hours"] > 0 else min_phase_hours) for item in entries
+    ]
+    total_effective_hours = sum(effective_hours)
+    if total_effective_hours <= 0:
+        return ""
     bounds = _chart_bounds(width, height)
     left = bounds["left"]
     right = bounds["right"]
@@ -1146,10 +1154,12 @@ def render_phase_rate_svg(
     parts = [_render_axes(bounds, 0.0, max_rate, [])]
     cursor_x = left
     x_labels = []
-    for item in entries:
-        frac = item["hours"] / total_hours
+    for idx, item in enumerate(entries):
+        frac = effective_hours[idx] / total_effective_hours
         bar_w = max(span_x * frac, 2.0)
         bar_h = ((item["rate"] / max_rate) * (bottom - top)) if max_rate > 0 else 0.0
+        if item["rate"] <= 0:
+            bar_h = max(bar_h, 1.0)
         x = cursor_x
         y = bottom - bar_h
         parts.append(
@@ -1164,8 +1174,8 @@ def render_phase_rate_svg(
         cursor_x += bar_w
     # phase separators
     cursor_x = left
-    for item in entries[:-1]:
-        cursor_x += span_x * (item["hours"] / total_hours)
+    for idx, item in enumerate(entries[:-1]):
+        cursor_x += span_x * (effective_hours[idx] / total_effective_hours)
         parts.append(
             f'<line x1="{cursor_x:.2f}" y1="{top}" x2="{cursor_x:.2f}" y2="{bottom}" stroke="rgba(23,32,29,0.20)" stroke-width="1" stroke-dasharray="3 4"></line>'
         )
@@ -2715,21 +2725,6 @@ def render_birdnet_species_html(site: dict) -> str:
         phase_counts,
         site.get("species_phase_hours") or {},
     )
-    wait_curve = site.get("species_wait_rank_accum") or []
-    wait_rank_accum_chart = render_xy_line_svg(
-        wait_curve,
-        _plot_color("accent"),
-        stepped=True,
-        marker_xs=[0.01, 0.05, 0.10],
-    )
-    wait_rank_accum_inset = render_xy_line_svg(
-        crop_curve_to_xmax(wait_curve, 0.10),
-        _plot_color("accent"),
-        width=420,
-        height=220,
-        stepped=True,
-        marker_xs=[0.01, 0.05, 0.10],
-    )
     score_hist_chart = render_histogram_svg(
         site.get("species_score_hist") or [], _plot_color("accent")
     )
@@ -2751,9 +2746,6 @@ def render_birdnet_species_html(site: dict) -> str:
         stepped=True,
         marker_xs=[0.01, 0.05, 0.10],
     )
-    wait_top1 = rank_share_at(wait_curve, 0.01)
-    wait_top5 = rank_share_at(wait_curve, 0.05)
-    wait_top10 = rank_share_at(wait_curve, 0.10)
     dur_top1 = rank_share_at(duration_curve, 0.01)
     dur_top5 = rank_share_at(duration_curve, 0.05)
     dur_top10 = rank_share_at(duration_curve, 0.10)
@@ -2799,7 +2791,7 @@ def render_birdnet_species_html(site: dict) -> str:
     .masthead {{ display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:0.3rem; }}
     .species-title {{
       margin: 0;
-      font-size: clamp(1.25rem, 2.1vw, 1.9rem);
+      font-size: clamp(1.1rem, 1.8vw, 1.6rem);
       letter-spacing: -0.03em;
       text-align: center;
       flex: 1;
@@ -2897,25 +2889,10 @@ def render_birdnet_species_html(site: dict) -> str:
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
-        <h2 class="section-title">Waiting-Time Distribution</h2>
-        <div class="dim">Gaps between retained detections · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)}s · burstiness B {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
-        <div class="dim">Top-share markers: 1%, 5%, 10%</div>
-        <div class="distribution-grid">
-          <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time · top1 {wait_top1:.2f} · top5 {wait_top5:.2f} · top10 {wait_top10:.2f}</div>
-            <div class="chart-wrap square">{wait_rank_accum_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
-            <div class="inset-grid">
-              <div class="chart-wrap inset">{wait_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
-            </div>
-          </div>
-          <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length · top1 {dur_top1:.2f} · top5 {dur_top5:.2f} · top10 {dur_top10:.2f}</div>
-            <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
-            <div class="inset-grid">
-              <div class="chart-wrap inset">{duration_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
-            </div>
-          </div>
-        </div>
+        <h2 class="section-title">Clip-Length Distribution</h2>
+        <div class="dim">Rank-accumulation · top1 {dur_top1:.2f} · top5 {dur_top5:.2f} · top10 {dur_top10:.2f}</div>
+        <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
+        <div class="chart-wrap inset" style="margin-top:0.45rem;">{duration_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Score Distribution</h2>
