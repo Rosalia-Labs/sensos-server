@@ -482,6 +482,17 @@ def is_daylight_at_site(latitude: float, longitude: float, ts_utc: datetime) -> 
 def classify_light_phase_at_site(
     latitude: float, longitude: float, ts_utc: datetime
 ) -> str:
+    def normalize_minutes(value: float) -> float:
+        return value % 1440.0
+
+    def in_circular_window(value: float, start: float, end: float) -> bool:
+        value_n = normalize_minutes(value)
+        start_n = normalize_minutes(start)
+        end_n = normalize_minutes(end)
+        if start_n <= end_n:
+            return start_n <= value_n <= end_n
+        return value_n >= start_n or value_n <= end_n
+
     if ts_utc.tzinfo is None:
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     ts_utc = ts_utc.astimezone(timezone.utc)
@@ -508,11 +519,11 @@ def classify_light_phase_at_site(
     twilight_start = sunset - 60.0
     twilight_end = sunset + 60.0
 
-    if dawn_start <= minutes_utc <= dawn_end:
+    if in_circular_window(minutes_utc, dawn_start, dawn_end):
         return "dawn"
-    if twilight_start <= minutes_utc <= twilight_end:
+    if in_circular_window(minutes_utc, twilight_start, twilight_end):
         return "twilight"
-    if dawn_end < minutes_utc < twilight_start:
+    if in_circular_window(minutes_utc, dawn_end, twilight_start):
         return "day"
     return "night"
 
@@ -889,6 +900,25 @@ def build_empirical_curve(
             prob = j / n
         points.append({"x": value, "y": prob})
         idx = j
+    if len(points) <= max_points:
+        return points
+    return downsample_points(points, max_points)
+
+
+def build_rank_accumulation_curve(values: list[float], max_points: int = 220) -> list[dict]:
+    positives = [max(float(value), 0.0) for value in values if value is not None]
+    if not positives:
+        return []
+    positives.sort(reverse=True)
+    total = sum(positives)
+    if total <= 0:
+        return []
+    points = [{"x": 0.0, "y": 0.0}]
+    running = 0.0
+    n = len(positives)
+    for idx, value in enumerate(positives, start=1):
+        running += value
+        points.append({"x": idx / n, "y": running / total})
     if len(points) <= max_points:
         return points
     return downsample_points(points, max_points)
@@ -2581,13 +2611,13 @@ def fetch_site_birdnet_species(
     site["species_wait_hist"] = build_histogram(
         wait_seconds, bins=20, upper_clip_quantile=0.99
     )
-    site["species_wait_ccdf"] = build_empirical_curve(wait_seconds, reverse=True)
+    site["species_wait_rank_accum"] = build_rank_accumulation_curve(wait_seconds)
     site["species_score_hist"] = build_histogram(
         score_values, bins=20, lower_bound=0.0, upper_bound=1.0
     )
     site["species_volume_dbfs_hist"] = build_histogram(volume_dbfs_values, bins=20)
     site["species_duration_hist"] = build_histogram(duration_values, bins=20)
-    site["species_duration_ccdf"] = build_empirical_curve(duration_values, reverse=True)
+    site["species_duration_rank_accum"] = build_rank_accumulation_curve(duration_values)
     return site
 
 
@@ -2627,8 +2657,8 @@ def render_birdnet_species_html(site: dict) -> str:
         phase_counts,
         site.get("species_phase_hours") or {},
     )
-    wait_ccdf_chart = render_xy_line_svg(
-        site.get("species_wait_ccdf") or [], _plot_color("accent")
+    wait_rank_accum_chart = render_xy_line_svg(
+        site.get("species_wait_rank_accum") or [], _plot_color("accent")
     )
     score_hist_chart = render_histogram_svg(
         site.get("species_score_hist") or [], _plot_color("accent")
@@ -2636,8 +2666,8 @@ def render_birdnet_species_html(site: dict) -> str:
     volume_hist_chart = render_histogram_svg(
         site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
     )
-    duration_ccdf_chart = render_xy_line_svg(
-        site.get("species_duration_ccdf") or [], _plot_color("occupancy")
+    duration_rank_accum_chart = render_xy_line_svg(
+        site.get("species_duration_rank_accum") or [], _plot_color("occupancy")
     )
     wait_mean = site.get("species_wait_mean_sec")
     wait_burstiness = site.get("species_wait_burstiness")
@@ -2768,15 +2798,15 @@ def render_birdnet_species_html(site: dict) -> str:
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
         <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · burstiness B = (sd - mean) / (sd + mean) = {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
-        <div class="dim">Panels show reverse cumulative distribution (CCDF): y = fraction of detections with value ≥ x.</div>
+        <div class="dim">Panels show rank-accumulation curves: sort detections by largest value first, x = ranked-detection fraction, y = cumulative share of total value.</div>
         <div class="distribution-grid">
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time CCDF (seconds)</div>
-            <div class="chart-wrap square">{wait_ccdf_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time Rank-Accumulation</div>
+            <div class="chart-wrap square">{wait_rank_accum_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
           </div>
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length CCDF (seconds)</div>
-            <div class="chart-wrap square">{duration_ccdf_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length Rank-Accumulation</div>
+            <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
           </div>
         </div>
       </section>
