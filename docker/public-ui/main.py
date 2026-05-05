@@ -1958,6 +1958,9 @@ def fetch_site_birdnet_species(
     site = fetch_site_detail(site_id)
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_window = BIRDNET_RANKING_RANGES[normalized_range]
+    range_seconds = (
+        int(range_window.total_seconds()) if range_window is not None else None
+    )
     with get_db() as conn:
         with conn.cursor() as cur:
             has_window_volume = relation_has_column(
@@ -1966,17 +1969,7 @@ def fetch_site_birdnet_species(
                 "public_site_birdnet_detections",
                 "volume",
             )
-            cur.execute(
-                """
-                SELECT max(processed_at)
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s;
-                """,
-                (site["wg_ip"],),
-            )
-            latest_at = cur.fetchone()[0]
-            anchored_cutoff = window_cutoff_from_latest(latest_at, range_window)
-            if anchored_cutoff is None:
+            if range_seconds is None:
                 cur.execute(
                     (
                         """
@@ -2015,7 +2008,12 @@ def fetch_site_birdnet_species(
                 cur.execute(
                     (
                         """
-                    SELECT processed_at,
+                    WITH anchor AS (
+                        SELECT max(processed_at) AS latest_at
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                    )
+                    SELECT d.processed_at,
                            top_score,
                            top_likely_score,
                            start_sec,
@@ -2023,15 +2021,24 @@ def fetch_site_birdnet_species(
                            source_path,
                            channel_index,
                            volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    FROM sensos.public_site_birdnet_detections d
+                    CROSS JOIN anchor a
+                    WHERE d.wg_ip = %s
+                      AND d.top_label = %s
+                      AND a.latest_at IS NOT NULL
+                      AND d.processed_at >= (
+                          a.latest_at - make_interval(secs => %s)
+                      )
+                    ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
                     """
                         if has_window_volume
                         else """
-                    SELECT processed_at,
+                    WITH anchor AS (
+                        SELECT max(processed_at) AS latest_at
+                        FROM sensos.public_site_birdnet_detections
+                        WHERE wg_ip = %s
+                    )
+                    SELECT d.processed_at,
                            top_score,
                            top_likely_score,
                            start_sec,
@@ -2039,14 +2046,23 @@ def fetch_site_birdnet_species(
                            source_path,
                            channel_index,
                            NULL::double precision AS volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
+                    FROM sensos.public_site_birdnet_detections d
+                    CROSS JOIN anchor a
+                    WHERE d.wg_ip = %s
+                      AND d.top_label = %s
+                      AND a.latest_at IS NOT NULL
+                      AND d.processed_at >= (
+                          a.latest_at - make_interval(secs => %s)
+                      )
+                    ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
                     """
                     ),
-                    (site["wg_ip"], label, anchored_cutoff),
+                    (
+                        site["wg_ip"],
+                        site["wg_ip"],
+                        label,
+                        range_seconds,
+                    ),
                 )
             rows = cur.fetchall()
     score_points = []
