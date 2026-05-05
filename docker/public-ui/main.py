@@ -417,6 +417,12 @@ def _format_time_tick(value: str) -> str:
     return timestamp.strftime("%m-%d %H:%M")
 
 
+def _to_rfc3339_utc_string(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def detection_event_timestamp(
     source_path: str | None, start_sec: float | None, processed_at: datetime
 ) -> datetime:
@@ -439,10 +445,17 @@ def detection_event_timestamp(
 
 def _chart_bounds(width: int, height: int) -> dict:
     return {
+<<<<<<< Updated upstream
         "left": 58,
         "right": width - 18,
         "top": 10,
         "bottom": height - 34,
+=======
+        "left": 62,
+        "right": width - 28,
+        "top": 18,
+        "bottom": height - 26,
+>>>>>>> Stashed changes
     }
 
 
@@ -693,15 +706,19 @@ def render_event_timeline_svg(
     min_ts = min(timestamps)
     max_ts = max(timestamps)
     total_seconds = max((max_ts - min_ts).total_seconds(), 1.0)
+<<<<<<< Updated upstream
     min_value = min(values)
     max_value = max(values)
     if max_value == min_value:
         max_value = min_value + 1.0
     span = max(max_value - min_value, 1e-9)
+=======
+    mid_ts = min_ts + (max_ts - min_ts) / 2
+>>>>>>> Stashed changes
     circles = []
     x_labels = [
         {"x": left, "utc": points[0][time_key]},
-        {"x": (left + right) / 2, "utc": points[len(points) // 2][time_key]},
+        {"x": (left + right) / 2, "utc": _to_rfc3339_utc_string(mid_ts)},
         {"x": right, "utc": points[-1][time_key]},
     ]
     guides = [_render_axes(bounds, min_value, max_value, x_labels)]
@@ -2695,7 +2712,7 @@ def render_synoptic_html(site: dict) -> str:
     }}
     .chart-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.45rem; }}
     .chart {{
-      height: 180px;
+      height: 196px;
       border-radius: 14px;
       background: linear-gradient(180deg, rgba(247,244,237,0.9), rgba(239,243,234,0.7));
       border: 1px solid rgba(23,32,29,0.08);
