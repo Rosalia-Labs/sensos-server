@@ -489,43 +489,31 @@ def classify_light_phase_at_site(
     decl, eqtime = _solar_declination_and_eqtime(day_of_year)
     lat_rad = math.radians(latitude)
     zenith_sunrise = math.radians(90.833)
-    zenith_civil = math.radians(96.0)
     cos_ha_sunrise = (math.cos(zenith_sunrise) / (math.cos(lat_rad) * math.cos(decl))) - (
-        math.tan(lat_rad) * math.tan(decl)
-    )
-    cos_ha_civil = (math.cos(zenith_civil) / (math.cos(lat_rad) * math.cos(decl))) - (
         math.tan(lat_rad) * math.tan(decl)
     )
     minutes_utc = (ts_utc.hour * 60) + ts_utc.minute + (ts_utc.second / 60.0)
     solar_noon = 720.0 - (4.0 * longitude) - eqtime
-    local_solar_minutes = minutes_utc + eqtime + (4.0 * longitude)
-    solar_hour_angle_deg = (local_solar_minutes / 4.0) - 180.0
 
     if cos_ha_sunrise <= -1.0:
         return "day"
     if cos_ha_sunrise >= 1.0:
-        if cos_ha_civil >= 1.0:
-            return "night"
-        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
+        return "night"
 
     ha_sunrise_deg = math.degrees(math.acos(cos_ha_sunrise))
     sunrise = solar_noon - (4.0 * ha_sunrise_deg)
     sunset = solar_noon + (4.0 * ha_sunrise_deg)
-    if sunrise <= minutes_utc <= sunset:
-        return "day"
+    dawn_start = sunrise - 60.0
+    dawn_end = sunrise + 60.0
+    twilight_start = sunset - 60.0
+    twilight_end = sunset + 60.0
 
-    if cos_ha_civil >= 1.0:
-        return "night"
-    if cos_ha_civil <= -1.0:
-        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
-
-    ha_civil_deg = math.degrees(math.acos(cos_ha_civil))
-    civil_dawn = solar_noon - (4.0 * ha_civil_deg)
-    civil_dusk = solar_noon + (4.0 * ha_civil_deg)
-    if civil_dawn <= minutes_utc < sunrise:
+    if dawn_start <= minutes_utc <= dawn_end:
         return "dawn"
-    if sunset < minutes_utc <= civil_dusk:
+    if twilight_start <= minutes_utc <= twilight_end:
         return "twilight"
+    if dawn_end < minutes_utc < twilight_start:
+        return "day"
     return "night"
 
 
@@ -877,6 +865,79 @@ def build_histogram(
         {"start": lo + (idx * width), "end": lo + ((idx + 1) * width), "count": count}
         for idx, count in enumerate(counts)
     ]
+
+
+def build_empirical_curve(
+    values: list[float], *, reverse: bool = False, max_points: int = 220
+) -> list[dict]:
+    if not values:
+        return []
+    sorted_values = sorted(float(v) for v in values)
+    n = len(sorted_values)
+    points: list[dict] = []
+    idx = 0
+    while idx < n:
+        value = sorted_values[idx]
+        j = idx
+        while j < n and sorted_values[j] == value:
+            j += 1
+        if reverse:
+            # P(X >= x)
+            prob = (n - idx) / n
+        else:
+            # P(X <= x)
+            prob = j / n
+        points.append({"x": value, "y": prob})
+        idx = j
+    if len(points) <= max_points:
+        return points
+    return downsample_points(points, max_points)
+
+
+def render_xy_line_svg(
+    points: list[dict], stroke: str, width: int = 420, height: int = 420
+) -> str:
+    if not points:
+        return ""
+    x_values = [float(point["x"]) for point in points]
+    y_values = [float(point["y"]) for point in points]
+    if not x_values or not y_values:
+        return ""
+    bounds = _chart_bounds(width, height)
+    left = bounds["left"]
+    right = bounds["right"]
+    top = bounds["top"]
+    bottom = bounds["bottom"]
+    min_x = min(x_values)
+    max_x = max(x_values)
+    min_y = min(y_values)
+    max_y = max(y_values)
+    if max_x <= min_x:
+        max_x = min_x + 1.0
+    if max_y <= min_y:
+        max_y = min_y + 1.0
+    x_span = max(max_x - min_x, 1e-9)
+    y_span = max(max_y - min_y, 1e-9)
+    coords = []
+    for point in points:
+        x = left + ((float(point["x"]) - min_x) / x_span) * (right - left)
+        y = bottom - ((float(point["y"]) - min_y) / y_span) * (bottom - top)
+        coords.append((x, y))
+    x_labels = [
+        {"x": left, "label": _format_axis_value(min_x)},
+        {"x": (left + right) / 2.0, "label": _format_axis_value((min_x + max_x) / 2.0)},
+        {"x": right, "label": _format_axis_value(max_x)},
+    ]
+    path = " ".join(
+        ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
+        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
+    )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
+        + _render_axes(bounds, min_y, max_y, x_labels)
+        + f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
+        + "</svg>"
+    )
 
 
 def render_histogram_svg(
@@ -2520,11 +2581,13 @@ def fetch_site_birdnet_species(
     site["species_wait_hist"] = build_histogram(
         wait_seconds, bins=20, upper_clip_quantile=0.99
     )
+    site["species_wait_ccdf"] = build_empirical_curve(wait_seconds, reverse=True)
     site["species_score_hist"] = build_histogram(
         score_values, bins=20, lower_bound=0.0, upper_bound=1.0
     )
     site["species_volume_dbfs_hist"] = build_histogram(volume_dbfs_values, bins=20)
     site["species_duration_hist"] = build_histogram(duration_values, bins=20)
+    site["species_duration_ccdf"] = build_empirical_curve(duration_values, reverse=True)
     return site
 
 
@@ -2564,8 +2627,8 @@ def render_birdnet_species_html(site: dict) -> str:
         phase_counts,
         site.get("species_phase_hours") or {},
     )
-    wait_hist_chart = render_histogram_svg(
-        site.get("species_wait_hist") or [], _plot_color("accent")
+    wait_ccdf_chart = render_xy_line_svg(
+        site.get("species_wait_ccdf") or [], _plot_color("accent")
     )
     score_hist_chart = render_histogram_svg(
         site.get("species_score_hist") or [], _plot_color("accent")
@@ -2573,8 +2636,8 @@ def render_birdnet_species_html(site: dict) -> str:
     volume_hist_chart = render_histogram_svg(
         site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
     )
-    duration_hist_chart = render_histogram_svg(
-        site.get("species_duration_hist") or [], _plot_color("occupancy")
+    duration_ccdf_chart = render_xy_line_svg(
+        site.get("species_duration_ccdf") or [], _plot_color("occupancy")
     )
     wait_mean = site.get("species_wait_mean_sec")
     wait_burstiness = site.get("species_wait_burstiness")
@@ -2649,6 +2712,9 @@ def render_birdnet_species_html(site: dict) -> str:
     .range-pill.active {{ background:#0c6d62; color:white; border-color:#0c6d62; }}
     .chart-wrap {{ min-height: 16rem; border:1px solid rgba(23,32,29,0.08); border-radius: 16px; overflow-x:auto; background: rgba(255,255,255,0.55); }}
     .chart-wrap svg {{ width:100%; min-width:920px; display:block; }}
+    .distribution-grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }}
+    .chart-wrap.square {{ min-height: 22rem; overflow-x: hidden; }}
+    .chart-wrap.square svg {{ min-width: 0; height: 100%; }}
     .record-list {{ display:grid; gap:0.6rem; }}
     .record-card {{ border:1px solid var(--border); border-radius:14px; padding: 0.68rem 0.75rem; background: rgba(255,255,255,0.68); }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.86rem; word-break: break-word; }}
@@ -2657,7 +2723,7 @@ def render_birdnet_species_html(site: dict) -> str:
     a {{ color: #0c6d62; }}
     @media (max-width: 980px) {{
       .masthead {{ flex-direction: column; }}
-      .summary-grid {{ grid-template-columns: 1fr; }}
+      .summary-grid, .distribution-grid {{ grid-template-columns: 1fr; }}
     }}
     {_theme_override_css()}
   </style>
@@ -2696,13 +2762,23 @@ def render_birdnet_species_html(site: dict) -> str:
       </section>
       <section class="panel">
         <h2 class="section-title">Day/Dawn/Twilight/Night Detections</h2>
-        <div class="dim">Astronomical solar phases from site latitude/longitude. Bar width = phase duration (hours in selected window). Bar height = detections per hour. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
+        <div class="dim">Practical solar phases from site latitude/longitude: dawn = sunrise ±60 min, twilight = sunset ±60 min, day = between those windows, night = otherwise. Bar width = phase duration (hours in selected window). Bar height = detections per hour. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
-        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · x-axis clipped at p99 to reduce right-tail compression · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · burstiness B = (sd - mean) / (sd + mean) = {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
-        <div class="chart-wrap">{wait_hist_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
+        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · burstiness B = (sd - mean) / (sd + mean) = {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
+        <div class="dim">Panels show reverse cumulative distribution (CCDF): y = fraction of detections with value ≥ x.</div>
+        <div class="distribution-grid">
+          <div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time CCDF (seconds)</div>
+            <div class="chart-wrap square">{wait_ccdf_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
+          </div>
+          <div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length CCDF (seconds)</div>
+            <div class="chart-wrap square">{duration_ccdf_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
+          </div>
+        </div>
       </section>
       <section class="panel">
         <h2 class="section-title">Score Distribution</h2>
@@ -2711,11 +2787,6 @@ def render_birdnet_species_html(site: dict) -> str:
       <section class="panel">
         <h2 class="section-title">Volume Distribution (dBFS)</h2>
         <div class="chart-wrap">{volume_hist_chart or '<div class="empty">No volume distribution available.</div>'}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Clip-Length Distribution</h2>
-        <div class="dim">Histogram of clip durations (end_sec - start_sec). Longer clips can indicate repeated song phrases.</div>
-        <div class="chart-wrap">{duration_hist_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Recent Detections</h2>
