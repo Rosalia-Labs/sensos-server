@@ -772,18 +772,45 @@ def render_event_timeline_svg(
     )
 
 
-def build_histogram(values: list[float], bins: int = 20) -> list[dict]:
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    pos = max(0.0, min(1.0, q)) * (len(sorted_values) - 1)
+    lo_idx = int(math.floor(pos))
+    hi_idx = int(math.ceil(pos))
+    if lo_idx == hi_idx:
+        return float(sorted_values[lo_idx])
+    frac = pos - lo_idx
+    return (1.0 - frac) * float(sorted_values[lo_idx]) + frac * float(
+        sorted_values[hi_idx]
+    )
+
+
+def build_histogram(
+    values: list[float],
+    bins: int = 20,
+    *,
+    lower_bound: float | None = None,
+    upper_bound: float | None = None,
+    upper_clip_quantile: float | None = None,
+) -> list[dict]:
     if not values:
         return []
-    lo = min(values)
-    hi = max(values)
+    lo = min(values) if lower_bound is None else float(lower_bound)
+    hi = max(values) if upper_bound is None else float(upper_bound)
+    if upper_clip_quantile is not None and upper_bound is None:
+        hi = min(hi, _quantile(values, upper_clip_quantile))
     if hi <= lo:
         return [{"start": lo, "end": lo + 1.0, "count": len(values)}]
     bins = max(1, bins)
     width = (hi - lo) / bins
     counts = [0 for _ in range(bins)]
     for value in values:
-        idx = min(int((value - lo) / width), bins - 1)
+        clamped = min(max(float(value), lo), hi)
+        idx = min(int((clamped - lo) / width), bins - 1)
         counts[idx] += 1
     return [
         {"start": lo + (idx * width), "end": lo + ((idx + 1) * width), "count": count}
@@ -2323,8 +2350,12 @@ def fetch_site_birdnet_species(
     site["species_diurnal_log_ratio"] = diurnal_log_ratio
     site["species_wait_mean_sec"] = wait_mean_sec
     site["species_wait_var_mean_ratio"] = wait_vmr
-    site["species_wait_hist"] = build_histogram(wait_seconds, bins=20)
-    site["species_score_hist"] = build_histogram(score_values, bins=20)
+    site["species_wait_hist"] = build_histogram(
+        wait_seconds, bins=20, upper_clip_quantile=0.99
+    )
+    site["species_score_hist"] = build_histogram(
+        score_values, bins=20, lower_bound=0.0, upper_bound=1.0
+    )
     site["species_volume_dbfs_hist"] = build_histogram(volume_dbfs_values, bins=20)
     return site
 
@@ -2356,9 +2387,9 @@ def render_birdnet_species_html(site: dict) -> str:
         else ""
     )
     diurnal_chart = render_two_bar_svg(
-        "Day (UTC)",
+        "Solar day",
         int(site.get("species_daytime_count_utc") or 0),
-        "Night (UTC)",
+        "Solar night",
         int(site.get("species_nighttime_count_utc") or 0),
     )
     wait_hist_chart = render_histogram_svg(
@@ -2490,12 +2521,12 @@ def render_birdnet_species_html(site: dict) -> str:
       </section>
       <section class="panel">
         <h2 class="section-title">Daytime vs Nighttime Detections</h2>
-        <div class="dim">UTC split (06:00-17:59 vs 18:00-05:59) · log-ratio ln((day+0.5)/(night+0.5)) = {'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div>
+        <div class="dim">Solar split from site latitude/longitude (sunrise-sunset vs night) · log-ratio ln((day+0.5)/(night+0.5)) = {'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
-        <div class="dim">Inter-detection delay in seconds · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · variance-to-mean ratio {'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div>
+        <div class="dim">Inter-detection delay in seconds between retained species detections (not 3-second analysis windows) · x-axis clipped at p99 to reduce right-tail compression · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)} · variance-to-mean ratio {'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div>
         <div class="chart-wrap">{wait_hist_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
       </section>
       <section class="panel">
