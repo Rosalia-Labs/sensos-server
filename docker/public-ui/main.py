@@ -1255,7 +1255,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         ),
         key=lambda item: len(item["points"]),
         reverse=True,
-    )[:3]
+    )
 
     return {
         "peer_uuid": row[0],
@@ -1949,10 +1949,9 @@ def fetch_site_birdnet_species(
                 """
                 SELECT max(processed_at)
                 FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                  AND top_label = %s;
+                WHERE wg_ip = %s;
                 """,
-                (site["wg_ip"], label),
+                (site["wg_ip"],),
             )
             latest_at = cur.fetchone()[0]
             anchored_cutoff = window_cutoff_from_latest(latest_at, range_window)
@@ -2118,7 +2117,7 @@ def render_birdnet_species_html(site: dict) -> str:
         else ""
     )
     volume_dbfs_chart = (
-        render_line_chart_svg(
+        render_event_timeline_svg(
             site["species_volume_dbfs_series"], "value", _plot_color("weighted")
         )
         if site["species_volume_dbfs_series"]
