@@ -486,47 +486,20 @@ def classify_light_phase_at_site(
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     ts_utc = ts_utc.astimezone(timezone.utc)
     day_of_year = ts_utc.timetuple().tm_yday
-    decl, eqtime = _solar_declination_and_eqtime(day_of_year)
-    lat_rad = math.radians(latitude)
-    zenith_sunrise = math.radians(90.833)
-    zenith_civil = math.radians(96.0)
-    cos_ha_sunrise = (math.cos(zenith_sunrise) / (math.cos(lat_rad) * math.cos(decl))) - (
-        math.tan(lat_rad) * math.tan(decl)
-    )
-    cos_ha_civil = (math.cos(zenith_civil) / (math.cos(lat_rad) * math.cos(decl))) - (
-        math.tan(lat_rad) * math.tan(decl)
-    )
+    _, eqtime = _solar_declination_and_eqtime(day_of_year)
     minutes_utc = (ts_utc.hour * 60) + ts_utc.minute + (ts_utc.second / 60.0)
-    solar_noon = 720.0 - (4.0 * longitude) - eqtime
-    local_solar_minutes = minutes_utc + eqtime + (4.0 * longitude)
-    solar_hour_angle_deg = (local_solar_minutes / 4.0) - 180.0
-
-    if cos_ha_sunrise <= -1.0:
-        return "day"
-    if cos_ha_sunrise >= 1.0:
-        if cos_ha_civil >= 1.0:
-            return "night"
-        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
-
-    ha_sunrise_deg = math.degrees(math.acos(cos_ha_sunrise))
-    sunrise = solar_noon - (4.0 * ha_sunrise_deg)
-    sunset = solar_noon + (4.0 * ha_sunrise_deg)
-    if sunrise <= minutes_utc <= sunset:
-        return "day"
-
-    if cos_ha_civil >= 1.0:
+    # Local solar clock minutes in [0, 1440), where 00:00 is solar midnight.
+    local_solar_minutes = (minutes_utc + eqtime + (4.0 * longitude)) % 1440.0
+    local_solar_hour = local_solar_minutes / 60.0
+    # Four equal 6-hour bins, centered on midnight for "night".
+    # Night: [21,24) U [0,3), Dawn: [3,9), Day: [9,15), Twilight: [15,21)
+    if local_solar_hour >= 21.0 or local_solar_hour < 3.0:
         return "night"
-    if cos_ha_civil <= -1.0:
-        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
-
-    ha_civil_deg = math.degrees(math.acos(cos_ha_civil))
-    civil_dawn = solar_noon - (4.0 * ha_civil_deg)
-    civil_dusk = solar_noon + (4.0 * ha_civil_deg)
-    if civil_dawn <= minutes_utc < sunrise:
+    if local_solar_hour < 9.0:
         return "dawn"
-    if sunset < minutes_utc <= civil_dusk:
-        return "twilight"
-    return "night"
+    if local_solar_hour < 15.0:
+        return "day"
+    return "twilight"
 
 
 def detection_event_timestamp(
@@ -2610,7 +2583,7 @@ def render_birdnet_species_html(site: dict) -> str:
       </section>
       <section class="panel">
         <h2 class="section-title">Day/Dawn/Twilight/Night Detections</h2>
-        <div class="dim">Solar phase from site latitude/longitude using sunrise/sunset and civil twilight. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
+        <div class="dim">Four equal 6-hour local-solar bins (night centered on solar midnight): Night 21-03, Dawn 03-09, Day 09-15, Twilight 15-21. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
