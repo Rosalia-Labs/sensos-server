@@ -929,8 +929,45 @@ def build_rank_accumulation_curve(values: list[float], max_points: int = 220) ->
     return sampled
 
 
+def rank_share_at(points: list[dict], x_fraction: float) -> float:
+    if not points:
+        return 0.0
+    target = max(0.0, min(1.0, float(x_fraction)))
+    previous = points[0]
+    for point in points:
+        if float(point["x"]) >= target:
+            x0 = float(previous["x"])
+            y0 = float(previous["y"])
+            x1 = float(point["x"])
+            y1 = float(point["y"])
+            if x1 <= x0:
+                return y1
+            ratio = (target - x0) / (x1 - x0)
+            return y0 + ratio * (y1 - y0)
+        previous = point
+    return float(points[-1]["y"])
+
+
+def crop_curve_to_xmax(points: list[dict], max_x: float) -> list[dict]:
+    if not points:
+        return []
+    xmax = max(0.0, min(1.0, max_x))
+    cropped = [point for point in points if float(point["x"]) <= xmax]
+    if not cropped:
+        return [{"x": 0.0, "y": rank_share_at(points, 0.0)}, {"x": xmax, "y": rank_share_at(points, xmax)}]
+    if float(cropped[-1]["x"]) < xmax:
+        cropped.append({"x": xmax, "y": rank_share_at(points, xmax)})
+    return cropped
+
+
 def render_xy_line_svg(
-    points: list[dict], stroke: str, width: int = 420, height: int = 420
+    points: list[dict],
+    stroke: str,
+    width: int = 420,
+    height: int = 420,
+    *,
+    stepped: bool = False,
+    marker_xs: list[float] | None = None,
 ) -> str:
     if not points:
         return ""
@@ -963,14 +1000,30 @@ def render_xy_line_svg(
         {"x": (left + right) / 2.0, "label": _format_axis_value((min_x + max_x) / 2.0)},
         {"x": right, "label": _format_axis_value(max_x)},
     ]
-    path = " ".join(
-        ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
-        + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
-    )
+    if stepped:
+        segments = ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
+        for (px, py), (nx, ny) in zip(coords, coords[1:]):
+            segments.append("L {:.2f} {:.2f}".format(nx, py))
+            segments.append("L {:.2f} {:.2f}".format(nx, ny))
+        path = " ".join(segments)
+    else:
+        path = " ".join(
+            ["M {:.2f} {:.2f}".format(coords[0][0], coords[0][1])]
+            + ["L {:.2f} {:.2f}".format(x, y) for x, y in coords[1:]]
+        )
+    marker_parts = []
+    for mx in (marker_xs or []):
+        my = rank_share_at(points, mx)
+        x = left + ((mx - min_x) / x_span) * (right - left)
+        y = bottom - ((my - min_y) / y_span) * (bottom - top)
+        marker_parts.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3.2" fill="{stroke}" opacity="0.96"></circle>'
+        )
     return (
         f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" aria-hidden="true">'
         + _render_axes(bounds, min_y, max_y, x_labels)
         + f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>'
+        + "".join(marker_parts)
         + "</svg>"
     )
 
@@ -2662,8 +2715,20 @@ def render_birdnet_species_html(site: dict) -> str:
         phase_counts,
         site.get("species_phase_hours") or {},
     )
+    wait_curve = site.get("species_wait_rank_accum") or []
     wait_rank_accum_chart = render_xy_line_svg(
-        site.get("species_wait_rank_accum") or [], _plot_color("accent")
+        wait_curve,
+        _plot_color("accent"),
+        stepped=True,
+        marker_xs=[0.01, 0.05, 0.10],
+    )
+    wait_rank_accum_inset = render_xy_line_svg(
+        crop_curve_to_xmax(wait_curve, 0.10),
+        _plot_color("accent"),
+        width=420,
+        height=220,
+        stepped=True,
+        marker_xs=[0.01, 0.05, 0.10],
     )
     score_hist_chart = render_histogram_svg(
         site.get("species_score_hist") or [], _plot_color("accent")
@@ -2671,9 +2736,27 @@ def render_birdnet_species_html(site: dict) -> str:
     volume_hist_chart = render_histogram_svg(
         site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
     )
+    duration_curve = site.get("species_duration_rank_accum") or []
     duration_rank_accum_chart = render_xy_line_svg(
-        site.get("species_duration_rank_accum") or [], _plot_color("occupancy")
+        duration_curve,
+        _plot_color("occupancy"),
+        stepped=True,
+        marker_xs=[0.01, 0.05, 0.10],
     )
+    duration_rank_accum_inset = render_xy_line_svg(
+        crop_curve_to_xmax(duration_curve, 0.10),
+        _plot_color("occupancy"),
+        width=420,
+        height=220,
+        stepped=True,
+        marker_xs=[0.01, 0.05, 0.10],
+    )
+    wait_top1 = rank_share_at(wait_curve, 0.01)
+    wait_top5 = rank_share_at(wait_curve, 0.05)
+    wait_top10 = rank_share_at(wait_curve, 0.10)
+    dur_top1 = rank_share_at(duration_curve, 0.01)
+    dur_top5 = rank_share_at(duration_curve, 0.05)
+    dur_top10 = rank_share_at(duration_curve, 0.10)
     wait_mean = site.get("species_wait_mean_sec")
     wait_burstiness = site.get("species_wait_burstiness")
     night_fraction = site.get("species_night_fraction")
@@ -2758,6 +2841,9 @@ def render_birdnet_species_html(site: dict) -> str:
     .distribution-grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }}
     .chart-wrap.square {{ min-height: 22rem; overflow-x: hidden; }}
     .chart-wrap.square svg {{ min-width: 0; height: 100%; }}
+    .inset-grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; margin-top: 0.45rem; }}
+    .chart-wrap.inset {{ min-height: 10rem; overflow: hidden; }}
+    .chart-wrap.inset svg {{ min-width: 0; }}
     .record-list {{ display:grid; gap:0.6rem; }}
     .record-card {{ border:1px solid var(--border); border-radius:14px; padding: 0.68rem 0.75rem; background: rgba(255,255,255,0.68); }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 0.86rem; word-break: break-word; }}
@@ -2813,15 +2899,21 @@ def render_birdnet_species_html(site: dict) -> str:
       <section class="panel">
         <h2 class="section-title">Waiting-Time Distribution</h2>
         <div class="dim">Gaps between retained detections · mean {'n/a' if wait_mean is None else _format_axis_value(wait_mean)}s · burstiness B {'n/a' if wait_burstiness is None else f"{wait_burstiness:.3f}"}</div>
-        <div class="dim">x: top-ranked fraction · y: cumulative value share</div>
+        <div class="dim">Top-share markers: 1%, 5%, 10%</div>
         <div class="distribution-grid">
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Waiting Time · top1 {wait_top1:.2f} · top5 {wait_top5:.2f} · top10 {wait_top10:.2f}</div>
             <div class="chart-wrap square">{wait_rank_accum_chart or '<div class="empty">Not enough detections to estimate waiting-time distribution.</div>'}</div>
+            <div class="inset-grid">
+              <div class="chart-wrap inset">{wait_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
+            </div>
           </div>
           <div>
-            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length</div>
+            <div class="dim" style="margin:0.2rem 0 0.35rem;">Clip Length · top1 {dur_top1:.2f} · top5 {dur_top5:.2f} · top10 {dur_top10:.2f}</div>
             <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
+            <div class="inset-grid">
+              <div class="chart-wrap inset">{duration_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
+            </div>
           </div>
         </div>
       </section>
