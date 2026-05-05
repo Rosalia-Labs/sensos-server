@@ -412,6 +412,17 @@ def _format_sensor_label(
     return base
 
 
+def choose_site_display_label(note, hostname, wg_ip) -> str:
+    note_text = str(note or "").strip()
+    if note_text:
+        return note_text
+    hostname_text = str(hostname or "").strip()
+    if hostname_text:
+        return hostname_text
+    ip_text = str(wg_ip or "").strip()
+    return ip_text or "unknown"
+
+
 def _format_time_tick(value: str) -> str:
     timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return timestamp.strftime("%m-%d %H:%M")
@@ -466,6 +477,56 @@ def is_daylight_at_site(latitude: float, longitude: float, ts_utc: datetime) -> 
     sunrise = solar_noon - (4.0 * hour_angle)
     sunset = solar_noon + (4.0 * hour_angle)
     return sunrise <= minutes_utc <= sunset
+
+
+def classify_light_phase_at_site(
+    latitude: float, longitude: float, ts_utc: datetime
+) -> str:
+    if ts_utc.tzinfo is None:
+        ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+    ts_utc = ts_utc.astimezone(timezone.utc)
+    day_of_year = ts_utc.timetuple().tm_yday
+    decl, eqtime = _solar_declination_and_eqtime(day_of_year)
+    lat_rad = math.radians(latitude)
+    zenith_sunrise = math.radians(90.833)
+    zenith_civil = math.radians(96.0)
+    cos_ha_sunrise = (math.cos(zenith_sunrise) / (math.cos(lat_rad) * math.cos(decl))) - (
+        math.tan(lat_rad) * math.tan(decl)
+    )
+    cos_ha_civil = (math.cos(zenith_civil) / (math.cos(lat_rad) * math.cos(decl))) - (
+        math.tan(lat_rad) * math.tan(decl)
+    )
+    minutes_utc = (ts_utc.hour * 60) + ts_utc.minute + (ts_utc.second / 60.0)
+    solar_noon = 720.0 - (4.0 * longitude) - eqtime
+    local_solar_minutes = minutes_utc + eqtime + (4.0 * longitude)
+    solar_hour_angle_deg = (local_solar_minutes / 4.0) - 180.0
+
+    if cos_ha_sunrise <= -1.0:
+        return "day"
+    if cos_ha_sunrise >= 1.0:
+        if cos_ha_civil >= 1.0:
+            return "night"
+        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
+
+    ha_sunrise_deg = math.degrees(math.acos(cos_ha_sunrise))
+    sunrise = solar_noon - (4.0 * ha_sunrise_deg)
+    sunset = solar_noon + (4.0 * ha_sunrise_deg)
+    if sunrise <= minutes_utc <= sunset:
+        return "day"
+
+    if cos_ha_civil >= 1.0:
+        return "night"
+    if cos_ha_civil <= -1.0:
+        return "dawn" if solar_hour_angle_deg < 0 else "twilight"
+
+    ha_civil_deg = math.degrees(math.acos(cos_ha_civil))
+    civil_dawn = solar_noon - (4.0 * ha_civil_deg)
+    civil_dusk = solar_noon + (4.0 * ha_civil_deg)
+    if civil_dawn <= minutes_utc < sunrise:
+        return "dawn"
+    if sunset < minutes_utc <= civil_dusk:
+        return "twilight"
+    return "night"
 
 
 def detection_event_timestamp(
@@ -860,18 +921,19 @@ def render_histogram_svg(
     )
 
 
-def render_two_bar_svg(
-    left_label: str,
-    left_value: int,
-    right_label: str,
-    right_value: int,
+def render_category_bar_svg(
+    labels: list[str],
+    values: list[int],
+    fills: list[str],
     width: int = 760,
     height: int = 180,
 ) -> str:
     points = [
-        {"label": left_label, "count": float(max(left_value, 0))},
-        {"label": right_label, "count": float(max(right_value, 0))},
+        {"label": label, "count": float(max(value, 0))}
+        for label, value in zip(labels, values)
     ]
+    if not points:
+        return ""
     bounds = _chart_bounds(width, height)
     left = bounds["left"]
     right = bounds["right"]
@@ -880,9 +942,8 @@ def render_two_bar_svg(
     max_value = max(point["count"] for point in points)
     if max_value <= 0:
         max_value = 1.0
-    step_x = (right - left) / 2
-    bar_width = max(18, step_x * 0.55)
-    fills = [_plot_color("accent"), _plot_color("weighted")]
+    step_x = (right - left) / max(len(points), 1)
+    bar_width = max(14, step_x * 0.55)
     rects = []
     x_labels = []
     for idx, point in enumerate(points):
@@ -890,8 +951,9 @@ def render_two_bar_svg(
         bar_height = (point["count"] / max_value) * (bottom - top)
         x = x_center - (bar_width / 2)
         y = bottom - bar_height
+        fill = fills[idx] if idx < len(fills) else _plot_color("accent")
         rects.append(
-            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fills[idx]}" opacity="0.86"></rect>'
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="4" fill="{fill}" opacity="0.86"></rect>'
         )
         x_labels.append({"x": x_center, "label": point["label"]})
     return (
@@ -1013,7 +1075,7 @@ def fetch_sites() -> list[dict]:
             "wg_ip": row[1],
             "network_name": row[2],
             "note": row[3],
-            "site_label": row[4],
+            "site_label": choose_site_display_label(row[3], row[11], row[1]),
             "is_active": row[5],
             "registered_at": format_rfc3339_utc(row[6]),
             "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -1462,7 +1524,7 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
-        "site_label": row[4],
+        "site_label": choose_site_display_label(row[3], row[11], row[1]),
         "is_active": row[5],
         "registered_at": format_rfc3339_utc(row[6]),
         "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -1626,7 +1688,7 @@ def fetch_site_status(site_id: str) -> dict:
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
-        "site_label": row[4],
+        "site_label": choose_site_display_label(row[3], row[11], row[1]),
         "is_active": row[5],
         "registered_at": format_rfc3339_utc(row[6]),
         "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -2257,8 +2319,10 @@ def fetch_site_birdnet_species(
     volume_dbfs_values: list[float] = []
     duration_values: list[float] = []
     processed_times: list[datetime] = []
-    daytime_count = 0
-    nighttime_count = 0
+    day_count = 0
+    dawn_count = 0
+    twilight_count = 0
+    night_count = 0
     for (
         processed_at,
         top_score,
@@ -2291,10 +2355,17 @@ def fetch_site_birdnet_species(
             volume_dbfs_points.append(
                 {"processed_at": processed_text, "value": volume_dbfs}
             )
-        if is_daylight_at_site(site["latitude"], site["longitude"], processed_at):
-            daytime_count += 1
+        phase = classify_light_phase_at_site(
+            site["latitude"], site["longitude"], processed_at
+        )
+        if phase == "day":
+            day_count += 1
+        elif phase == "dawn":
+            dawn_count += 1
+        elif phase == "twilight":
+            twilight_count += 1
         else:
-            nighttime_count += 1
+            night_count += 1
         occupancy_points.append(
             {"processed_at": processed_text, "value": occupancy_value}
         )
@@ -2346,10 +2417,13 @@ def fetch_site_birdnet_species(
         if wait_var_sec is not None and wait_mean_sec and wait_mean_sec > 0
         else None
     )
-    diurnal_log_ratio = math.log((daytime_count + 0.5) / (nighttime_count + 0.5))
-    site["species_daytime_count_utc"] = daytime_count
-    site["species_nighttime_count_utc"] = nighttime_count
-    site["species_diurnal_log_ratio"] = diurnal_log_ratio
+    total_phase_count = day_count + dawn_count + twilight_count + night_count
+    night_fraction = (night_count / total_phase_count) if total_phase_count > 0 else None
+    site["species_day_count"] = day_count
+    site["species_dawn_count"] = dawn_count
+    site["species_twilight_count"] = twilight_count
+    site["species_night_count"] = night_count
+    site["species_night_fraction"] = night_fraction
     site["species_wait_mean_sec"] = wait_mean_sec
     site["species_wait_var_mean_ratio"] = wait_vmr
     site["species_wait_hist"] = build_histogram(
@@ -2389,11 +2463,20 @@ def render_birdnet_species_html(site: dict) -> str:
         if site["species_volume_dbfs_series"]
         else ""
     )
-    diurnal_chart = render_two_bar_svg(
-        "Solar day",
-        int(site.get("species_daytime_count_utc") or 0),
-        "Solar night",
-        int(site.get("species_nighttime_count_utc") or 0),
+    diurnal_chart = render_category_bar_svg(
+        ["Day", "Dawn", "Twilight", "Night"],
+        [
+            int(site.get("species_day_count") or 0),
+            int(site.get("species_dawn_count") or 0),
+            int(site.get("species_twilight_count") or 0),
+            int(site.get("species_night_count") or 0),
+        ],
+        [
+            _plot_color("accent"),
+            _plot_color("occupancy"),
+            _plot_color("weighted"),
+            _plot_color("line"),
+        ],
     )
     wait_hist_chart = render_histogram_svg(
         site.get("species_wait_hist") or [], _plot_color("accent")
@@ -2409,7 +2492,7 @@ def render_birdnet_species_html(site: dict) -> str:
     )
     wait_mean = site.get("species_wait_mean_sec")
     wait_vmr = site.get("species_wait_var_mean_ratio")
-    diurnal_log_ratio = site.get("species_diurnal_log_ratio")
+    night_fraction = site.get("species_night_fraction")
     recent_cards = (
         "".join(f"""
         <article class="record-card">
@@ -2513,7 +2596,7 @@ def render_birdnet_species_html(site: dict) -> str:
       <section class="panel">
         <div class="summary-grid">
           <div class="metric"><div class="metric-label">Detections</div><div class="metric-value">{site['species_detection_count']}</div></div>
-          <div class="metric"><div class="metric-label">Day/Night Log-Ratio</div><div class="metric-value">{'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div></div>
+          <div class="metric"><div class="metric-label">Night Fraction</div><div class="metric-value">{'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div></div>
           <div class="metric"><div class="metric-label">Waiting-Time VMR</div><div class="metric-value">{'n/a' if wait_vmr is None else f"{wait_vmr:.3f}"}</div></div>
         </div>
       </section>
@@ -2526,8 +2609,8 @@ def render_birdnet_species_html(site: dict) -> str:
         <div class="chart-wrap">{volume_dbfs_chart or '<div class="empty">No volume series available.</div>'}</div>
       </section>
       <section class="panel">
-        <h2 class="section-title">Daytime vs Nighttime Detections</h2>
-        <div class="dim">Solar split from site latitude/longitude (sunrise-sunset vs night) · log-ratio ln((day+0.5)/(night+0.5)) = {'n/a' if diurnal_log_ratio is None else f"{diurnal_log_ratio:.3f}"}</div>
+        <h2 class="section-title">Day/Dawn/Twilight/Night Detections</h2>
+        <div class="dim">Solar phase from site latitude/longitude using sunrise/sunset and civil twilight. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
       </section>
       <section class="panel">
@@ -3914,11 +3997,13 @@ def render_index_html() -> str:
     function displaySiteName(site) {{
       const note = String(site?.note || "").trim();
       if (note) return note;
-      const label = String(site?.site_label || "").trim();
-      if (label) return label;
       const hostname = String(site?.hostname || "").trim();
       if (hostname) return hostname;
-      return String(site?.wg_ip || "unknown");
+      const ip = String(site?.wg_ip || "").trim();
+      if (ip) return ip;
+      const label = String(site?.site_label || "").trim();
+      if (label) return label;
+      return "unknown";
     }}
 
     function formatRelativeTime(value) {{
