@@ -2255,6 +2255,7 @@ def fetch_site_birdnet_species(
     detections = []
     score_values: list[float] = []
     volume_dbfs_values: list[float] = []
+    duration_values: list[float] = []
     processed_times: list[datetime] = []
     daytime_count = 0
     nighttime_count = 0
@@ -2280,6 +2281,7 @@ def fetch_site_birdnet_species(
             float(top_likely_score) if top_likely_score is not None else score_value
         )
         duration_sec = max(float(end_sec) - float(start_sec), 0.0)
+        duration_values.append(duration_sec)
         weighted_value = duration_sec * score_value * occupancy_value
         score_points.append({"processed_at": processed_text, "value": score_value})
         if volume is not None:
@@ -2357,6 +2359,7 @@ def fetch_site_birdnet_species(
         score_values, bins=20, lower_bound=0.0, upper_bound=1.0
     )
     site["species_volume_dbfs_hist"] = build_histogram(volume_dbfs_values, bins=20)
+    site["species_duration_hist"] = build_histogram(duration_values, bins=20)
     return site
 
 
@@ -2400,6 +2403,9 @@ def render_birdnet_species_html(site: dict) -> str:
     )
     volume_hist_chart = render_histogram_svg(
         site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
+    )
+    duration_hist_chart = render_histogram_svg(
+        site.get("species_duration_hist") or [], _plot_color("occupancy")
     )
     wait_mean = site.get("species_wait_mean_sec")
     wait_vmr = site.get("species_wait_var_mean_ratio")
@@ -2536,6 +2542,11 @@ def render_birdnet_species_html(site: dict) -> str:
       <section class="panel">
         <h2 class="section-title">Volume Distribution (dBFS)</h2>
         <div class="chart-wrap">{volume_hist_chart or '<div class="empty">No volume distribution available.</div>'}</div>
+      </section>
+      <section class="panel">
+        <h2 class="section-title">Clip-Length Distribution</h2>
+        <div class="dim">Histogram of clip durations (end_sec - start_sec). Longer clips can indicate repeated song phrases.</div>
+        <div class="chart-wrap">{duration_hist_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Recent Detections</h2>
