@@ -2731,24 +2731,6 @@ def render_birdnet_species_html(site: dict) -> str:
     volume_hist_chart = render_histogram_svg(
         site.get("species_volume_dbfs_hist") or [], _plot_color("weighted")
     )
-    duration_curve = site.get("species_duration_rank_accum") or []
-    duration_rank_accum_chart = render_xy_line_svg(
-        duration_curve,
-        _plot_color("occupancy"),
-        stepped=True,
-        marker_xs=[0.01, 0.05, 0.10],
-    )
-    duration_rank_accum_inset = render_xy_line_svg(
-        crop_curve_to_xmax(duration_curve, 0.10),
-        _plot_color("occupancy"),
-        width=420,
-        height=220,
-        stepped=True,
-        marker_xs=[0.01, 0.05, 0.10],
-    )
-    dur_top1 = rank_share_at(duration_curve, 0.01)
-    dur_top5 = rank_share_at(duration_curve, 0.05)
-    dur_top10 = rank_share_at(duration_curve, 0.10)
     wait_mean = site.get("species_wait_mean_sec")
     wait_burstiness = site.get("species_wait_burstiness")
     night_fraction = site.get("species_night_fraction")
@@ -2887,12 +2869,6 @@ def render_birdnet_species_html(site: dict) -> str:
         <h2 class="section-title">Day/Dawn/Twilight/Night Detections</h2>
         <div class="dim">Practical solar phases from site latitude/longitude: dawn = sunrise ±60 min, twilight = sunset ±60 min, day = between those windows, night = otherwise. Bar width = phase duration (hours in selected window). Bar height = detections per hour. Stat reported: fraction night = {'n/a' if night_fraction is None else f"{night_fraction:.3f}"}</div>
         <div class="chart-wrap">{diurnal_chart}</div>
-      </section>
-      <section class="panel">
-        <h2 class="section-title">Clip-Length Distribution</h2>
-        <div class="dim">Rank-accumulation · top1 {dur_top1:.2f} · top5 {dur_top5:.2f} · top10 {dur_top10:.2f}</div>
-        <div class="chart-wrap square">{duration_rank_accum_chart or '<div class="empty">No clip-length distribution available.</div>'}</div>
-        <div class="chart-wrap inset" style="margin-top:0.45rem;">{duration_rank_accum_inset or '<div class="empty">n/a</div>'}</div>
       </section>
       <section class="panel">
         <h2 class="section-title">Score Distribution</h2>
