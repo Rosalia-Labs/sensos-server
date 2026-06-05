@@ -10,9 +10,15 @@ The normal backup entrypoint is:
 
 - [`bin/backup-server`](../bin/backup-server)
 
-`bin/backup-server` creates:
+`bin/backup-server` creates one top-level artifact per run:
 
-- `db_backup_*.gz` PostgreSQL dumps
+- `server_backup_*.tgz`
+
+That bundle contains:
+
+- `manifest.txt` with creation metadata and component names
+- `SHA256SUMS` for the bundled component files
+- `db_backup_*.gz` PostgreSQL dump
 - `wg_wireguard_*.tgz` for the server WireGuard reconciler state
 - `wg_api-proxy_*.tgz` for the API proxy WireGuard reconciler state
 - `wg_ops_*.tgz` for the ops WireGuard and operator SSH state
@@ -22,7 +28,8 @@ model. They include the owning container's private state directory under
 `/var/lib/sensos-*` and any rendered `/etc/wireguard/*.conf` files. The
 database backup stores public keys and peer/network rows; these WireGuard
 archives store the private key material needed to preserve the existing
-container identities.
+container identities. The component files are removed from `backups/` after
+the bundle is created, so normal scheduled runs leave one backup file per run.
 
 ## Recommended Model
 
@@ -74,7 +81,7 @@ crontab -e
 The post-hook contract is:
 
 - argv[1] is the backup directory
-- argv[2+] are the newly created backup files from this run
+- argv[2+] are the newly created top-level backup bundles from this run
 
 Example local hook using the built-in export helper:
 

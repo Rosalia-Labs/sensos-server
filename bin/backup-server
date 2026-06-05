@@ -11,6 +11,7 @@ DEFAULT_POST_HOOK="${REPO_ROOT}/local/hooks/post-backup.sh"
 EXPORT_AFTER_BACKUP=0
 EXPORT_ARGS=()
 POST_HOOK="${SENSOS_BACKUP_POST_HOOK:-}"
+BACKUP_RUN_TIMESTAMP=""
 
 log() {
     printf '[backup-server] %s\n' "$*"
@@ -25,8 +26,8 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Create the standard server backups. Optionally export them with rclone and/or
-run a user-supplied post-backup hook.
+Create one standard server backup bundle. Optionally export it with rclone
+and/or run a user-supplied post-backup hook.
 
 Options:
   --export          Export backups after creation using bin/export-backups
@@ -38,7 +39,7 @@ Options:
 
 Hook contract:
   The post-hook receives the backup directory as argv[1], followed by the newly
-  created backup file paths as argv[2+].
+  created top-level backup bundle paths as argv[2+].
 
 Default local hook path:
   ${DEFAULT_POST_HOOK}
@@ -90,13 +91,69 @@ resolve_post_hook() {
 }
 
 collect_new_backups() {
-    find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) -print | sort
+    find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'server_backup_*.tgz' -o -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) -print | sort
+}
+
+checksum_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        die "missing required command: sha256sum or shasum"
+    fi
+}
+
+bundle_new_backups() {
+    local bundle_path
+    local staging_dir
+    local manifest_path
+    local checksum_path
+    local backup_file
+    local backup_name
+    local -a component_files=("$@")
+
+    [[ "${#component_files[@]}" -gt 0 ]] || die "no backup component files were created"
+
+    BACKUP_RUN_TIMESTAMP="$(date +"%Y%m%d_%H%M%S")"
+    bundle_path="${BACKUP_DIR}/server_backup_${BACKUP_RUN_TIMESTAMP}.tgz"
+    staging_dir="$(mktemp -d "${BACKUP_DIR}/.server_backup_${BACKUP_RUN_TIMESTAMP}.XXXXXX")"
+    manifest_path="${staging_dir}/manifest.txt"
+    checksum_path="${staging_dir}/SHA256SUMS"
+
+    {
+        printf 'created_at=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        printf 'repo_root=%s\n' "${REPO_ROOT}"
+        printf 'artifact=%s\n' "$(basename "${bundle_path}")"
+        printf 'components=\n'
+    } >"${manifest_path}"
+
+    : >"${checksum_path}"
+    for backup_file in "${component_files[@]}"; do
+        [[ -f "${backup_file}" ]] || die "component backup file not found: ${backup_file}"
+        backup_name="$(basename "${backup_file}")"
+        cp "${backup_file}" "${staging_dir}/${backup_name}"
+        printf '  %s\n' "${backup_name}" >>"${manifest_path}"
+        printf '%s  %s\n' "$(checksum_file "${backup_file}")" "${backup_name}" >>"${checksum_path}"
+    done
+
+    tar -C "${staging_dir}" -czf "${bundle_path}" .
+    chmod 600 "${bundle_path}"
+    rm -rf "${staging_dir}"
+
+    for backup_file in "${component_files[@]}"; do
+        rm -f "${backup_file}"
+    done
+
+    printf '%s\n' "${bundle_path}"
 }
 
 main() {
     local before_list
     local after_list
     local backup_file
+    local bundle_file
+    local -a component_files=()
     local -a new_files=()
 
     parse_args "$@"
@@ -109,18 +166,27 @@ main() {
     log "running wireguard backup"
     "${SCRIPT_DIR}/backup-wireguard"
 
-    if [[ "${EXPORT_AFTER_BACKUP}" == "1" ]]; then
-        log "exporting backups"
-        "${SCRIPT_DIR}/export-backups" "${EXPORT_ARGS[@]}"
-    fi
-
     after_list="$(collect_new_backups)"
     while IFS= read -r backup_file; do
         [[ -n "${backup_file}" ]] || continue
         if ! grep -Fqx "${backup_file}" <<< "${before_list}"; then
-            new_files+=("${backup_file}")
+            case "$(basename "${backup_file}")" in
+                db_backup_*.gz|wg_*.tgz)
+                    component_files+=("${backup_file}")
+                    ;;
+            esac
         fi
     done <<< "${after_list}"
+
+    log "creating backup bundle"
+    bundle_file="$(bundle_new_backups "${component_files[@]}")"
+    new_files=("${bundle_file}")
+    log "backup bundle created: ${bundle_file}"
+
+    if [[ "${EXPORT_AFTER_BACKUP}" == "1" ]]; then
+        log "exporting backups"
+        "${SCRIPT_DIR}/export-backups" "${EXPORT_ARGS[@]}"
+    fi
 
     if [[ -n "${POST_HOOK}" ]]; then
         [[ -x "${POST_HOOK}" ]] || die "post-hook is not executable: ${POST_HOOK}"

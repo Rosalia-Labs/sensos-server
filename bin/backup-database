@@ -37,7 +37,7 @@ cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
 # Create backup directory and timestamp
-BACKUP_DIR="./backups"
+BACKUP_DIR="${SENSOS_BACKUP_DIR:-./backups}"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/db_backup_${TIMESTAMP}.gz"

@@ -380,7 +380,8 @@ Typical use:
 
 ### `bin/backup-wireguard`
 
-Backs up WireGuard config files from running SensOS containers into `backups/`.
+Backs up WireGuard state from WireGuard-capable SensOS containers into
+`backups/`.
 
 Typical use:
 
@@ -390,7 +391,7 @@ Typical use:
 
 ### `bin/backup-server`
 
-Runs the standard server backup set and can optionally export those backups
+Creates one standard server backup bundle and can optionally export that bundle
 with `rclone` and/or run a user-supplied post-backup hook.
 
 Typical use:
@@ -406,7 +407,9 @@ Behavior:
 
 - runs `bin/backup-database`
 - runs `bin/backup-wireguard`
-- keeps local backups by default
+- creates `server_backup_*.tgz` containing the DB dump, WireGuard state archives, `manifest.txt`, and `SHA256SUMS`
+- removes component backup files after bundling
+- keeps the local bundle by default
 - can export to a configured `rclone` remote after backup creation
 - can run a user-owned post-backup hook
 - looks for a default local hook at `local/hooks/post-backup.sh`
@@ -415,7 +418,7 @@ Behavior:
 Hook contract:
 
 - argv[1] is the backup directory
-- argv[2+] are the newly created backup files from this run
+- argv[2+] are the newly created top-level backup bundles from this run
 - local hook scripts belong in ignored repo-local state such as `local/hooks/`
 
 ### `bin/export-backups`
@@ -432,7 +435,7 @@ Typical use:
 Behavior:
 
 - requires `rclone`
-- exports `db_backup_*.gz` and `wg_*.tgz`
+- exports `server_backup_*.tgz` bundles and legacy `db_backup_*.gz` / `wg_*.tgz` artifacts
 - `--copy` keeps local files
 - `--move` removes local files only after successful transfer
 - useful as the built-in implementation behind a custom post-backup hook

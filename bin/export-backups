@@ -77,7 +77,7 @@ ensure_remote() {
 }
 
 ensure_backup_files() {
-    if ! find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) | grep -q .; then
+    if ! find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'server_backup_*.tgz' -o -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) | grep -q .; then
         die "no backup artifacts found in ${BACKUP_DIR}"
     fi
 }
@@ -91,8 +91,10 @@ main() {
 
     log "${TRANSFER_MODE}ing backups from ${BACKUP_DIR} to ${REMOTE_PATH}"
     rclone "${TRANSFER_MODE}" \
+        --include 'server_backup_*.tgz' \
         --include 'db_backup_*.gz' \
         --include 'wg_*.tgz' \
+        --exclude '*' \
         "${BACKUP_DIR}" \
         "${REMOTE_PATH}"
     log "backup export complete"
