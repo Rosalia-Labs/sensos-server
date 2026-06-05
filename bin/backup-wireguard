@@ -8,8 +8,8 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Create compressed WireGuard config backups from running sensos-* containers
-that expose /etc/wireguard/*.conf, storing them under ./backups.
+Create compressed WireGuard state backups from WireGuard-capable sensos
+containers, storing them under ./backups.
 
 Options:
   -h, --help  Show this help and exit
@@ -33,55 +33,69 @@ done
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WORK_DIR"
 
-# List all containers with names starting with "sensos-"
-containers=$(docker ps --filter "name=^sensos-" --format '{{.Names}}')
-
-if [ -z "$containers" ]; then
-    echo "❌ No running sensos containers found. Exiting."
-    exit 1
-fi
-
 BACKUP_DIR="./backups"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 mkdir -p "$BACKUP_DIR"
 
-for container in $containers; do
+WIREGUARD_STATE_CONTAINERS=(
+    "sensos-wireguard:/var/lib/sensos-wireguard"
+    "sensos-api-proxy:/var/lib/sensos-api-proxy"
+    "sensos-ops:/var/lib/sensos-ops"
+)
+
+backed_up_count=0
+
+for container_state in "${WIREGUARD_STATE_CONTAINERS[@]}"; do
+    container="${container_state%%:*}"
+    state_dir="${container_state#*:}"
     echo "💾 Processing container: $container"
 
-    # Ensure container is running (should be, because we filtered running ones)
     if ! docker ps --filter "name=^${container}$" --format '{{.Names}}' | grep -q "^${container}$"; then
-        echo "❌ Container $container is not running. Exiting."
-        exit 1
-    fi
-
-    # Check if /etc/wireguard exists in the container
-    if ! docker exec "$container" sh -c 'test -d /etc/wireguard'; then
-        echo "ℹ️  Container $container does not have an /etc/wireguard directory. Skipping backup for this container."
+        echo "ℹ️  Container $container is not running. Skipping backup for this container."
         continue
     fi
 
-    # Check if there are any *.conf files in /etc/wireguard
-    if ! docker exec "$container" sh -c 'ls /etc/wireguard/*.conf 1>/dev/null 2>&1'; then
-        echo "ℹ️  No *.conf files found in /etc/wireguard in $container. Skipping backup for this container."
-        continue
-    fi
-
-    # Prepare backup file name (strip "sensos-" prefix)
     container_name="${container#sensos-}"
     WG_BACKUP_FILE="$BACKUP_DIR/wg_${container_name}_${TIMESTAMP}.tgz"
 
-    echo "💾 Backing up WireGuard configs from $container..."
-    # Change directory into /etc/wireguard so the tarball doesn't include the full path
-    docker exec "$container" sh -c "cd /etc/wireguard && tar czf - *.conf" >"$WG_BACKUP_FILE"
+    echo "💾 Backing up WireGuard state from $container..."
+    if docker exec "$container" sh -c '
+        set -eu
+        state_dir="$1"
+        shift
 
-    if [ $? -eq 0 ] && [ -s "$WG_BACKUP_FILE" ]; then
+        if [ -d "$state_dir" ] && find "$state_dir" -mindepth 1 -print -quit | grep -q .; then
+            set -- "$@" "$state_dir"
+        fi
+
+        if [ -d /etc/wireguard ] && find /etc/wireguard -type f -name "*.conf" -print -quit | grep -q .; then
+            set -- "$@" /etc/wireguard
+        fi
+
+        if [ "$#" -eq 0 ]; then
+            exit 2
+        fi
+
+        tar czf - "$@"
+    ' sh "$state_dir" >"$WG_BACKUP_FILE"; then
         echo "✅ WireGuard backup completed for $container: $WG_BACKUP_FILE"
         chmod 600 "$WG_BACKUP_FILE"
+        backed_up_count=$((backed_up_count + 1))
     else
-        echo "❌ Failed to backup WireGuard configs from $container. Exiting."
+        status=$?
         rm -f "$WG_BACKUP_FILE"
-        exit 1
+        if [ "$status" -eq 2 ]; then
+            echo "ℹ️  No WireGuard state found in $container. Skipping backup for this container."
+        else
+            echo "❌ Failed to backup WireGuard state from $container. Exiting."
+            exit 1
+        fi
     fi
 done
+
+if [ "$backed_up_count" -eq 0 ]; then
+    echo "❌ No WireGuard state backups were created. Exiting."
+    exit 1
+fi
 
 echo "✅ All WireGuard backups completed successfully."

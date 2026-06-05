@@ -10,6 +10,20 @@ The normal backup entrypoint is:
 
 - [`bin/backup-server`](../bin/backup-server)
 
+`bin/backup-server` creates:
+
+- `db_backup_*.gz` PostgreSQL dumps
+- `wg_wireguard_*.tgz` for the server WireGuard reconciler state
+- `wg_api-proxy_*.tgz` for the API proxy WireGuard reconciler state
+- `wg_ops_*.tgz` for the ops WireGuard and operator SSH state
+
+The WireGuard archives intentionally follow the current container ownership
+model. They include the owning container's private state directory under
+`/var/lib/sensos-*` and any rendered `/etc/wireguard/*.conf` files. The
+database backup stores public keys and peer/network rows; these WireGuard
+archives store the private key material needed to preserve the existing
+container identities.
+
 ## Recommended Model
 
 Keep the tracked repo generic and put site-specific automation in ignored local

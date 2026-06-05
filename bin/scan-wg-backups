@@ -23,20 +23,34 @@ def extract_date_from_filename(filename: str) -> datetime | None:
 
 def extract_keys_from_tgz(tgz_path: Path) -> list[tuple[str, str]]:
     """
-    Returns a list of (private_key, network_name) tuples found in *.conf files inside the archive.
+    Returns a list of (private_key, network_name) tuples found in WireGuard
+    config files or reconciler private key files inside the archive.
     """
     results = []
     with tarfile.open(tgz_path, "r:gz") as tar:
         for member in tar.getmembers():
-            if member.isfile() and member.name.endswith(".conf"):
-                f = tar.extractfile(member)
-                if f:
-                    content = f.read().decode("utf-8", errors="ignore")
-                    match = KEY_RE.search(content)
-                    if match:
-                        privkey = match.group(1)
-                        network_name = Path(member.name).stem
-                        results.append((privkey, network_name))
+            if not member.isfile():
+                continue
+
+            if not (member.name.endswith(".conf") or member.name.endswith(".key")):
+                continue
+
+            f = tar.extractfile(member)
+            if not f:
+                continue
+
+            content = f.read().decode("utf-8", errors="ignore")
+            network_name = Path(member.name).stem
+
+            if member.name.endswith(".conf"):
+                match = KEY_RE.search(content)
+                if match:
+                    results.append((match.group(1), network_name))
+                continue
+
+            private_key = content.strip().splitlines()[0] if content.strip() else ""
+            if private_key:
+                results.append((private_key, network_name))
     return results
 
 
