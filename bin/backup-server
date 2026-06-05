@@ -12,6 +12,7 @@ EXPORT_AFTER_BACKUP=0
 EXPORT_ARGS=()
 POST_HOOK="${SENSOS_BACKUP_POST_HOOK:-}"
 BACKUP_RUN_TIMESTAMP=""
+MAX_ARTIFACT_BYTES="${SENSOS_BACKUP_MAX_ARTIFACT_BYTES:-14000000000}"
 
 log() {
     printf '[backup-server] %s\n' "$*"
@@ -43,6 +44,11 @@ Hook contract:
 
 Default local hook path:
   ${DEFAULT_POST_HOOK}
+
+Environment:
+  SENSOS_BACKUP_DIR
+  SENSOS_BACKUP_POST_HOOK
+  SENSOS_BACKUP_MAX_ARTIFACT_BYTES  Default: ${MAX_ARTIFACT_BYTES}
 EOF
 }
 
@@ -91,7 +97,7 @@ resolve_post_hook() {
 }
 
 collect_new_backups() {
-    find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'server_backup_*.tgz' -o -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) -print | sort
+    find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name 'server_backup_*.tgz' -o -name 'server_backup_*.tgz.part-*' -o -name 'server_backup_*.parts.txt' -o -name 'db_backup_*.gz' -o -name 'wg_*.tgz' \) -print | sort
 }
 
 checksum_file() {
@@ -102,6 +108,62 @@ checksum_file() {
     else
         die "missing required command: sha256sum or shasum"
     fi
+}
+
+file_size_bytes() {
+    wc -c <"$1" | awk '{print $1}'
+}
+
+validate_max_artifact_bytes() {
+    [[ "${MAX_ARTIFACT_BYTES}" =~ ^[0-9]+$ ]] || die "SENSOS_BACKUP_MAX_ARTIFACT_BYTES must be an integer"
+    [[ "${MAX_ARTIFACT_BYTES}" -gt 0 ]] || die "SENSOS_BACKUP_MAX_ARTIFACT_BYTES must be greater than zero"
+}
+
+split_large_bundle() {
+    local bundle_path="$1"
+    local bundle_name
+    local bundle_size
+    local bundle_sha256
+    local chunk_prefix
+    local parts_manifest
+    local chunk_file
+    local -a chunk_files=()
+
+    bundle_name="$(basename "${bundle_path}")"
+    bundle_size="$(file_size_bytes "${bundle_path}")"
+    bundle_sha256="$(checksum_file "${bundle_path}")"
+
+    if [[ "${bundle_size}" -le "${MAX_ARTIFACT_BYTES}" ]]; then
+        printf '%s\n' "${bundle_path}"
+        return
+    fi
+
+    chunk_prefix="${bundle_path}.part-"
+    parts_manifest="${bundle_path%.tgz}.parts.txt"
+
+    split -b "${MAX_ARTIFACT_BYTES}" -d -a 4 "${bundle_path}" "${chunk_prefix}"
+    rm -f "${bundle_path}"
+
+    {
+        printf 'original_artifact=%s\n' "${bundle_name}"
+        printf 'original_size_bytes=%s\n' "${bundle_size}"
+        printf 'max_part_size_bytes=%s\n' "${MAX_ARTIFACT_BYTES}"
+        printf 'original_sha256=%s\n' "${bundle_sha256}"
+    } >"${parts_manifest}"
+
+    printf 'parts=\n' >>"${parts_manifest}"
+    for chunk_file in "${chunk_prefix}"*; do
+        [[ -f "${chunk_file}" ]] || continue
+        chunk_files+=("${chunk_file}")
+        printf '  %s  %s  %s\n' \
+            "$(basename "${chunk_file}")" \
+            "$(file_size_bytes "${chunk_file}")" \
+            "$(checksum_file "${chunk_file}")" >>"${parts_manifest}"
+    done
+
+    chmod 600 "${parts_manifest}" "${chunk_files[@]}"
+    printf '%s\n' "${parts_manifest}"
+    printf '%s\n' "${chunk_files[@]}"
 }
 
 bundle_new_backups() {
@@ -145,18 +207,19 @@ bundle_new_backups() {
         rm -f "${backup_file}"
     done
 
-    printf '%s\n' "${bundle_path}"
+    split_large_bundle "${bundle_path}"
 }
 
 main() {
     local before_list
     local after_list
     local backup_file
-    local bundle_file
+    local bundle_files
     local -a component_files=()
     local -a new_files=()
 
     parse_args "$@"
+    validate_max_artifact_bytes
     resolve_post_hook
     before_list="$(collect_new_backups)"
 
@@ -179,9 +242,12 @@ main() {
     done <<< "${after_list}"
 
     log "creating backup bundle"
-    bundle_file="$(bundle_new_backups "${component_files[@]}")"
-    new_files=("${bundle_file}")
-    log "backup bundle created: ${bundle_file}"
+    bundle_files="$(bundle_new_backups "${component_files[@]}")"
+    while IFS= read -r backup_file; do
+        [[ -n "${backup_file}" ]] || continue
+        new_files+=("${backup_file}")
+    done <<< "${bundle_files}"
+    log "backup bundle created: ${new_files[*]}"
 
     if [[ "${EXPORT_AFTER_BACKUP}" == "1" ]]; then
         log "exporting backups"

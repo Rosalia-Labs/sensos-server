@@ -14,6 +14,22 @@ The normal backup entrypoint is:
 
 - `server_backup_*.tgz`
 
+If that file would exceed `SENSOS_BACKUP_MAX_ARTIFACT_BYTES`, it is split into
+Box-safe parts instead:
+
+- `server_backup_*.parts.txt`
+- `server_backup_*.tgz.part-0000`
+- `server_backup_*.tgz.part-0001`
+- ...
+
+The default split threshold is `14000000000` bytes, which stays below a 15 GB
+single-file upload ceiling. To reassemble a split bundle, concatenate the parts
+in filename order:
+
+```sh
+cat server_backup_20260605_164120.tgz.part-* > server_backup_20260605_164120.tgz
+```
+
 That bundle contains:
 
 - `manifest.txt` with creation metadata and component names
@@ -29,7 +45,8 @@ model. They include the owning container's private state directory under
 database backup stores public keys and peer/network rows; these WireGuard
 archives store the private key material needed to preserve the existing
 container identities. The component files are removed from `backups/` after
-the bundle is created, so normal scheduled runs leave one backup file per run.
+the bundle is created, so normal scheduled runs leave one logical backup set
+per run.
 
 ## Recommended Model
 

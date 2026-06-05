@@ -65,18 +65,19 @@ for container_state in "${WIREGUARD_STATE_CONTAINERS[@]}"; do
         shift
 
         if [ -d "$state_dir" ] && find "$state_dir" -mindepth 1 -print -quit | grep -q .; then
-            set -- "$@" "$state_dir"
+            state_path="${state_dir#/}"
+            set -- "$@" "$state_path"
         fi
 
         if [ -d /etc/wireguard ] && find /etc/wireguard -type f -name "*.conf" -print -quit | grep -q .; then
-            set -- "$@" /etc/wireguard
+            set -- "$@" etc/wireguard
         fi
 
         if [ "$#" -eq 0 ]; then
             exit 2
         fi
 
-        tar czf - "$@"
+        tar -C / -czf - "$@"
     ' sh "$state_dir" >"$WG_BACKUP_FILE"; then
         echo "✅ WireGuard backup completed for $container: $WG_BACKUP_FILE"
         chmod 600 "$WG_BACKUP_FILE"

@@ -408,8 +408,9 @@ Behavior:
 - runs `bin/backup-database`
 - runs `bin/backup-wireguard`
 - creates `server_backup_*.tgz` containing the DB dump, WireGuard state archives, `manifest.txt`, and `SHA256SUMS`
+- splits oversized bundles into `server_backup_*.tgz.part-*` plus `server_backup_*.parts.txt`
 - removes component backup files after bundling
-- keeps the local bundle by default
+- keeps the local bundle or split bundle parts by default
 - can export to a configured `rclone` remote after backup creation
 - can run a user-owned post-backup hook
 - looks for a default local hook at `local/hooks/post-backup.sh`
@@ -435,7 +436,7 @@ Typical use:
 Behavior:
 
 - requires `rclone`
-- exports `server_backup_*.tgz` bundles and legacy `db_backup_*.gz` / `wg_*.tgz` artifacts
+- exports `server_backup_*.tgz`, split bundle parts, and legacy `db_backup_*.gz` / `wg_*.tgz` artifacts
 - `--copy` keeps local files
 - `--move` removes local files only after successful transfer
 - useful as the built-in implementation behind a custom post-backup hook
