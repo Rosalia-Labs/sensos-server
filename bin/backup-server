@@ -10,6 +10,8 @@ BACKUP_DIR="${SENSOS_BACKUP_DIR:-${REPO_ROOT}/backups}"
 DEFAULT_POST_HOOK="${REPO_ROOT}/local/hooks/post-backup.sh"
 EXPORT_AFTER_BACKUP=0
 EXPORT_ARGS=()
+TRANSFER_MODE_SET=0
+REMOTE_OPTION_SET=0
 POST_HOOK="${SENSOS_BACKUP_POST_HOOK:-}"
 BACKUP_RUN_TIMESTAMP=""
 MAX_ARTIFACT_BYTES="${SENSOS_BACKUP_MAX_ARTIFACT_BYTES:-14000000000}"
@@ -27,14 +29,12 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Create one standard server backup bundle. Optionally export it with rclone
-and/or run a user-supplied post-backup hook.
+Create one standard server backup bundle. By default, the bundle stays local.
 
 Options:
-  --export          Export backups after creation using bin/export-backups
-  --remote PATH     rclone destination such as 'box:sensos-server-backups'
-  --move            Move backup files during export instead of copying
-  --copy            Copy backup files during export (default)
+  --remote PATH     Copy the backup to this rclone destination after creation
+  --move            With --remote/SENSOS_BACKUP_REMOTE, remove local files after upload
+  --copy            With --remote/SENSOS_BACKUP_REMOTE, keep local files after upload (default)
   --post-hook PATH  Run a user-supplied script after backups complete
   --help            Show this help and exit
 
@@ -47,6 +47,7 @@ Default local hook path:
 
 Environment:
   SENSOS_BACKUP_DIR
+  SENSOS_BACKUP_REMOTE
   SENSOS_BACKUP_POST_HOOK
   SENSOS_BACKUP_MAX_ARTIFACT_BYTES  Default: ${MAX_ARTIFACT_BYTES}
 EOF
@@ -55,18 +56,15 @@ EOF
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --export)
-                EXPORT_AFTER_BACKUP=1
-                shift
-                ;;
             --remote)
                 [[ $# -ge 2 ]] || die "--remote requires a value"
                 EXPORT_AFTER_BACKUP=1
+                REMOTE_OPTION_SET=1
                 EXPORT_ARGS+=("$1" "$2")
                 shift 2
                 ;;
             --move|--copy)
-                EXPORT_AFTER_BACKUP=1
+                TRANSFER_MODE_SET=1
                 EXPORT_ARGS+=("$1")
                 shift
                 ;;
@@ -84,6 +82,15 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+validate_export_options() {
+    if [[ -n "${SENSOS_BACKUP_REMOTE:-}" ]]; then
+        EXPORT_AFTER_BACKUP=1
+    fi
+    if [[ "${TRANSFER_MODE_SET}" == "1" && "${EXPORT_AFTER_BACKUP}" != "1" ]]; then
+        die "--copy/--move require --remote PATH or SENSOS_BACKUP_REMOTE"
+    fi
 }
 
 resolve_post_hook() {
@@ -219,6 +226,7 @@ main() {
     local -a new_files=()
 
     parse_args "$@"
+    validate_export_options
     validate_max_artifact_bytes
     resolve_post_hook
     before_list="$(collect_new_backups)"

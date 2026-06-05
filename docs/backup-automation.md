@@ -48,6 +48,25 @@ container identities. The component files are removed from `backups/` after
 the bundle is created, so normal scheduled runs leave one logical backup set
 per run.
 
+## Option Model
+
+Use `bin/backup-server` in one of these forms:
+
+```sh
+./bin/backup-server
+./bin/backup-server --remote box:sensos-server-backups
+./bin/backup-server --remote box:sensos-server-backups --move
+SENSOS_BACKUP_REMOTE=box:sensos-server-backups ./bin/backup-server
+```
+
+The rules are:
+
+- no export option means local backup only
+- `--remote PATH` copies the backup to that rclone destination
+- `--move` only changes export mode from copy to move
+- `--copy` is the default export mode
+- setting `SENSOS_BACKUP_REMOTE` also enables export
+
 ## Recommended Model
 
 Keep the tracked repo generic and put site-specific automation in ignored local
@@ -83,8 +102,8 @@ If you want the built-in `rclone` export to Box:
 MAILTO=""
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# Run backups and copy them to Box every day at 02:15.
-15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server --export --remote box:sensos-server-backups >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
+# Run backups locally and copy them to Box every day at 02:15.
+15 2 * * * cd /home/sensos/sensos-server && ./bin/backup-server --remote box:sensos-server-backups >> /home/sensos/sensos-server/local/log/backup-cron.log 2>&1
 ```
 
 You can install that with:
@@ -136,7 +155,7 @@ or:
 
 ```sh
 cd /path/to/sensos-server
-./bin/backup-server --export --remote box:sensos-server-backups
+./bin/backup-server --remote box:sensos-server-backups
 ```
 
 or:

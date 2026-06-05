@@ -398,8 +398,8 @@ Typical use:
 
 ```sh
 ./bin/backup-server
-./bin/backup-server --export --remote box:sensos-server-backups
-./bin/backup-server --export --remote box:sensos-server-backups --move
+./bin/backup-server --remote box:sensos-server-backups
+./bin/backup-server --remote box:sensos-server-backups --move
 ./bin/backup-server --post-hook ./local/hooks/post-backup.sh
 ```
 
@@ -412,6 +412,9 @@ Behavior:
 - removes component backup files after bundling
 - keeps the local bundle or split bundle parts by default
 - can export to a configured `rclone` remote after backup creation
+- uses `--remote PATH` as the normal export switch
+- keeps local files after export unless `--move` is passed
+- setting `SENSOS_BACKUP_REMOTE` also enables export
 - can run a user-owned post-backup hook
 - looks for a default local hook at `local/hooks/post-backup.sh`
 - see [`docs/backup-automation.md`](backup-automation.md) for cron and hook examples
