@@ -710,7 +710,7 @@ def fetch_peer_rows(
                 public.ST_X(location::public.geometry)::float AS longitude
             FROM sensos.peer_locations
             ORDER BY peer_id, recorded_at DESC
-        ),
+        )
         SELECT p.uuid::text,
                p.wg_ip::text,
                n.name,
