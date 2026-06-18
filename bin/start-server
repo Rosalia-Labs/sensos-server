@@ -53,6 +53,12 @@ wait_for_container_health() {
     done
 }
 
+stop_running_stack_for_restart() {
+    echo "🛑 Stopping running SensOS containers without removing them..."
+    "${COMPOSE_CMD[@]}" stop
+    echo "✅ Containers stopped."
+}
+
 # Default options
 REBUILD=false
 NO_CACHE=false
@@ -156,12 +162,12 @@ export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
     if [ "$RESTART" = true ]; then
         echo "ℹ️  Restart option enabled. Stopping running SensOS containers..."
-        "$SCRIPT_DIR/stop-server"
+        stop_running_stack_for_restart
 
         echo "⏳ Waiting for containers to stop..."
         TIMEOUT=60
         ELAPSED=0
-        while docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; do
+        while docker ps --filter "name=sensos-" --filter "status=running" --format '{{.Names}}' | grep -q .; do
             if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
                 echo "❌ Timeout reached while waiting for containers to stop."
                 exit 1
