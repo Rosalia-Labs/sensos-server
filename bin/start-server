@@ -21,6 +21,38 @@ compose_cmd() {
     exit 1
 }
 
+wait_for_container_health() {
+    local container_name="$1"
+    local timeout_sec="${2:-120}"
+    local elapsed=0
+    local status=""
+
+    echo "⏳ Waiting for ${container_name} healthcheck..."
+    while true; do
+        status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_name}" 2>/dev/null || true)"
+        case "${status}" in
+        healthy|running)
+            echo "✅ ${container_name} is ${status}"
+            return 0
+            ;;
+        unhealthy|exited|dead)
+            echo "❌ ${container_name} is ${status}" >&2
+            docker logs "${container_name}" 2>/dev/null || true
+            return 1
+            ;;
+        "")
+            ;;
+        esac
+        if [ "${elapsed}" -ge "${timeout_sec}" ]; then
+            echo "❌ Timeout waiting for ${container_name} to become healthy." >&2
+            docker logs "${container_name}" 2>/dev/null || true
+            return 1
+        fi
+        sleep 2
+        ((elapsed += 2))
+    done
+}
+
 # Default options
 REBUILD=false
 NO_CACHE=false
@@ -155,14 +187,27 @@ if [ "$REBUILD" = true ]; then
     "${BUILD_CMD[@]}"
 fi
 
-#  Up step
+echo "📌 Running software version: ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}"
+echo "   Git commit=${GIT_COMMIT}, branch=${GIT_BRANCH}, tag=${GIT_TAG}, dirty=${GIT_DIRTY}"
+
+# Bring up the database first so downstream depends_on/service_healthy checks
+# do not race against a freshly recreated container after a full compose down.
+DB_UP_CMD=("${COMPOSE_CMD[@]}" up)
+if [ "$DETACH" = true ]; then
+    DB_UP_CMD+=(-d)
+fi
+DB_UP_CMD+=(sensos-database)
+echo "🚀 Executing command: ${DB_UP_CMD[*]}"
+"${DB_UP_CMD[@]}"
+
+wait_for_container_health "sensos-database"
+
+# Start the remaining services once the database is actually healthy.
 UP_CMD=("${COMPOSE_CMD[@]}" up)
 if [ "$DETACH" = true ]; then
     UP_CMD+=(-d)
 fi
-
+UP_CMD+=(sensos-controller sensos-public-ui sensos-wireguard sensos-api-proxy sensos-ops)
 echo "🚀 Executing command: ${UP_CMD[*]}"
-echo "📌 Running software version: ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}"
-echo "   Git commit=${GIT_COMMIT}, branch=${GIT_BRANCH}, tag=${GIT_TAG}, dirty=${GIT_DIRTY}"
 
 exec "${UP_CMD[@]}"
