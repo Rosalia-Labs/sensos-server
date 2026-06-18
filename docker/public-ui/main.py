@@ -67,8 +67,8 @@ BIRDNET_RANKING_WEIGHTING = {
 }
 
 BIRDNET_LABEL_MODES = {
-    "weighted": {"label": "Weighted label"},
-    "raw": {"label": "Raw label"},
+    "weighted": {"label": "Top weighted score"},
+    "raw": {"label": "Top score"},
 }
 
 
@@ -2925,10 +2925,6 @@ def render_site_detail_html(site: dict) -> str:
             ("all", "All Time"),
         )
     )
-    label_mode_links = "".join(
-        f'<a class="range-pill{" active" if key == label_mode else ""}" href="{escape_html(site_detail_url(site["peer_uuid"], evidence_range, key))}">{escape_html(config["label"])}</a>'
-        for key, config in BIRDNET_LABEL_MODES.items()
-    )
     evidence_chart = render_horizontal_lollipop_svg(
         site["top_birdnet_evidence"],
         "evidence_weight",
@@ -3197,7 +3193,7 @@ def render_site_detail_html(site: dict) -> str:
             <div>
               <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species</h2>
             </div>
-            <div class="range-pills">{label_mode_links}{evidence_range_links}</div>
+            <div class="range-pills">{evidence_range_links}</div>
           </div>
           <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
@@ -3556,6 +3552,19 @@ def render_birdnet_rankings_html(site: dict) -> str:
       gap: 0.65rem;
       align-items: center;
     }}
+    .controls-wrap {{
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+    }}
+    .label-mode-control {{
+      min-width: 12rem;
+      flex: 0 0 auto;
+    }}
+    .controls-main {{
+      flex: 1 1 38rem;
+    }}
     select {{
       width: 100%;
       padding: 0.36rem 0.82rem;
@@ -3626,6 +3635,8 @@ def render_birdnet_rankings_html(site: dict) -> str:
     @media (max-width: 980px) {{
       .masthead {{ flex-direction: column; }}
       .controls {{ grid-template-columns: 1fr; }}
+      .controls-wrap {{ align-items: stretch; }}
+      .label-mode-control, .controls-main {{ width: 100%; flex: 1 1 100%; }}
     }}
     {_theme_override_css()}
   </style>
@@ -3647,12 +3658,18 @@ def render_birdnet_rankings_html(site: dict) -> str:
       <section class="panel rankings-panel">
         <div class="section-bar">
           <h2 class="section-title">Rankings</h2>
-          <form method="get" action="{escape_html(f"/sites/{site['peer_uuid']}/birdnet-rankings")}" class="controls" id="birdnetRankingControls">
-            <select name="variable" onchange="handleBirdnetVariableChange()" aria-label="Variable">{variable_options}</select>
-            <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
-            <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weighted">{weight_options}</select>
-            <select name="label_mode" onchange="submitBirdnetRankingControls()" aria-label="Label mode">{label_mode_options}</select>
-            <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
+          <form method="get" action="{escape_html(f"/sites/{site['peer_uuid']}/birdnet-rankings")}" id="birdnetRankingControls">
+            <div class="controls-wrap">
+              <div class="label-mode-control">
+                <select name="label_mode" onchange="submitBirdnetRankingControls()" aria-label="Top score mode">{label_mode_options}</select>
+              </div>
+              <div class="controls controls-main">
+                <select name="variable" onchange="handleBirdnetVariableChange()" aria-label="Variable">{variable_options}</select>
+                <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
+                <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weighted">{weight_options}</select>
+                <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
+              </div>
+            </div>
           </form>
         </div>
         {plot_markup}
