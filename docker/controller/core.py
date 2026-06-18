@@ -1498,9 +1498,6 @@ def create_public_site_birdnet_recent_view(cur):
                d.label,
                d.score,
                d.likely_score,
-               d.weighted_label,
-               d.weighted_score,
-               d.weighted_likely_score,
                d.volume,
                row_number() OVER (
                    PARTITION BY d.wireguard_ip
@@ -1509,7 +1506,10 @@ def create_public_site_birdnet_recent_view(cur):
                             d.channel_index,
                             d.window_index,
                             d.id DESC
-               ) AS detection_rank
+               ) AS detection_rank,
+               d.weighted_label,
+               d.weighted_score,
+               d.weighted_likely_score
         FROM sensos.birdnet_detections d
         ;
         """
@@ -1534,9 +1534,6 @@ def create_public_site_birdnet_detections_view(cur):
                d.label AS top_label,
                d.score AS top_score,
                d.likely_score AS top_likely_score,
-               d.weighted_label,
-               d.weighted_score,
-               d.weighted_likely_score,
                row_number() OVER (
                    PARTITION BY d.wireguard_ip
                    ORDER BY d.clip_start_time DESC,
@@ -1545,7 +1542,10 @@ def create_public_site_birdnet_detections_view(cur):
                             d.channel_index,
                             d.window_index
                ) AS detection_rank,
-               d.volume
+               d.volume,
+               d.weighted_label,
+               d.weighted_score,
+               d.weighted_likely_score
         FROM sensos.birdnet_detections d;
         """
     )
