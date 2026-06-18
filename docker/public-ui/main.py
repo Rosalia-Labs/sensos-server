@@ -9,7 +9,7 @@ import math
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import psycopg
 
@@ -64,6 +64,11 @@ BIRDNET_RANKING_STATISTICS = {
 BIRDNET_RANKING_WEIGHTING = {
     "no": {"label": "Weighted: no"},
     "yes": {"label": "Weighted: yes"},
+}
+
+BIRDNET_LABEL_MODES = {
+    "weighted": {"label": "Weighted label"},
+    "raw": {"label": "Raw label"},
 }
 
 
@@ -322,11 +327,72 @@ def normalize_birdnet_ranking_weight(value: str | None) -> str:
     return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "yes"
 
 
-def birdnet_species_url(site_id: str, label: str, range_key: str | None = None) -> str:
+def normalize_birdnet_label_mode(value: str | None) -> str:
+    candidate = (value or "weighted").strip().lower()
+    return candidate if candidate in BIRDNET_LABEL_MODES else "weighted"
+
+
+def build_url(path: str, **params: str | None) -> str:
+    filtered = {key: value for key, value in params.items() if value not in (None, "")}
+    if not filtered:
+        return path
+    return f"{path}?{urlencode(filtered)}"
+
+
+def site_detail_url(
+    site_id: str,
+    range_key: str | None = None,
+    label_mode: str | None = None,
+) -> str:
+    return build_url(
+        f"/sites/{site_id}",
+        range=range_key,
+        label_mode=label_mode,
+    )
+
+
+def birdnet_rankings_url(
+    site_id: str,
+    *,
+    variable: str | None = None,
+    statistic: str | None = None,
+    weight: str | None = None,
+    range_key: str | None = None,
+    label_mode: str | None = None,
+) -> str:
+    return build_url(
+        f"/sites/{site_id}/birdnet-rankings",
+        variable=variable,
+        stat=statistic,
+        weight=weight,
+        range=range_key,
+        label_mode=label_mode,
+    )
+
+
+def birdnet_species_url(
+    site_id: str,
+    label: str,
+    range_key: str | None = None,
+    label_mode: str | None = None,
+) -> str:
     path = f"/sites/{site_id}/birdnet-species/{quote(label, safe='')}"
-    if range_key:
-        return f"{path}?range={quote(range_key, safe='')}"
-    return path
+    return build_url(path, range=range_key, label_mode=label_mode)
+
+
+def birdnet_label_sql(label_mode: str) -> dict[str, str]:
+    normalized = normalize_birdnet_label_mode(label_mode)
+    if normalized == "raw":
+        return {
+            "label": "top_label",
+            "score": "top_score",
+            "likely": "top_likely_score",
+        }
+    return {
+        "label": "coalesce(weighted_label, top_label)",
+        "score": "coalesce(weighted_score, top_score)",
+        "likely": "coalesce(weighted_likely_score, top_likely_score)",
+    }
 
 
 def window_cutoff_from_latest(
@@ -1321,9 +1387,18 @@ def fetch_sites() -> list[dict]:
     ]
 
 
-def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
+def fetch_site_detail(
+    site_id: str,
+    evidence_range: str | None = None,
+    label_mode: str | None = None,
+) -> dict:
     normalized_evidence_range = normalize_detail_range(evidence_range)
+    normalized_label_mode = normalize_birdnet_label_mode(label_mode)
     evidence_window = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
+    label_sql = birdnet_label_sql(normalized_label_mode)
+    selected_label_expr = label_sql["label"]
+    selected_score_expr = label_sql["score"]
+    selected_likely_expr = label_sql["likely"]
     with get_db() as conn:
         with conn.cursor() as cur:
             has_window_volume = relation_has_column(
@@ -1373,27 +1448,21 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 latest_birdnet_at,
                 evidence_window,
             )
-            if anchored_evidence_cutoff is None:
-                cur.execute(
-                    """
-                    SELECT count(*)::integer,
-                           max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s;
-                    """,
-                    (lookup_wg_ip,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT count(*)::integer,
-                           max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s;
-                    """,
-                    (lookup_wg_ip, anchored_evidence_cutoff),
-                )
+            birdnet_where = "WHERE wg_ip = %s"
+            birdnet_params: tuple = (lookup_wg_ip,)
+            if anchored_evidence_cutoff is not None:
+                birdnet_where += " AND processed_at >= %s"
+                birdnet_params = (lookup_wg_ip, anchored_evidence_cutoff)
+
+            cur.execute(
+                f"""
+                SELECT count(*)::integer,
+                       max(processed_at)
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where};
+                """,
+                birdnet_params,
+            )
             birdnet_summary = cur.fetchone()
             cur.execute(
                 """
@@ -1405,253 +1474,111 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 (lookup_wg_ip,),
             )
             i2c_summary = cur.fetchone()
-            if anchored_evidence_cutoff is None:
-                cur.execute(
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY evidence_weight DESC,
-                             best_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 8;
-                    """,
-                    (lookup_wg_ip,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY evidence_weight DESC,
-                             best_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 8;
-                    """,
-                    (lookup_wg_ip, anchored_evidence_cutoff),
-                )
-            top_birdnet_evidence = cur.fetchall()
+
             cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           max(top_score) AS best_score,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY detection_count DESC, best_score DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
+                f"""
+                SELECT {selected_label_expr} AS selected_label,
+                       count(*)::integer AS detection_count,
+                       sum(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS evidence_weight,
+                       avg({selected_score_expr}) AS average_score,
+                       max({selected_score_expr}) AS best_score,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where}
+                GROUP BY selected_label
+                ORDER BY evidence_weight DESC,
+                         best_score DESC,
+                         detection_count DESC,
+                         selected_label ASC
+                LIMIT 8;
+                """,
+                birdnet_params,
+            )
+            top_birdnet_evidence = cur.fetchall()
+
+            cur.execute(
+                f"""
+                SELECT {selected_label_expr} AS selected_label,
+                       count(*)::integer AS detection_count,
+                       max({selected_score_expr}) AS best_score,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where}
+                GROUP BY selected_label
+                ORDER BY detection_count DESC, best_score DESC, selected_label ASC
+                LIMIT 10;
+                """,
+                birdnet_params,
             )
             top_birdnet_labels = cur.fetchall()
+
             cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_score) AS average_score,
-                           max(top_score) AS best_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY best_score DESC, average_score DESC, detection_count DESC, top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
+                f"""
+                SELECT {selected_label_expr} AS selected_label,
+                       count(*)::integer AS detection_count,
+                       avg({selected_score_expr}) AS average_score,
+                       max({selected_score_expr}) AS best_score
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where}
+                GROUP BY selected_label
+                ORDER BY best_score DESC, average_score DESC, detection_count DESC, selected_label ASC
+                LIMIT 10;
+                """,
+                birdnet_params,
             )
             top_birdnet_scores = cur.fetchall()
+
             cur.execute(
-                (
-                    """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_likely_score) AS average_occupancy_score,
-                           max(top_likely_score) AS best_occupancy_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_likely_score IS NOT NULL
-                    GROUP BY top_label
-                    ORDER BY best_occupancy_score DESC,
-                             average_occupancy_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 10;
-                    """
-                    if anchored_evidence_cutoff is None
-                    else """
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           avg(top_likely_score) AS average_occupancy_score,
-                           max(top_likely_score) AS best_occupancy_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_likely_score IS NOT NULL
-                      AND processed_at >= %s
-                    GROUP BY top_label
-                    ORDER BY best_occupancy_score DESC,
-                             average_occupancy_score DESC,
-                             detection_count DESC,
-                             top_label ASC
-                    LIMIT 10;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
+                f"""
+                SELECT {selected_label_expr} AS selected_label,
+                       count(*)::integer AS detection_count,
+                       avg({selected_likely_expr}) AS average_occupancy_score,
+                       max({selected_likely_expr}) AS best_occupancy_score
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where}
+                  AND {selected_likely_expr} IS NOT NULL
+                GROUP BY selected_label
+                ORDER BY best_occupancy_score DESC,
+                         average_occupancy_score DESC,
+                         detection_count DESC,
+                         selected_label ASC
+                LIMIT 10;
+                """,
+                birdnet_params,
             )
             top_birdnet_occupancy = cur.fetchall()
+
+            volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             cur.execute(
-                (
-                    """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                    if has_window_volume and anchored_evidence_cutoff is None
-                    else (
-                        """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                        if has_window_volume
-                        else (
-                            """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           NULL::double precision AS volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                            if anchored_evidence_cutoff is None
-                            else """
-                    SELECT hostname,
-                           client_version,
-                           source_path,
-                           processed_at,
-                           clip_end_time,
-                           channel_index,
-                           max_score_start_frame,
-                           start_sec,
-                           end_sec,
-                           NULL::double precision AS volume,
-                           top_label,
-                           top_score,
-                           top_likely_score
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND processed_at >= %s
-                    ORDER BY processed_at DESC, channel_index, max_score_start_frame
-                    LIMIT 12;
-                    """
-                        )
-                    )
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if anchored_evidence_cutoff is None
-                    else (lookup_wg_ip, anchored_evidence_cutoff)
-                ),
+                f"""
+                SELECT hostname,
+                       client_version,
+                       source_path,
+                       processed_at,
+                       clip_end_time,
+                       channel_index,
+                       max_score_start_frame,
+                       start_sec,
+                       end_sec,
+                       {volume_expr},
+                       top_label,
+                       top_score,
+                       top_likely_score,
+                       weighted_label,
+                       weighted_score,
+                       weighted_likely_score,
+                       {selected_label_expr} AS selected_label,
+                       {selected_score_expr} AS selected_score,
+                       {selected_likely_expr} AS selected_likely_score
+                FROM sensos.public_site_birdnet_detections
+                {birdnet_where}
+                ORDER BY processed_at DESC, channel_index, max_score_start_frame
+                LIMIT 12;
+                """,
+                birdnet_params,
             )
             detections = cur.fetchall()
+
             cur.execute(
                 """
                 SELECT hostname,
@@ -1683,38 +1610,24 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 latest_sensor_at,
                 evidence_window,
             )
+            sensor_where = "WHERE wg_ip = %s"
+            sensor_params: tuple = (lookup_wg_ip,)
+            if sensor_cutoff is not None:
+                sensor_where += " AND recorded_at >= %s"
+                sensor_params = (lookup_wg_ip, sensor_cutoff)
             cur.execute(
-                (
-                    """
-                    SELECT recorded_at,
-                           sensor_type,
-                           device_address,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """
-                    if sensor_cutoff is None
-                    else """
-                    SELECT recorded_at,
-                           sensor_type,
-                           device_address,
-                           reading_key,
-                           reading_value
-                    FROM sensos.public_site_i2c_recent
-                    WHERE wg_ip = %s
-                      AND recorded_at >= %s
-                    ORDER BY recorded_at DESC
-                    LIMIT 12000;
-                    """
-                ),
-                (
-                    (lookup_wg_ip,)
-                    if sensor_cutoff is None
-                    else (lookup_wg_ip, sensor_cutoff)
-                ),
+                f"""
+                SELECT recorded_at,
+                       sensor_type,
+                       device_address,
+                       reading_key,
+                       reading_value
+                FROM sensos.public_site_i2c_recent
+                {sensor_where}
+                ORDER BY recorded_at DESC
+                LIMIT 12000;
+                """,
+                sensor_params,
             )
             sensor_focus_rows = cur.fetchall()
 
@@ -1745,9 +1658,10 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         reverse=True,
     )
 
+    peer_uuid = row[0]
     return {
-        "peer_uuid": row[0],
-        "site_id": row[0],
+        "peer_uuid": peer_uuid,
+        "site_id": peer_uuid,
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
@@ -1761,12 +1675,14 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
-        "birdnet_detection_count": int(row[14]),
         "birdnet_source_count": int(row[15]),
-        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
-        "public_url": f"/sites/{row[0]}",
-        "status_url": f"/sites/{row[0]}/status",
+        "public_url": site_detail_url(
+            peer_uuid, normalized_evidence_range, normalized_label_mode
+        ),
+        "status_url": f"/sites/{peer_uuid}/status",
         "evidence_range": normalized_evidence_range,
+        "birdnet_label_mode": normalized_label_mode,
+        "birdnet_label_mode_label": BIRDNET_LABEL_MODES[normalized_label_mode]["label"],
         "birdnet_detection_count": int(
             (birdnet_summary[0] or 0) if birdnet_summary else 0
         ),
@@ -1776,6 +1692,11 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
         "i2c_reading_count": int((i2c_summary[0] or 0) if i2c_summary else 0),
         "latest_i2c_reading_at": format_rfc3339_utc(
             i2c_summary[1] if i2c_summary else None
+        ),
+        "birdnet_rankings_url": birdnet_rankings_url(
+            peer_uuid,
+            range_key=normalized_evidence_range,
+            label_mode=normalized_label_mode,
         ),
         "top_birdnet_summaries": [
             {
@@ -1837,6 +1758,18 @@ def fetch_site_detail(site_id: str, evidence_range: str | None = None) -> dict:
                 "top_score": float(detection[11]),
                 "top_likely_score": (
                     float(detection[12]) if detection[12] is not None else None
+                ),
+                "weighted_label": detection[13] or detection[10],
+                "weighted_score": (
+                    float(detection[14]) if detection[14] is not None else float(detection[11])
+                ),
+                "weighted_likely_score": (
+                    float(detection[15]) if detection[15] is not None else None
+                ),
+                "display_label": detection[16],
+                "display_score": float(detection[17]),
+                "display_likely_score": (
+                    float(detection[18]) if detection[18] is not None else None
                 ),
             }
             for detection in detections
@@ -2166,10 +2099,14 @@ def render_site_status_html(site: dict) -> str:
 </html>"""
 
 
-def fetch_site_synoptic(site_id: str, range_key: str = "day") -> dict:
-    site = fetch_site_detail(site_id)
-    lookup_wg_ip = site["wg_ip"]
+def fetch_site_synoptic(
+    site_id: str,
+    range_key: str = "day",
+    label_mode: str | None = None,
+) -> dict:
     normalized_range = normalize_synoptic_range(range_key)
+    site = fetch_site_detail(site_id, normalized_range, label_mode)
+    lookup_wg_ip = site["wg_ip"]
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -2257,8 +2194,10 @@ def fetch_site_birdnet_rankings(
     statistic_key: str | None = None,
     weight_key: str | None = None,
     range_key: str | None = None,
+    label_mode: str | None = None,
 ) -> dict:
-    site = fetch_site_detail(site_id)
+    normalized_label_mode = normalize_birdnet_label_mode(label_mode)
+    site = fetch_site_detail(site_id, range_key, normalized_label_mode)
     normalized_variable = normalize_birdnet_ranking_variable(variable_key)
     normalized_statistic = normalize_birdnet_ranking_statistic(statistic_key)
     normalized_weight = normalize_birdnet_ranking_weight(weight_key)
@@ -2266,7 +2205,6 @@ def fetch_site_birdnet_rankings(
         normalized_weight = "no"
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
-    anchored_cutoff = None
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -2281,12 +2219,16 @@ def fetch_site_birdnet_rankings(
                 if has_window_volume
                 else "NULL::double precision AS avg_volume"
             )
+            label_sql = birdnet_label_sql(normalized_label_mode)
+            selected_label_expr = label_sql["label"]
+            selected_score_expr = label_sql["score"]
+            selected_likely_expr = label_sql["likely"]
 
             base_variable_expr_map = {
                 "detection": "1::double precision",
                 "duration": "greatest(end_sec - start_sec, 0)::double precision",
-                "score": "top_score::double precision",
-                "occup": "coalesce(top_likely_score, top_score)::double precision",
+                "score": f"({selected_score_expr})::double precision",
+                "occup": f"coalesce({selected_likely_expr}, {selected_score_expr})::double precision",
                 "volume": (
                     "volume::double precision"
                     if has_window_volume
@@ -2296,7 +2238,7 @@ def fetch_site_birdnet_rankings(
             variable_expr = base_variable_expr_map[normalized_variable]
             if normalized_weight == "yes" and normalized_variable != "occup":
                 variable_expr = (
-                    f"({variable_expr}) * coalesce(top_likely_score, top_score)::double precision"
+                    f"({variable_expr}) * coalesce({selected_likely_expr}, 1.0)::double precision"
                 )
 
             statistic_expr_map = {
@@ -2316,28 +2258,9 @@ def fetch_site_birdnet_rankings(
                 f"{BIRDNET_RANKING_STATISTICS[normalized_statistic]['label']} of "
                 f"{BIRDNET_RANKING_VARIABLES[normalized_variable]['label'].lower()}"
             )
-            if range_cutoff is None:
-                cur.execute(
-                    f"""
-                    SELECT top_label,
-                           count(*)::integer AS detection_count,
-                           sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                           sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                           sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                           max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                           max(top_score) AS max_score,
-                           max(coalesce(top_likely_score, top_score)) AS max_occup,
-                           {avg_volume_expr},
-                           {selected_metric_expr} AS selected_metric,
-                           max(processed_at) AS latest_processed_at
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                    GROUP BY top_label
-                    ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
-                    """,
-                    (site["wg_ip"],),
-                )
-            else:
+            ranking_where = "WHERE wg_ip = %s"
+            ranking_params: tuple = (site["wg_ip"],)
+            if range_cutoff is not None:
                 cur.execute(
                     """
                     SELECT max(processed_at)
@@ -2350,53 +2273,41 @@ def fetch_site_birdnet_rankings(
                 anchored_cutoff = window_cutoff_from_latest(
                     latest_birdnet_at, range_cutoff
                 )
-                if anchored_cutoff is None:
-                    cur.execute(
-                        f"""
-                        SELECT top_label,
-                               count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                               max(top_score) AS max_score,
-                               max(coalesce(top_likely_score, top_score)) AS max_occup,
-                               {avg_volume_expr},
-                               {selected_metric_expr} AS selected_metric,
-                               max(processed_at) AS latest_processed_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                        GROUP BY top_label
-                        ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
-                        """,
-                        (site["wg_ip"],),
-                    )
-                else:
-                    cur.execute(
-                        f"""
-                        SELECT top_label,
-                               count(*)::integer AS detection_count,
-                               sum(top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_likely,
-                               sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS sum_score_x_occup,
-                               sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                               max(top_score * coalesce(top_likely_score, top_score)) AS max_score_x_occup,
-                               max(top_score) AS max_score,
-                               max(coalesce(top_likely_score, top_score)) AS max_occup,
-                               {avg_volume_expr},
-                               {selected_metric_expr} AS selected_metric,
-                               max(processed_at) AS latest_processed_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                          AND processed_at >= %s
-                        GROUP BY top_label
-                        ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, top_label ASC
-                        """,
-                        (site["wg_ip"], anchored_cutoff),
-                    )
+                if anchored_cutoff is not None:
+                    ranking_where += " AND processed_at >= %s"
+                    ranking_params = (site["wg_ip"], anchored_cutoff)
+            cur.execute(
+                f"""
+                SELECT {selected_label_expr} AS selected_label,
+                       count(*)::integer AS detection_count,
+                       sum(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS sum_score_x_likely,
+                       sum((end_sec - start_sec) * ({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS sum_score_x_occup,
+                       sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
+                       max(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS max_score_x_occup,
+                       max({selected_score_expr}) AS max_score,
+                       max(coalesce({selected_likely_expr}, {selected_score_expr})) AS max_occup,
+                       {avg_volume_expr},
+                       {selected_metric_expr} AS selected_metric,
+                       max(processed_at) AS latest_processed_at
+                FROM sensos.public_site_birdnet_detections
+                {ranking_where}
+                GROUP BY selected_label
+                ORDER BY selected_metric DESC NULLS LAST, detection_count DESC, selected_label ASC
+                """,
+                ranking_params,
+            )
             ranking_rows = cur.fetchall()
 
-    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    site["birdnet_rankings_url"] = birdnet_rankings_url(
+        site["peer_uuid"],
+        variable=normalized_variable,
+        statistic=normalized_statistic,
+        weight=normalized_weight,
+        range_key=normalized_range,
+        label_mode=normalized_label_mode,
+    )
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
+    site["birdnet_label_mode"] = normalized_label_mode
     site["birdnet_ranking_variable"] = normalized_variable
     site["birdnet_ranking_statistic"] = normalized_statistic
     site["birdnet_ranking_weight"] = normalized_weight
@@ -2426,8 +2337,10 @@ def fetch_site_birdnet_species(
     site_id: str,
     label: str,
     range_key: str | None = None,
+    label_mode: str | None = None,
 ) -> dict:
-    site = fetch_site_detail(site_id)
+    normalized_label_mode = normalize_birdnet_label_mode(label_mode)
+    site = fetch_site_detail(site_id, range_key, normalized_label_mode)
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_window = BIRDNET_RANKING_RANGES[normalized_range]
     range_seconds = (
@@ -2441,94 +2354,55 @@ def fetch_site_birdnet_species(
                 "public_site_birdnet_detections",
                 "volume",
             )
+            label_sql = birdnet_label_sql(normalized_label_mode)
+            selected_label_expr = label_sql["label"]
+            selected_score_expr = label_sql["score"]
+            selected_likely_expr = label_sql["likely"]
+            volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             if range_seconds is None:
                 cur.execute(
-                    (
-                        """
+                    f"""
                     SELECT processed_at,
-                           top_score,
-                           top_likely_score,
+                           {selected_score_expr} AS selected_score,
+                           {selected_likely_expr} AS selected_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
                            channel_index,
-                           volume
+                           {volume_expr}
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
-                      AND top_label = %s
+                      AND {selected_label_expr} = %s
                     ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                        if has_window_volume
-                        else """
-                    SELECT processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           NULL::double precision AS volume
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND top_label = %s
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """
-                    ),
+                    """,
                     (site["wg_ip"], label),
                 )
             else:
                 cur.execute(
-                    (
-                        """
+                    f"""
                     WITH anchor AS (
                         SELECT max(processed_at) AS latest_at
                         FROM sensos.public_site_birdnet_detections
                         WHERE wg_ip = %s
                     )
                     SELECT d.processed_at,
-                           top_score,
-                           top_likely_score,
+                           {selected_score_expr} AS selected_score,
+                           {selected_likely_expr} AS selected_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
                            channel_index,
-                           volume
+                           {volume_expr}
                     FROM sensos.public_site_birdnet_detections d
                     CROSS JOIN anchor a
                     WHERE d.wg_ip = %s
-                      AND d.top_label = %s
+                      AND {selected_label_expr} = %s
                       AND a.latest_at IS NOT NULL
                       AND d.processed_at >= (
                           a.latest_at - make_interval(secs => %s)
                       )
                     ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
-                    """
-                        if has_window_volume
-                        else """
-                    WITH anchor AS (
-                        SELECT max(processed_at) AS latest_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                    )
-                    SELECT d.processed_at,
-                           top_score,
-                           top_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           NULL::double precision AS volume
-                    FROM sensos.public_site_birdnet_detections d
-                    CROSS JOIN anchor a
-                    WHERE d.wg_ip = %s
-                      AND d.top_label = %s
-                      AND a.latest_at IS NOT NULL
-                      AND d.processed_at >= (
-                          a.latest_at - make_interval(secs => %s)
-                      )
-                    ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
-                    """
-                    ),
+                    """,
                     (
                         site["wg_ip"],
                         site["wg_ip"],
@@ -2552,8 +2426,8 @@ def fetch_site_birdnet_species(
     night_count = 0
     for (
         processed_at,
-        top_score,
-        top_likely_score,
+        selected_score,
+        selected_likely_score,
         start_sec,
         end_sec,
         source_path,
@@ -2566,10 +2440,12 @@ def fetch_site_birdnet_species(
         processed_text = format_rfc3339_utc(processed_at)
         if processed_text is None:
             continue
-        score_value = float(top_score)
+        score_value = float(selected_score)
         score_values.append(score_value)
         occupancy_value = (
-            float(top_likely_score) if top_likely_score is not None else score_value
+            float(selected_likely_score)
+            if selected_likely_score is not None
+            else score_value
         )
         duration_sec = max(float(end_sec) - float(start_sec), 0.0)
         duration_values.append(duration_sec)
@@ -2604,7 +2480,9 @@ def fetch_site_birdnet_species(
                 "processed_at": processed_text,
                 "top_score": score_value,
                 "top_likely_score": (
-                    float(top_likely_score) if top_likely_score is not None else None
+                    float(selected_likely_score)
+                    if selected_likely_score is not None
+                    else None
                 ),
                 "start_sec": float(start_sec),
                 "end_sec": float(end_sec),
@@ -2616,10 +2494,15 @@ def fetch_site_birdnet_species(
     site["species_label"] = label
     site["species_range"] = normalized_range
     site["species_range_window"] = range_window
+    site["birdnet_label_mode"] = normalized_label_mode
     site["birdnet_species_url"] = birdnet_species_url(
-        site["peer_uuid"], label, normalized_range
+        site["peer_uuid"], label, normalized_range, normalized_label_mode
     )
-    site["birdnet_rankings_url"] = f"/sites/{site['peer_uuid']}/birdnet-rankings"
+    site["birdnet_rankings_url"] = birdnet_rankings_url(
+        site["peer_uuid"],
+        range_key=normalized_range,
+        label_mode=normalized_label_mode,
+    )
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["species_score_series"] = downsample_points(score_points, 180)
     site["species_volume_dbfs_series"] = downsample_points(volume_dbfs_points, 180)
@@ -2691,8 +2574,9 @@ def fetch_site_birdnet_species(
 
 def render_birdnet_species_html(site: dict) -> str:
     selected_range = normalize_birdnet_ranking_range(site.get("species_range"))
+    label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     range_links = "".join(
-        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key))}">{label}</a>'
+        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key, label_mode))}">{label}</a>'
         for key, label in (
             ("hour", "Hour"),
             ("day", "Day"),
@@ -2700,6 +2584,10 @@ def render_birdnet_species_html(site: dict) -> str:
             ("month", "Month"),
             ("all", "All"),
         )
+    )
+    mode_links = "".join(
+        f'<a class="range-pill{" active" if key == label_mode else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], selected_range, key))}">{escape_html(config["label"])}</a>'
+        for key, config in BIRDNET_LABEL_MODES.items()
     )
     score_chart = (
         render_event_timeline_svg(
@@ -2837,7 +2725,7 @@ def render_birdnet_species_html(site: dict) -> str:
     <div class="masthead">
       <div class="nav-row">
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+        <a class="nav-link-inline" href="{escape_html(build_url(site['synoptic_url'], range=selected_range, label_mode=label_mode))}">Time series</a>
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
@@ -2848,7 +2736,7 @@ def render_birdnet_species_html(site: dict) -> str:
     </div>
     <div class="stack">
       <section class="panel">
-        <div class="range-pills">{range_links}</div>
+        <div class="range-pills">{mode_links}{range_links}</div>
       </section>
       <section class="panel">
         <div class="summary-grid">
@@ -2891,8 +2779,9 @@ def render_birdnet_species_html(site: dict) -> str:
 
 def render_site_detail_html(site: dict) -> str:
     evidence_range = normalize_detail_range(site.get("evidence_range"))
+    label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     evidence_range_links = "".join(
-        f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site["public_url"])}?range={key}">{label}</a>'
+        f'<a class="range-pill{" active" if key == evidence_range else ""}" href="{escape_html(site_detail_url(site["peer_uuid"], key, label_mode))}">{label}</a>'
         for key, label in (
             ("hour", "Hour"),
             ("day", "Day"),
@@ -2900,6 +2789,10 @@ def render_site_detail_html(site: dict) -> str:
             ("month", "Month"),
             ("all", "All Time"),
         )
+    )
+    label_mode_links = "".join(
+        f'<a class="range-pill{" active" if key == label_mode else ""}" href="{escape_html(site_detail_url(site["peer_uuid"], evidence_range, key))}">{escape_html(config["label"])}</a>'
+        for key, config in BIRDNET_LABEL_MODES.items()
     )
     evidence_chart = render_horizontal_lollipop_svg(
         site["top_birdnet_evidence"],
@@ -2911,7 +2804,9 @@ def render_site_detail_html(site: dict) -> str:
     )
     sensor_plot_series = site.get("sensor_plot_series") or []
     synoptic_url = f"/sites/{site['peer_uuid']}/synoptic"
-    synoptic_range_url = f"{synoptic_url}?range={evidence_range}"
+    synoptic_range_url = build_url(
+        synoptic_url, range=evidence_range, label_mode=label_mode
+    )
     sensor_cards_html = "".join(f"""
             <article class="sensor-focus-card">
               <h3 class="sensor-focus-title">{escape_html(series['label'])}</h3>
@@ -2921,8 +2816,12 @@ def render_site_detail_html(site: dict) -> str:
             </article>
         """ for series in sensor_plot_series)
 
-    birdnet_rankings_url = f"/sites/{site['peer_uuid']}/birdnet-rankings"
-    birdnet_rankings_range_url = f"{birdnet_rankings_url}?range={evidence_range}"
+    rankings_page_url = birdnet_rankings_url(
+        site["peer_uuid"],
+        range_key=evidence_range,
+        label_mode=label_mode,
+    )
+    birdnet_rankings_range_url = rankings_page_url
 
     return f"""<!doctype html>
 <html lang="en">
@@ -3149,7 +3048,7 @@ def render_site_detail_html(site: dict) -> str:
       <div class="nav-row">
         <span class="nav-link">Overview</span>
         <a class="nav-link-inline" href="{synoptic_url}">Time series</a>
-        <a class="nav-link-inline" href="{birdnet_rankings_url}">BirdNET rankings</a>
+        <a class="nav-link-inline" href="{rankings_page_url}">BirdNET rankings</a>
         <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
       <div class="meta">
@@ -3163,7 +3062,7 @@ def render_site_detail_html(site: dict) -> str:
             <div>
               <h2 class="section-title" style="margin-bottom:0.2rem;">Top Species</h2>
             </div>
-            <div class="range-pills">{evidence_range_links}</div>
+            <div class="range-pills">{label_mode_links}{evidence_range_links}</div>
           </div>
           <a class="evidence-chart-link" href="{escape_html(birdnet_rankings_range_url)}">
             <div class="evidence-chart-wrap">{evidence_chart or '<div class="empty">No BirdNET detections are visible yet for this site.</div>'}</div>
@@ -3189,11 +3088,12 @@ def render_site_detail_html(site: dict) -> str:
 
 def render_synoptic_html(site: dict) -> str:
     range_key = normalize_synoptic_range(site.get("synoptic_range"))
+    label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     species_href = lambda label: birdnet_species_url(
-        site["peer_uuid"], str(label), range_key
+        site["peer_uuid"], str(label), range_key, label_mode
     )
     range_links = "".join(
-        f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(site["synoptic_url"])}?range={key}">{label}</a>'
+        f'<a class="range-pill{" active" if key == range_key else ""}" href="{escape_html(build_url(site["synoptic_url"], range=key, label_mode=label_mode))}">{label}</a>'
         for key, label in (
             ("hour", "Hour"),
             ("day", "Day"),
@@ -3384,13 +3284,14 @@ def render_birdnet_rankings_html(site: dict) -> str:
     )
     selected_weight = normalize_birdnet_ranking_weight(site.get("birdnet_ranking_weight"))
     selected_range = normalize_birdnet_ranking_range(site.get("birdnet_ranking_range"))
+    selected_label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     selected_metric = "selected_metric"
     plotted_species_count = sum(
         1 for item in site["birdnet_rankings"] if item.get(selected_metric) is not None
     )
     species_href_map = {
         str(item["label"]): birdnet_species_url(
-            site["peer_uuid"], str(item["label"]), selected_range
+            site["peer_uuid"], str(item["label"]), selected_range, selected_label_mode
         )
         for item in site["birdnet_rankings"]
     }
@@ -3427,6 +3328,10 @@ def render_birdnet_rankings_html(site: dict) -> str:
     weight_options = "".join(
         f'<option value="{key}"{" selected" if key == selected_weight else ""}>{escape_html(config["label"])}</option>'
         for key, config in BIRDNET_RANKING_WEIGHTING.items()
+    )
+    label_mode_options = "".join(
+        f'<option value="{key}"{" selected" if key == selected_label_mode else ""}>{escape_html(config["label"])}</option>'
+        for key, config in BIRDNET_LABEL_MODES.items()
     )
     range_options = "".join(
         f'<option value="{key}"{" selected" if key == selected_range else ""}>{label}</option>'
@@ -3512,7 +3417,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     .controls {{
       display: grid;
-      grid-template-columns: minmax(160px, 1.35fr) minmax(120px, 0.9fr) minmax(170px, 1fr) minmax(120px, 0.8fr);
+      grid-template-columns: minmax(150px, 1.2fr) minmax(120px, 0.9fr) minmax(170px, 1fr) minmax(150px, 1fr) minmax(120px, 0.8fr);
       gap: 0.65rem;
       align-items: center;
     }}
@@ -3595,7 +3500,7 @@ def render_birdnet_rankings_html(site: dict) -> str:
     <div class="masthead">
       <div class="nav-row">
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <a class="nav-link-inline" href="{escape_html(site['synoptic_url'])}">Time series</a>
+        <a class="nav-link-inline" href="{escape_html(build_url(site['synoptic_url'], range=selected_range, label_mode=selected_label_mode))}">Time series</a>
         <span class="nav-link">BirdNET rankings</span>
         <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
@@ -3607,10 +3512,11 @@ def render_birdnet_rankings_html(site: dict) -> str:
       <section class="panel rankings-panel">
         <div class="section-bar">
           <h2 class="section-title">Rankings</h2>
-          <form method="get" action="{escape_html(site['birdnet_rankings_url'])}" class="controls" id="birdnetRankingControls">
+          <form method="get" action="{escape_html(f"/sites/{site['peer_uuid']}/birdnet-rankings")}" class="controls" id="birdnetRankingControls">
             <select name="variable" onchange="handleBirdnetVariableChange()" aria-label="Variable">{variable_options}</select>
             <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
             <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weighted">{weight_options}</select>
+            <select name="label_mode" onchange="submitBirdnetRankingControls()" aria-label="Label mode">{label_mode_options}</select>
             <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
           </form>
         </div>
@@ -3678,14 +3584,22 @@ def api_sites():
 
 @app.get("/api/sites/{site_id}")
 def api_site(site_id: str, request: Request):
-    return fetch_site_detail(site_id, request.query_params.get("range"))
+    return fetch_site_detail(
+        site_id,
+        request.query_params.get("range"),
+        request.query_params.get("label_mode"),
+    )
 
 
 @app.get("/sites/{site_id}", response_class=HTMLResponse)
 def site_page(site_id: str, request: Request):
     return HTMLResponse(
         render_site_detail_html(
-            fetch_site_detail(site_id, request.query_params.get("range"))
+            fetch_site_detail(
+                site_id,
+                request.query_params.get("range"),
+                request.query_params.get("label_mode"),
+            )
         )
     )
 
@@ -3694,7 +3608,11 @@ def site_page(site_id: str, request: Request):
 def synoptic_site_page(site_id: str, request: Request):
     return HTMLResponse(
         render_synoptic_html(
-            fetch_site_synoptic(site_id, request.query_params.get("range"))
+            fetch_site_synoptic(
+                site_id,
+                request.query_params.get("range"),
+                request.query_params.get("label_mode"),
+            )
         )
     )
 
@@ -3709,6 +3627,7 @@ def birdnet_rankings_site_page(site_id: str, request: Request):
                 request.query_params.get("stat"),
                 request.query_params.get("weight"),
                 request.query_params.get("range"),
+                request.query_params.get("label_mode"),
             )
         )
     )
@@ -3722,6 +3641,7 @@ def birdnet_species_site_page(site_id: str, label: str, request: Request):
                 site_id,
                 label,
                 request.query_params.get("range"),
+                request.query_params.get("label_mode"),
             )
         )
     )

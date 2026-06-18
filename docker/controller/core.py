@@ -434,6 +434,15 @@ def migrate_0_14_0_reconcile_upload_dedupe_indexes(cur):
     create_birdnet_detections_table(cur)
 
 
+def migrate_0_15_0_birdnet_weighted_label_schema(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_birdnet_detections_table(cur)
+    create_public_site_birdnet_recent_view(cur)
+    create_public_site_birdnet_detections_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -489,6 +498,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.14.0"),
         name="reconcile upload dedupe indexes for peer-based conflict handling",
         apply=migrate_0_14_0_reconcile_upload_dedupe_indexes,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.15.0"),
+        name="add weighted BirdNET label fields and public views",
+        apply=migrate_0_15_0_birdnet_weighted_label_schema,
     ),
 ]
 
@@ -1344,11 +1358,53 @@ def create_birdnet_detections_table(cur):
             label TEXT NOT NULL,
             score DOUBLE PRECISION NOT NULL,
             likely_score DOUBLE PRECISION,
+            weighted_label TEXT,
+            weighted_score DOUBLE PRECISION,
+            weighted_likely_score DOUBLE PRECISION,
             volume DOUBLE PRECISION,
             clip_start_time TIMESTAMPTZ NOT NULL,
             clip_end_time TIMESTAMPTZ NOT NULL,
             clip_path TEXT
         );
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS weighted_label TEXT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS weighted_score DOUBLE PRECISION;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS weighted_likely_score DOUBLE PRECISION;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.birdnet_detections
+        SET weighted_label = label
+        WHERE weighted_label IS NULL;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.birdnet_detections
+        SET weighted_score = score
+        WHERE weighted_score IS NULL;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.birdnet_detections
+        SET weighted_likely_score = likely_score
+        WHERE weighted_likely_score IS NULL;
         """
     )
     cur.execute(
@@ -1442,6 +1498,9 @@ def create_public_site_birdnet_recent_view(cur):
                d.label,
                d.score,
                d.likely_score,
+               d.weighted_label,
+               d.weighted_score,
+               d.weighted_likely_score,
                d.volume,
                row_number() OVER (
                    PARTITION BY d.wireguard_ip
@@ -1475,6 +1534,9 @@ def create_public_site_birdnet_detections_view(cur):
                d.label AS top_label,
                d.score AS top_score,
                d.likely_score AS top_likely_score,
+               d.weighted_label,
+               d.weighted_score,
+               d.weighted_likely_score,
                row_number() OVER (
                    PARTITION BY d.wireguard_ip
                    ORDER BY d.clip_start_time DESC,
@@ -1647,11 +1709,14 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                     label,
                     score,
                     likely_score,
+                    weighted_label,
+                    weighted_score,
+                    weighted_likely_score,
                     volume,
                     clip_start_time,
                     clip_end_time,
                     clip_path
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (
                     peer_id,
                     channel_index,
@@ -1674,6 +1739,13 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                         detection.label,
                         detection.score,
                         detection.likely_score,
+                        detection.weighted_label or detection.label,
+                        detection.weighted_score
+                        if detection.weighted_score is not None
+                        else detection.score,
+                        detection.weighted_likely_score
+                        if detection.weighted_likely_score is not None
+                        else detection.likely_score,
                         detection.volume,
                         detection.clip_start_time,
                         detection.clip_end_time,

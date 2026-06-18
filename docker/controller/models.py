@@ -139,6 +139,9 @@ class BirdNETDetectionUploadEntry(BaseModel):
     label: str
     score: float
     likely_score: Optional[float] = None
+    weighted_label: Optional[str] = None
+    weighted_score: Optional[float] = None
+    weighted_likely_score: Optional[float] = None
     volume: Optional[float] = Field(default=None, ge=0, le=1)
     clip_start_time: datetime
     clip_end_time: datetime

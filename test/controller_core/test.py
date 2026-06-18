@@ -182,7 +182,7 @@ def test_apply_schema_migrations_records_applied_versions():
     fake_cur.fetchone.side_effect = [None] * 20
     fake_cur.fetchall.return_value = []
 
-    core.apply_schema_migrations(fake_cur, "0.11.0")
+    core.apply_schema_migrations(fake_cur, "0.15.0")
 
     executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS sensos.schema_migrations" in executed
@@ -190,6 +190,7 @@ def test_apply_schema_migrations_records_applied_versions():
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_readings" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_detections" in executed
+    assert "ADD COLUMN IF NOT EXISTS weighted_label TEXT" in executed
     assert "CREATE OR REPLACE VIEW sensos.public_sites" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
     assert "wg_public_ip TEXT NOT NULL" in executed
@@ -202,7 +203,7 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     fake_cur = mock.MagicMock()
     fake_cur.fetchall.return_value = [("0.5.0",)]
 
-    core.apply_schema_migrations(fake_cur, "0.11.0")
+    core.apply_schema_migrations(fake_cur, "0.15.0")
 
     executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
@@ -210,6 +211,7 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     assert "CREATE TABLE IF NOT EXISTS sensos.runtime_operator_keys" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.i2c_readings" in executed
     assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_detections" in executed
+    assert "ADD COLUMN IF NOT EXISTS weighted_label TEXT" in executed
     assert "CREATE OR REPLACE VIEW sensos.public_sites" in executed
     insert_calls = [
         call.args[1]
@@ -218,6 +220,7 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     ]
     assert ("0.6.0", "reconcile legacy network endpoint and client status schema") in insert_calls
     assert ("0.7.0", "add i2c readings upload schema") in insert_calls
+    assert ("0.15.0", "add weighted BirdNET label fields and public views") in insert_calls
     assert ("0.8.0", "add per-peer api credentials") in insert_calls
     assert ("0.9.0", "add runtime operator key publication") in insert_calls
     assert ("0.10.0", "add birdnet results upload schema") in insert_calls
