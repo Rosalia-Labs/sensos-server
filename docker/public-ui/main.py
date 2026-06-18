@@ -1369,7 +1369,10 @@ def fetch_sites() -> list[dict]:
                        status_message,
                        birdnet_detection_count,
                        birdnet_source_count,
-                       latest_birdnet_result_at
+                       latest_birdnet_result_at,
+                       latest_i2c_upload_at,
+                       latest_birdnet_upload_at,
+                       last_activity_at
                 FROM sensos.public_sites
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY site_label, wg_ip;
@@ -1395,6 +1398,9 @@ def fetch_sites() -> list[dict]:
             "birdnet_detection_count": int(row[14]),
             "birdnet_source_count": int(row[15]),
             "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
+            "latest_i2c_upload_at": format_rfc3339_utc(row[17]),
+            "latest_birdnet_upload_at": format_rfc3339_utc(row[18]),
+            "last_activity_at": format_rfc3339_utc(row[19]),
             "public_url": f"/sites/{row[0]}",
         }
         for row in rows
@@ -1439,7 +1445,10 @@ def fetch_site_detail(
                        status_message,
                        birdnet_detection_count,
                        birdnet_source_count,
-                       latest_birdnet_result_at
+                       latest_birdnet_result_at,
+                       latest_i2c_upload_at,
+                       latest_birdnet_upload_at,
+                       last_activity_at
                 FROM sensos.public_sites
                 WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
@@ -1690,6 +1699,9 @@ def fetch_site_detail(
         "client_version": row[12],
         "status_message": row[13],
         "birdnet_source_count": int(row[15]),
+        "latest_i2c_upload_at": format_rfc3339_utc(row[17]),
+        "latest_birdnet_upload_at": format_rfc3339_utc(row[18]),
+        "last_activity_at": format_rfc3339_utc(row[19]),
         "public_url": site_detail_url(
             peer_uuid, normalized_evidence_range, normalized_label_mode
         ),
@@ -1826,7 +1838,10 @@ def fetch_site_status(site_id: str) -> dict:
                        status_message,
                        birdnet_detection_count,
                        birdnet_source_count,
-                       latest_birdnet_result_at
+                       latest_birdnet_result_at,
+                       latest_i2c_upload_at,
+                       latest_birdnet_upload_at,
+                       last_activity_at
                 FROM sensos.public_sites
                 WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
@@ -1875,6 +1890,9 @@ def fetch_site_status(site_id: str) -> dict:
         "birdnet_detection_count": int(row[14]),
         "birdnet_source_count": int(row[15]),
         "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
+        "latest_i2c_upload_at": format_rfc3339_utc(row[17]),
+        "latest_birdnet_upload_at": format_rfc3339_utc(row[18]),
+        "last_activity_at": format_rfc3339_utc(row[19]),
         "public_url": f"/sites/{row[0]}",
         "status_url": f"/sites/{row[0]}/status",
         "synoptic_url": f"/sites/{row[0]}/synoptic",
@@ -1911,7 +1929,8 @@ def render_site_status_html(site: dict) -> str:
             render_local_time(site.get("location_recorded_at"), "unknown"),
             True,
         ),
-        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown"), True),
+        ("Last activity", render_local_time(site.get("last_activity_at"), "unknown"), True),
+        ("Last status post", render_local_time(site.get("last_check_in"), "unknown"), True),
     ]
     infra_cards = "".join(f"""
         <article class="row-card">
@@ -4232,7 +4251,7 @@ def render_index_html() -> str:
           <div class="site-popup-meta">
             <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
             <div>${{escapeHtml(site.hostname || site.network_name || "")}}</div>
-            <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in))}}</div>
+            <div>Last activity: ${{escapeHtml(formatRelativeTime(site.last_activity_at || site.last_check_in))}}</div>
             <div>BirdNET detections: ${{escapeHtml(site.birdnet_detection_count ?? 0)}}</div>
           </div>
           <div class="site-popup-actions">

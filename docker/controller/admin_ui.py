@@ -661,6 +661,18 @@ def fetch_peer_rows(
                 public.ST_X(location::public.geometry)::float AS longitude
             FROM sensos.peer_locations
             ORDER BY peer_id, recorded_at DESC
+        ),
+        latest_i2c AS (
+            SELECT peer_id,
+                   max(server_received_at) AS latest_i2c_upload_at
+            FROM sensos.i2c_readings
+            GROUP BY peer_id
+        ),
+        latest_birdnet AS (
+            SELECT peer_id,
+                   max(server_received_at) AS latest_birdnet_upload_at
+            FROM sensos.birdnet_detections
+            GROUP BY peer_id
         )
         SELECT p.uuid::text,
                p.wg_ip::text,
@@ -674,11 +686,26 @@ def fetch_peer_rows(
                ls.status_message,
                ll.recorded_at,
                ll.latitude,
-               ll.longitude
+               ll.longitude,
+               i2.latest_i2c_upload_at,
+               bn.latest_birdnet_upload_at,
+               CASE
+                   WHEN ls.last_check_in IS NULL
+                    AND i2.latest_i2c_upload_at IS NULL
+                    AND bn.latest_birdnet_upload_at IS NULL
+                   THEN NULL
+                   ELSE GREATEST(
+                       coalesce(ls.last_check_in, 'epoch'::timestamptz),
+                       coalesce(i2.latest_i2c_upload_at, 'epoch'::timestamptz),
+                       coalesce(bn.latest_birdnet_upload_at, 'epoch'::timestamptz)
+                   )
+               END AS last_activity_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
         LEFT JOIN latest_location ll ON ll.peer_id = p.id
+        LEFT JOIN latest_i2c i2 ON i2.peer_id = p.id
+        LEFT JOIN latest_birdnet bn ON bn.peer_id = p.id
     """
     params: list[str] = []
 
@@ -708,6 +735,9 @@ def fetch_peer_rows(
             "location_recorded_at": row[10],
             "latitude": row[11],
             "longitude": row[12],
+            "latest_i2c_upload_at": row[13],
+            "latest_birdnet_upload_at": row[14],
+            "last_activity_at": row[15],
         }
         for row in rows
     ]
@@ -718,7 +748,7 @@ def fetch_peer_rows(
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
         "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
         "checkin": lambda row: (
-            row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc),
+            row["last_activity_at"] or datetime.min.replace(tzinfo=timezone.utc),
             row["wg_ip"],
         ),
         "state": lambda row: (row["is_active"], row["wg_ip"]),
@@ -810,6 +840,7 @@ def fetch_wireguard_peer_health_rows() -> list[dict]:
                     "hostname": peer_meta.get("hostname") or "Unknown",
                     "is_active": bool(peer_meta.get("is_active", True)),
                     "last_check_in": peer_meta.get("last_check_in"),
+                    "last_activity_at": peer_meta.get("last_activity_at"),
                     "last_handshake": last_handshake,
                     "handshake_age_seconds": age_seconds,
                     "handshake_bucket": bucket,
@@ -1130,31 +1161,31 @@ def overview_page(request: Request, flash: str | None = None):
     overview = fetch_dashboard_overview()
     networks = fetch_network_rows()[:5]
     all_peers = fetch_peer_rows(sort_by="checkin", direction="desc")
-    peers = [row for row in all_peers if row["last_check_in"] is not None][:8]
+    peers = [row for row in all_peers if row["last_activity_at"] is not None][:8]
     active_peer_count = sum(1 for row in all_peers if row["is_active"])
-    reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
+    reporting_clients = sum(1 for row in all_peers if row["last_activity_at"] is not None)
     latest_check_in = max(
-        (row["last_check_in"] for row in all_peers if row["last_check_in"] is not None),
+        (row["last_activity_at"] for row in all_peers if row["last_activity_at"] is not None),
         default=None,
     )
     body = f"""
 <div class="grid">
   {stat_card("Networks", str(overview["network_count"]), "Defined client network ranges.")}
   {stat_card("Peers", str(len(all_peers)), f'{active_peer_count} currently active.')}
-  {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
+  {stat_card("Reporting clients", str(reporting_clients), f'Last activity {summarize_age(latest_check_in)}.')}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
 </div>
 <div class="split compact overview-split">
   <section class="panel">
-    <h2 class="section-title">Latest peer check-ins</h2>
+    <h2 class="section-title">Latest peer activity</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last check-in</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last activity</th></tr>
       </thead>
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(peer_display_label(row))}</td><td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
+            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_activity_at']))}</td></tr>"
             for row in peers
         ) or '<tr><td colspan="4" class="dim">No peer check-ins reported yet.</td></tr>'}
       </tbody>
@@ -1357,7 +1388,7 @@ def peers_page(
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
-            f"<td>{html.escape(summarize_age(row['last_check_in']))}</td>"
+            f"<td>{html.escape(summarize_age(row['last_activity_at']))}</td>"
             "<td>"
             f"<div>{html.escape(row['status_message'] or '—')}</div>"
             f"<div class='dim mono'>{html.escape(format_peer_location(row))}</div>"
@@ -1492,7 +1523,7 @@ def wireguard_page(request: Request, flash: str | None = None):
   <h2 class="section-title">WireGuard peer health</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last activity</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1501,7 +1532,7 @@ def wireguard_page(request: Request, flash: str | None = None):
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
           f"<td><div>{badge_for_status(row['handshake_bucket'])}</div><div class='dim'>{html.escape(row['last_handshake'])}</div></td>"
-          f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_activity_at'] or row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_activity_at'] or row['last_check_in']))}</div></td>"
           f"<td class='mono' title='{html.escape(row['endpoint'])}'>{html.escape(truncate_middle(row['endpoint'], 26))}</td>"
           f"<td class='mono' title='{html.escape(row['transfer'])}'>{html.escape(truncate_middle(row['transfer'], 28))}</td>"
           f"<td><div>{badge_for_status(row['runtime_status'])}</div><div class='dim'>{html.escape(row['runtime_component'])}</div></td>"

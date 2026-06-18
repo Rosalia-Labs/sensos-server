@@ -1450,12 +1450,19 @@ def create_public_sites_view(cur):
             ORDER BY peer_id, recorded_at DESC
         ),
         birdnet_summary AS (
-            SELECT wireguard_ip,
+            SELECT peer_id,
                    count(*)::integer AS birdnet_detection_count,
                    count(DISTINCT source_path)::integer AS birdnet_source_count,
-                   max(clip_end_time) AS latest_birdnet_result_at
+                   max(clip_end_time) AS latest_birdnet_result_at,
+                   max(server_received_at) AS latest_birdnet_upload_at
             FROM sensos.birdnet_detections
-            GROUP BY wireguard_ip
+            GROUP BY peer_id
+        ),
+        i2c_summary AS (
+            SELECT peer_id,
+                   max(server_received_at) AS latest_i2c_upload_at
+            FROM sensos.i2c_readings
+            GROUP BY peer_id
         )
         SELECT p.uuid::text AS peer_uuid,
                host(p.wg_ip)::text AS wg_ip,
@@ -1473,12 +1480,26 @@ def create_public_sites_view(cur):
                ls.status_message,
                coalesce(bs.birdnet_detection_count, 0) AS birdnet_detection_count,
                coalesce(bs.birdnet_source_count, 0) AS birdnet_source_count,
-               bs.latest_birdnet_result_at
+               bs.latest_birdnet_result_at,
+               i2.latest_i2c_upload_at,
+               bs.latest_birdnet_upload_at,
+               CASE
+                   WHEN ls.last_check_in IS NULL
+                    AND i2.latest_i2c_upload_at IS NULL
+                    AND bs.latest_birdnet_upload_at IS NULL
+                   THEN NULL
+                   ELSE GREATEST(
+                       coalesce(ls.last_check_in, 'epoch'::timestamptz),
+                       coalesce(i2.latest_i2c_upload_at, 'epoch'::timestamptz),
+                       coalesce(bs.latest_birdnet_upload_at, 'epoch'::timestamptz)
+                   )
+               END AS last_activity_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
         LEFT JOIN latest_location ll ON ll.peer_id = p.id
-        LEFT JOIN birdnet_summary bs ON bs.wireguard_ip = p.wg_ip;
+        LEFT JOIN birdnet_summary bs ON bs.peer_id = p.id
+        LEFT JOIN i2c_summary i2 ON i2.peer_id = p.id;
         """
     )
 
