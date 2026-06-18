@@ -1304,7 +1304,7 @@ def overview_page(request: Request, flash: str | None = None):
           f"<td>{html.escape(format_uptime_seconds(row['uptime_seconds']))}</td>"
           "</tr>"
           for row in recent_status_rows
-      ) or '<tr><td colspan=\"6\" class=\"dim\">No client status posts recorded yet.</td></tr>'}
+      ) or '<tr><td colspan="6" class="dim">No client status posts recorded yet.</td></tr>'}
     </tbody>
   </table>
 </section>
@@ -1681,7 +1681,7 @@ def checkins_page(request: Request, flash: str | None = None):
           f"<td class='mono'>{html.escape(format_load_triplet(row))}</td>"
           "</tr>"
           for row in rows
-      ) or '<tr><td colspan=\"10\" class=\"dim\">No client status posts recorded yet.</td></tr>'}
+      ) or '<tr><td colspan="10" class="dim">No client status posts recorded yet.</td></tr>'}
     </tbody>
   </table>
 </section>
