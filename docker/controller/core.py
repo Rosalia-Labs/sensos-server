@@ -1483,17 +1483,7 @@ def create_public_sites_view(cur):
                bs.latest_birdnet_result_at,
                i2.latest_i2c_upload_at,
                bs.latest_birdnet_upload_at,
-               CASE
-                   WHEN ls.last_check_in IS NULL
-                    AND i2.latest_i2c_upload_at IS NULL
-                    AND bs.latest_birdnet_upload_at IS NULL
-                   THEN NULL
-                   ELSE GREATEST(
-                       coalesce(ls.last_check_in, 'epoch'::timestamptz),
-                       coalesce(i2.latest_i2c_upload_at, 'epoch'::timestamptz),
-                       coalesce(bs.latest_birdnet_upload_at, 'epoch'::timestamptz)
-                   )
-               END AS last_activity_at
+               ls.last_check_in AS last_activity_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id

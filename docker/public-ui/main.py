@@ -2031,8 +2031,7 @@ def render_site_status_html(site: dict) -> str:
             render_local_time(site.get("location_recorded_at"), "unknown"),
             True,
         ),
-        ("Last activity", render_local_time(site.get("last_activity_at"), "unknown"), True),
-        ("Last status post", render_local_time(site.get("last_check_in"), "unknown"), True),
+        ("Last check-in", render_local_time(site.get("last_check_in"), "unknown"), True),
     ]
     infra_cards = "".join(f"""
         <article class="row-card">
@@ -4370,7 +4369,7 @@ def render_index_html() -> str:
           <div class="site-popup-meta">
             <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
             <div>${{escapeHtml(site.hostname || site.network_name || "")}}</div>
-            <div>Last activity: ${{escapeHtml(formatRelativeTime(site.last_activity_at || site.last_check_in))}}</div>
+            <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in || site.last_activity_at))}}</div>
             <div>BirdNET detections: ${{escapeHtml(site.birdnet_detection_count ?? 0)}}</div>
           </div>
           <div class="site-popup-actions">

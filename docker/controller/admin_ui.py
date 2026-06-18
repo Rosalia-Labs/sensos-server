@@ -172,6 +172,7 @@ def render_page(
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
         ("/admin/peers", "Clients"),
+        ("/admin/checkins", "Check-ins"),
         ("/admin/wireguard", "WireGuard"),
         ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
@@ -428,6 +429,54 @@ def summarize_age(value) -> str:
     return f"{total_seconds // 86400}d ago"
 
 
+def format_uptime_seconds(value) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        total_seconds = max(0, int(value))
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours:02d}h {minutes:02d}m"
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def format_load_triplet(row: dict) -> str:
+    values = [row.get("load_1m"), row.get("load_5m"), row.get("load_15m")]
+    rendered = []
+    for value in values:
+        if value is None:
+            rendered.append("—")
+        else:
+            rendered.append(f"{float(value):.2f}")
+    return " / ".join(rendered)
+
+
+def format_disk_gb(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+
+
+def format_memory_pair(used, total) -> str:
+    if used is None or total is None:
+        return "—"
+    try:
+        return f"{int(used)}/{int(total)}"
+    except (TypeError, ValueError):
+        return f"{html.escape(str(used))}/{html.escape(str(total))}"
+
+
 def peer_display_label(row: dict) -> str:
     note = str(row.get("note") or "").strip()
     if note:
@@ -662,18 +711,6 @@ def fetch_peer_rows(
             FROM sensos.peer_locations
             ORDER BY peer_id, recorded_at DESC
         ),
-        latest_i2c AS (
-            SELECT peer_id,
-                   max(server_received_at) AS latest_i2c_upload_at
-            FROM sensos.i2c_readings
-            GROUP BY peer_id
-        ),
-        latest_birdnet AS (
-            SELECT peer_id,
-                   max(server_received_at) AS latest_birdnet_upload_at
-            FROM sensos.birdnet_detections
-            GROUP BY peer_id
-        )
         SELECT p.uuid::text,
                p.wg_ip::text,
                n.name,
@@ -687,25 +724,11 @@ def fetch_peer_rows(
                ll.recorded_at,
                ll.latitude,
                ll.longitude,
-               i2.latest_i2c_upload_at,
-               bn.latest_birdnet_upload_at,
-               CASE
-                   WHEN ls.last_check_in IS NULL
-                    AND i2.latest_i2c_upload_at IS NULL
-                    AND bn.latest_birdnet_upload_at IS NULL
-                   THEN NULL
-                   ELSE GREATEST(
-                       coalesce(ls.last_check_in, 'epoch'::timestamptz),
-                       coalesce(i2.latest_i2c_upload_at, 'epoch'::timestamptz),
-                       coalesce(bn.latest_birdnet_upload_at, 'epoch'::timestamptz)
-                   )
-               END AS last_activity_at
+               ls.last_check_in AS last_activity_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
         LEFT JOIN latest_location ll ON ll.peer_id = p.id
-        LEFT JOIN latest_i2c i2 ON i2.peer_id = p.id
-        LEFT JOIN latest_birdnet bn ON bn.peer_id = p.id
     """
     params: list[str] = []
 
@@ -735,9 +758,7 @@ def fetch_peer_rows(
             "location_recorded_at": row[10],
             "latitude": row[11],
             "longitude": row[12],
-            "latest_i2c_upload_at": row[13],
-            "latest_birdnet_upload_at": row[14],
-            "last_activity_at": row[15],
+            "last_activity_at": row[13],
         }
         for row in rows
     ]
@@ -748,7 +769,7 @@ def fetch_peer_rows(
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
         "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
         "checkin": lambda row: (
-            row["last_activity_at"] or datetime.min.replace(tzinfo=timezone.utc),
+            row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc),
             row["wg_ip"],
         ),
         "state": lambda row: (row["is_active"], row["wg_ip"]),
@@ -758,6 +779,61 @@ def fetch_peer_rows(
     key_func = sorters.get(sort_by, sorters["network"])
     peers.sort(key=key_func, reverse=(direction == "desc"))
     return peers
+
+
+def fetch_recent_client_status_rows(limit: int = 100) -> list[dict]:
+    fetch_limit = max(1, limit)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT cs.id,
+                       cs.last_check_in,
+                       p.uuid::text,
+                       p.wg_ip::text,
+                       n.name,
+                       p.note,
+                       cs.hostname,
+                       cs.version,
+                       cs.status_message,
+                       cs.uptime_seconds,
+                       cs.disk_available_gb,
+                       cs.memory_used_mb,
+                       cs.memory_total_mb,
+                       cs.load_1m,
+                       cs.load_5m,
+                       cs.load_15m
+                FROM sensos.client_status cs
+                JOIN sensos.wireguard_peers p ON p.id = cs.peer_id
+                JOIN sensos.networks n ON n.id = p.network_id
+                ORDER BY cs.last_check_in DESC, cs.id DESC
+                LIMIT %s;
+                """,
+                (fetch_limit,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": row[0],
+            "last_check_in": row[1],
+            "peer_uuid": row[2],
+            "wg_ip": row[3],
+            "network_name": row[4],
+            "note": row[5],
+            "hostname": row[6],
+            "version": row[7],
+            "status_message": row[8],
+            "uptime_seconds": row[9],
+            "disk_available_gb": row[10],
+            "memory_used_mb": row[11],
+            "memory_total_mb": row[12],
+            "load_1m": row[13],
+            "load_5m": row[14],
+            "load_15m": row[15],
+        }
+        for row in rows
+        if not is_infra_wg_ip(row[3])
+    ]
 
 
 def fetch_network_names() -> list[str]:
@@ -1161,31 +1237,32 @@ def overview_page(request: Request, flash: str | None = None):
     overview = fetch_dashboard_overview()
     networks = fetch_network_rows()[:5]
     all_peers = fetch_peer_rows(sort_by="checkin", direction="desc")
-    peers = [row for row in all_peers if row["last_activity_at"] is not None][:8]
+    peers = [row for row in all_peers if row["last_check_in"] is not None][:8]
+    recent_status_rows = fetch_recent_client_status_rows(limit=8)
     active_peer_count = sum(1 for row in all_peers if row["is_active"])
-    reporting_clients = sum(1 for row in all_peers if row["last_activity_at"] is not None)
+    reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
     latest_check_in = max(
-        (row["last_activity_at"] for row in all_peers if row["last_activity_at"] is not None),
+        (row["last_check_in"] for row in all_peers if row["last_check_in"] is not None),
         default=None,
     )
     body = f"""
 <div class="grid">
   {stat_card("Networks", str(overview["network_count"]), "Defined client network ranges.")}
   {stat_card("Peers", str(len(all_peers)), f'{active_peer_count} currently active.')}
-  {stat_card("Reporting clients", str(reporting_clients), f'Last activity {summarize_age(latest_check_in)}.')}
+  {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
 </div>
 <div class="split compact overview-split">
   <section class="panel">
-    <h2 class="section-title">Latest peer activity</h2>
+    <h2 class="section-title">Latest peer check-ins</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last activity</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last check-in</th></tr>
       </thead>
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(peer_display_label(row))}</td><td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_activity_at']))}</td></tr>"
+            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
         ) or '<tr><td colspan="4" class="dim">No peer check-ins reported yet.</td></tr>'}
       </tbody>
@@ -1207,6 +1284,30 @@ def overview_page(request: Request, flash: str | None = None):
     </table>
   </section>
 </div>
+<section class="panel" style="margin-bottom: 1rem;">
+  <div style="display:flex; justify-content:space-between; gap:1rem; align-items:baseline; flex-wrap:wrap;">
+    <h2 class="section-title" style="margin-bottom:0;">Recent client status posts</h2>
+    <a href="/admin/checkins">View full history</a>
+  </div>
+  <table>
+    <thead>
+      <tr><th>When</th><th>Client</th><th>Network</th><th>Version</th><th>Status</th><th>Uptime</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or (row['hostname'] or '—'))}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td>{html.escape(row['version'] or '—')}</td>"
+          f"<td>{html.escape(row['status_message'] or '—')}</td>"
+          f"<td>{html.escape(format_uptime_seconds(row['uptime_seconds']))}</td>"
+          "</tr>"
+          for row in recent_status_rows
+      ) or '<tr><td colspan=\"6\" class=\"dim\">No client status posts recorded yet.</td></tr>'}
+    </tbody>
+  </table>
+</section>
 <div class="stack">
   <section class="panel">
     <h2 class="section-title">Build metadata</h2>
@@ -1388,7 +1489,7 @@ def peers_page(
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
-            f"<td>{html.escape(summarize_age(row['last_activity_at']))}</td>"
+            f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
             "<td>"
             f"<div>{html.escape(row['status_message'] or '—')}</div>"
             f"<div class='dim mono'>{html.escape(format_peer_location(row))}</div>"
@@ -1523,7 +1624,7 @@ def wireguard_page(request: Request, flash: str | None = None):
   <h2 class="section-title">WireGuard peer health</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last activity</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1532,7 +1633,7 @@ def wireguard_page(request: Request, flash: str | None = None):
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['hostname'])}</td>"
           f"<td><div>{badge_for_status(row['handshake_bucket'])}</div><div class='dim'>{html.escape(row['last_handshake'])}</div></td>"
-          f"<td><div>{html.escape(summarize_age(row['last_activity_at'] or row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_activity_at'] or row['last_check_in']))}</div></td>"
+          f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
           f"<td class='mono' title='{html.escape(row['endpoint'])}'>{html.escape(truncate_middle(row['endpoint'], 26))}</td>"
           f"<td class='mono' title='{html.escape(row['transfer'])}'>{html.escape(truncate_middle(row['transfer'], 28))}</td>"
           f"<td><div>{badge_for_status(row['runtime_status'])}</div><div class='dim'>{html.escape(row['runtime_component'])}</div></td>"
@@ -1547,6 +1648,48 @@ def wireguard_page(request: Request, flash: str | None = None):
         title="WireGuard",
         body=body,
         current_path="/admin/wireguard",
+        flash=flash,
+    )
+
+
+@router.get("/checkins", response_class=HTMLResponse)
+def checkins_page(request: Request, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    rows = fetch_recent_client_status_rows(limit=200)
+    body = f"""
+<section class="panel">
+  <h2 class="section-title">Recent client status posts</h2>
+  <table>
+    <thead>
+      <tr><th>When</th><th>Client</th><th>Network</th><th>Client name</th><th>Version</th><th>Status</th><th>Uptime</th><th>Disk GB</th><th>Memory MB</th><th>Load</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td>{html.escape(row['hostname'] or '—')}</td>"
+          f"<td>{html.escape(row['version'] or '—')}</td>"
+          f"<td>{html.escape(row['status_message'] or '—')}</td>"
+          f"<td>{html.escape(format_uptime_seconds(row['uptime_seconds']))}</td>"
+          f"<td>{html.escape(format_disk_gb(row['disk_available_gb']))}</td>"
+          f"<td>{html.escape(format_memory_pair(row['memory_used_mb'], row['memory_total_mb']))}</td>"
+          f"<td class='mono'>{html.escape(format_load_triplet(row))}</td>"
+          "</tr>"
+          for row in rows
+      ) or '<tr><td colspan=\"10\" class=\"dim\">No client status posts recorded yet.</td></tr>'}
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="Check-ins",
+        body=body,
+        current_path="/admin/checkins",
         flash=flash,
     )
 

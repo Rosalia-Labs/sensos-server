@@ -253,6 +253,18 @@ def test_create_networks_table_reconciles_legacy_wg_public_ip_type():
     assert "ALTER COLUMN wg_public_ip TYPE TEXT" in executed
 
 
+def test_create_public_sites_view_uses_status_posts_for_last_activity():
+    fake_cur = mock.MagicMock()
+
+    core.create_public_sites_view(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "CREATE OR REPLACE VIEW sensos.public_sites AS" in executed
+    assert "ls.last_check_in AS last_activity_at" in executed
+    assert "latest_i2c_upload_at" in executed
+    assert "latest_birdnet_upload_at" in executed
+
+
 @pytest.mark.asyncio
 @mock.patch("core.get_db")
 async def test_lifespan_runs_schema_setup(mock_get_db):
