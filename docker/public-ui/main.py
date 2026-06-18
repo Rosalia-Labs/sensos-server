@@ -1352,6 +1352,24 @@ def render_horizontal_lollipop_svg(
 def fetch_sites() -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_latest_i2c_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_i2c_upload_at",
+            )
+            has_latest_birdnet_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_birdnet_upload_at",
+            )
+            has_last_activity_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "last_activity_at",
+            )
             cur.execute("""
                 SELECT peer_uuid,
                        wg_ip,
@@ -1370,13 +1388,29 @@ def fetch_sites() -> list[dict]:
                        birdnet_detection_count,
                        birdnet_source_count,
                        latest_birdnet_result_at,
-                       latest_i2c_upload_at,
-                       latest_birdnet_upload_at,
-                       last_activity_at
+                       {latest_i2c_upload_at_expr},
+                       {latest_birdnet_upload_at_expr},
+                       {last_activity_at_expr}
                 FROM sensos.public_sites
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY site_label, wg_ip;
-                """)
+                """.format(
+                    latest_i2c_upload_at_expr=(
+                        "latest_i2c_upload_at"
+                        if has_latest_i2c_upload_at
+                        else "NULL::timestamptz AS latest_i2c_upload_at"
+                    ),
+                    latest_birdnet_upload_at_expr=(
+                        "latest_birdnet_upload_at"
+                        if has_latest_birdnet_upload_at
+                        else "NULL::timestamptz AS latest_birdnet_upload_at"
+                    ),
+                    last_activity_at_expr=(
+                        "last_activity_at"
+                        if has_last_activity_at
+                        else "NULL::timestamptz AS last_activity_at"
+                    ),
+                ))
             rows = cur.fetchall()
     return [
         {
@@ -1421,6 +1455,24 @@ def fetch_site_detail(
     selected_likely_expr = label_sql["likely"]
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_latest_i2c_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_i2c_upload_at",
+            )
+            has_latest_birdnet_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_birdnet_upload_at",
+            )
+            has_last_activity_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "last_activity_at",
+            )
             has_window_volume = relation_has_column(
                 cur,
                 "sensos",
@@ -1446,12 +1498,28 @@ def fetch_site_detail(
                        birdnet_detection_count,
                        birdnet_source_count,
                        latest_birdnet_result_at,
-                       latest_i2c_upload_at,
-                       latest_birdnet_upload_at,
-                       last_activity_at
+                       {latest_i2c_upload_at_expr},
+                       {latest_birdnet_upload_at_expr},
+                       {last_activity_at_expr}
                 FROM sensos.public_sites
                 WHERE peer_uuid = %s OR wg_ip = %s;
-                """,
+                """.format(
+                    latest_i2c_upload_at_expr=(
+                        "latest_i2c_upload_at"
+                        if has_latest_i2c_upload_at
+                        else "NULL::timestamptz AS latest_i2c_upload_at"
+                    ),
+                    latest_birdnet_upload_at_expr=(
+                        "latest_birdnet_upload_at"
+                        if has_latest_birdnet_upload_at
+                        else "NULL::timestamptz AS latest_birdnet_upload_at"
+                    ),
+                    last_activity_at_expr=(
+                        "last_activity_at"
+                        if has_last_activity_at
+                        else "NULL::timestamptz AS last_activity_at"
+                    ),
+                ),
                 (site_id, site_id),
             )
             row = cur.fetchone()
@@ -1820,6 +1888,24 @@ def fetch_site_detail(
 def fetch_site_status(site_id: str) -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
+            has_latest_i2c_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_i2c_upload_at",
+            )
+            has_latest_birdnet_upload_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "latest_birdnet_upload_at",
+            )
+            has_last_activity_at = relation_has_column(
+                cur,
+                "sensos",
+                "public_sites",
+                "last_activity_at",
+            )
             cur.execute(
                 """
                 SELECT peer_uuid,
@@ -1839,12 +1925,28 @@ def fetch_site_status(site_id: str) -> dict:
                        birdnet_detection_count,
                        birdnet_source_count,
                        latest_birdnet_result_at,
-                       latest_i2c_upload_at,
-                       latest_birdnet_upload_at,
-                       last_activity_at
+                       {latest_i2c_upload_at_expr},
+                       {latest_birdnet_upload_at_expr},
+                       {last_activity_at_expr}
                 FROM sensos.public_sites
                 WHERE peer_uuid = %s OR wg_ip = %s;
-                """,
+                """.format(
+                    latest_i2c_upload_at_expr=(
+                        "latest_i2c_upload_at"
+                        if has_latest_i2c_upload_at
+                        else "NULL::timestamptz AS latest_i2c_upload_at"
+                    ),
+                    latest_birdnet_upload_at_expr=(
+                        "latest_birdnet_upload_at"
+                        if has_latest_birdnet_upload_at
+                        else "NULL::timestamptz AS latest_birdnet_upload_at"
+                    ),
+                    last_activity_at_expr=(
+                        "last_activity_at"
+                        if has_last_activity_at
+                        else "NULL::timestamptz AS last_activity_at"
+                    ),
+                ),
                 (site_id, site_id),
             )
             row = cur.fetchone()
