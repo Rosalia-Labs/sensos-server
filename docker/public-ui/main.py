@@ -380,9 +380,19 @@ def birdnet_species_url(
     return build_url(path, range=range_key, label_mode=label_mode)
 
 
-def birdnet_label_sql(label_mode: str) -> dict[str, str]:
+def birdnet_label_sql(
+    label_mode: str,
+    *,
+    has_weighted_label: bool = True,
+    has_weighted_score: bool = True,
+    has_weighted_likely_score: bool = True,
+) -> dict[str, str]:
     normalized = normalize_birdnet_label_mode(label_mode)
-    if normalized == "raw":
+    if (
+        normalized == "raw"
+        or not has_weighted_label
+        or not has_weighted_score
+    ):
         return {
             "label": "top_label",
             "score": "top_score",
@@ -391,7 +401,11 @@ def birdnet_label_sql(label_mode: str) -> dict[str, str]:
     return {
         "label": "coalesce(weighted_label, top_label)",
         "score": "coalesce(weighted_score, top_score)",
-        "likely": "coalesce(weighted_likely_score, top_likely_score)",
+        "likely": (
+            "coalesce(weighted_likely_score, top_likely_score)"
+            if has_weighted_likely_score
+            else "top_likely_score"
+        ),
     }
 
 
