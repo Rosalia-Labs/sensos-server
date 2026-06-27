@@ -1,11 +1,11 @@
 # QEMU Testing
 
-This repo includes a local helper for running a Debian Trixie ARM64 VM for the
-SensOS server on Apple Silicon with MacPorts QEMU.
+This repo includes a local helper for running the SensOS server QEMU test VM on
+Apple Silicon with MacPorts QEMU.
 
 Primary launcher:
 
-- [`test/qemu/run-debian-trixie-arm64`](../test/qemu/run-debian-trixie-arm64)
+- [`test/qemu/launch-qemu-vm`](../launch-qemu-vm)
 
 ## Artifacts
 
@@ -44,7 +44,7 @@ test/qemu/artifacts/iso/debian-trixie-arm64-netinst.iso
 2. Create and install the base VM once:
 
 ```bash
-test/qemu/run-debian-trixie-arm64 install
+test/qemu/launch-qemu-vm install
 ```
 
 3. After Debian finishes installing and reboots inside QEMU, log in to the VM,
@@ -97,7 +97,7 @@ the persistent base image too.
    changes without reinstalling:
 
 ```bash
-test/qemu/run-debian-trixie-arm64 update
+test/qemu/launch-qemu-vm update
 ```
 
 The `update` command boots the installed base image read/write, so package
@@ -107,7 +107,7 @@ VM before exiting QEMU or writes may be lost.
 5. Use disposable run boots when you want a non-sticky test session:
 
 ```bash
-test/qemu/run-debian-trixie-arm64 run
+test/qemu/launch-qemu-vm run
 ```
 
 The `run` command uses `-snapshot`, so guest disk changes are discarded when

@@ -132,9 +132,9 @@ Next steps:
   shut the guest down cleanly from inside the VM
   once the guest is halted, use QEMU's Power Down or otherwise exit QEMU
   use a persistent update boot when you need to change the base VM later:
-    test/qemu/run-debian-trixie-arm64 update
+    test/qemu/launch-qemu-vm update
   start a disposable run boot with:
-    test/qemu/run-debian-trixie-arm64 run
+    test/qemu/launch-qemu-vm run
 
 Then inside the guest:
   su - ${TARGET_USER}
