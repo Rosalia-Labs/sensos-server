@@ -146,8 +146,8 @@ Artifact root:    ${ARTIFACT_ROOT}
 Base image:       ${BASE_IMAGE}
 Data image:       ${DATA_IMAGE}
 SSH forward:      ssh -p ${SSH_FORWARD_PORT} <user>@127.0.0.1
-Server API:       http://${API_FORWARD_BIND}:${API_FORWARD_PORT} -> guest:8765
-Public UI:        http://127.0.0.1:${PUBLIC_UI_FORWARD_PORT}
+Server API:       http://${API_FORWARD_BIND}:${API_FORWARD_PORT} -> guest 127.0.0.1:8765
+Public UI:        http://127.0.0.1:${PUBLIC_UI_FORWARD_PORT} -> guest 127.0.0.1:8780
 WireGuard UDP:    ${WG_FORWARD_BIND}:${WG_PORT_START}-${WG_PORT_END}/udp -> guest:${WG_PORT_START}-${WG_PORT_END}/udp
 Host access:      guest can reach macOS services at 10.0.2.2
 Repo path:        ${REPO_ROOT}
@@ -159,7 +159,7 @@ build_netdev_arg() {
     local arg
     local port
 
-    arg="user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:${API_FORWARD_BIND}:${API_FORWARD_PORT}-:8765,hostfwd=tcp:127.0.0.1:${PUBLIC_UI_FORWARD_PORT}-:8780"
+    arg="user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_FORWARD_PORT}-:22,hostfwd=tcp:${API_FORWARD_BIND}:${API_FORWARD_PORT}-127.0.0.1:8765,hostfwd=tcp:127.0.0.1:${PUBLIC_UI_FORWARD_PORT}-127.0.0.1:8780"
     for ((port = WG_PORT_START; port <= WG_PORT_END; port++)); do
         arg+=",hostfwd=udp:${WG_FORWARD_BIND}:${port}-:${port}"
     done
