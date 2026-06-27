@@ -124,6 +124,7 @@ Important flags from the source:
 
 - `--api-port`
 - `--public-ui-port`
+- `--qemu-testing`
 - `--postgres-password`
 - `--admin-api-password`
 - `--client-api-password`
@@ -136,15 +137,19 @@ Typical use:
 ./bin/configure-server
 ./bin/configure-server --api-port 8765 --admin-api-password '<admin-password>' --client-api-password '<client-password>'
 ./bin/configure-server --public-ui-port 8780 --public-db-password '<public-db-password>'
+./bin/configure-server --qemu-testing
 ```
 
 Behavior:
 
 - writes `docker/.env`
 - backs up an existing file to `docker/.env.bak`
+- preserves existing `docker/.env` values unless a flag overrides them
 - does not start containers by itself
 - does not require `sudo`
 - configures the published public dashboard port and the read-only public dashboard DB credential
+- defaults API and public dashboard binds to `127.0.0.1`
+- `--qemu-testing` binds API and public dashboard ports inside the server guest so QEMU host forwards can reach them from a separate client guest
 
 ### `bin/create-network`
 

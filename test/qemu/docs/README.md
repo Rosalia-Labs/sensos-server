@@ -125,6 +125,18 @@ cd sensos-server
 ./bin/start-server
 ```
 
+For two-VM QEMU testing, configure the server API and public dashboard to bind
+inside the server guest on all interfaces before starting the Docker stack:
+
+```bash
+./bin/configure-server --qemu-testing
+./bin/start-server
+```
+
+Rerunning `configure-server --qemu-testing` on an existing checkout preserves
+the existing ports, passwords, and UI theme while switching the bind mode needed
+for two-VM QEMU testing.
+
 If you want the checkout itself to persist across boots, clone it during the
 `install` boot and then shut the guest down cleanly before exiting QEMU.
 
@@ -189,8 +201,9 @@ gateway at `10.0.2.2`. SSH and the public dashboard remain loopback-only on the
 host. Override the cross-VM bind addresses with `SENSOS_QEMU_API_BIND` and
 `SENSOS_QEMU_WG_BIND` if needed.
 
-The API and public dashboard forwards target guest `127.0.0.1` because Docker
-publishes those services on the server guest loopback interface.
+The Docker API port inside the server guest must also be bound to a guest
+address that QEMU can forward to. For this workflow, run
+`./bin/configure-server --qemu-testing` before `./bin/start-server`.
 
 If needed, override the public dashboard host port with
 `SENSOS_QEMU_PUBLIC_UI_PORT`.
@@ -267,7 +280,7 @@ ssh -p 2223 <user>@127.0.0.1
 
 It also forwards the server API back to the host:
 
-- API: `0.0.0.0:18765 -> guest 127.0.0.1:8765`
+- API: `0.0.0.0:18765 -> guest:8765`
 - WireGuard UDP: `0.0.0.0:51281..51289/udp -> guest:51281..51289/udp`
 
 This makes two-VM testing practical:

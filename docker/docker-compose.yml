@@ -107,7 +107,7 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      - "127.0.0.1:${API_PORT:-8765}:8765"
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8765}:8765"
     networks:
       - sensos_network
 
@@ -164,7 +164,7 @@ services:
       GIT_TAG: ${GIT_TAG:-unknown}
       GIT_DIRTY: ${GIT_DIRTY:-false}
     ports:
-      - "127.0.0.1:${PUBLIC_UI_PORT:-8780}:8780"
+      - "${PUBLIC_UI_BIND:-127.0.0.1}:${PUBLIC_UI_PORT:-8780}:8780"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8780/healthz"]
       interval: 5s
