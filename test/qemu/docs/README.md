@@ -183,6 +183,12 @@ From the macOS host, the QEMU helper forwards these guest services by default:
 - public dashboard: `http://127.0.0.1:18780`
 - SSH: `ssh -p 2223 <user>@127.0.0.1`
 
+For two-VM QEMU testing, the server API and WireGuard forwards bind to
+`0.0.0.0` by default so a separate client guest can reach them through its QEMU
+gateway at `10.0.2.2`. SSH and the public dashboard remain loopback-only on the
+host. Override the cross-VM bind addresses with `SENSOS_QEMU_API_BIND` and
+`SENSOS_QEMU_WG_BIND` if needed.
+
 If needed, override the public dashboard host port with
 `SENSOS_QEMU_PUBLIC_UI_PORT`.
 
@@ -258,8 +264,8 @@ ssh -p 2223 <user>@127.0.0.1
 
 It also forwards the server API back to the host:
 
-- API: `127.0.0.1:18765 -> guest:8765`
-- WireGuard UDP: `127.0.0.1:51281..51289/udp -> guest:51281..51289/udp`
+- API: `0.0.0.0:18765 -> guest:8765`
+- WireGuard UDP: `0.0.0.0:51281..51289/udp -> guest:51281..51289/udp`
 
 This makes two-VM testing practical:
 
@@ -268,19 +274,20 @@ This makes two-VM testing practical:
 3. In the server VM, create the test network with `wg_public_ip=10.0.2.2` and `wg_port=51281` so the client sees the macOS host as the forwarded WireGuard endpoint.
 4. In the client VM, point `config-network` at `10.0.2.2 --setup-port 18765`.
 
-With QEMU user networking, each guest can usually reach macOS-hosted services at:
+With QEMU user networking, each guest can usually reach the host side of its
+own QEMU network at:
 
 ```text
 10.0.2.2
 ```
 
-From the client VM, `10.0.2.2:18765` reaches the server API forwarded from the
-server VM through the macOS host.
+From the client VM, `10.0.2.2:18765` reaches the host-side listener opened by
+the server VM's QEMU process, which forwards to the server guest API.
 
-For the WireGuard tunnel, the same host IP works: client traffic to
-`10.0.2.2:51281/udp` is forwarded by macOS into the server VM's WireGuard port
-on `51281/udp`. Additional ports in `51282..51289` are forwarded the same way
-for extra test networks.
+For the WireGuard tunnel, the same host-gateway IP works: client traffic to
+`10.0.2.2:51281/udp` reaches the server VM's host-side UDP listener and is
+forwarded into the server guest's WireGuard port on `51281/udp`. Additional
+ports in `51282..51289` are forwarded the same way for extra test networks.
 
 ## Installer display
 

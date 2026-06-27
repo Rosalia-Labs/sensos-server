@@ -243,8 +243,8 @@ Likely causes:
 
 For two-VM testing on one host:
 
-- server VM helper forwards host `18765` to guest `8765`
-- server VM helper forwards host UDP `51281..51289` to the same guest ports
+- server VM helper forwards host `0.0.0.0:18765` to guest `8765`
+- server VM helper forwards host UDP `0.0.0.0:51281..51289` to the same guest ports
 - client VM can reach the host as `10.0.2.2`
 
 So from the client VM, a common enrollment target is:
