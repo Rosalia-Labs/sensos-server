@@ -130,12 +130,13 @@ inside the server guest on all interfaces before starting the Docker stack:
 
 ```bash
 ./bin/configure-server --qemu-testing
-./bin/start-server
+./bin/start-server --restart
 ```
 
 Rerunning `configure-server --qemu-testing` on an existing checkout preserves
 the existing ports, passwords, and UI theme while switching the bind mode needed
-for two-VM QEMU testing.
+for two-VM QEMU testing. Use `start-server --restart` after changing this mode
+so Docker recreates the published port bindings.
 
 If you want the checkout itself to persist across boots, clone it during the
 `install` boot and then shut the guest down cleanly before exiting QEMU.
@@ -203,7 +204,7 @@ host. Override the cross-VM bind addresses with `SENSOS_QEMU_API_BIND` and
 
 The Docker API port inside the server guest must also be bound to a guest
 address that QEMU can forward to. For this workflow, run
-`./bin/configure-server --qemu-testing` before `./bin/start-server`.
+`./bin/configure-server --qemu-testing` before `./bin/start-server --restart`.
 
 If needed, override the public dashboard host port with
 `SENSOS_QEMU_PUBLIC_UI_PORT`.

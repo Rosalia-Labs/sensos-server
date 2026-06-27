@@ -247,7 +247,8 @@ For two-VM testing on one host:
 - server VM helper forwards host UDP `0.0.0.0:51281..51289` to the same guest ports
 - client VM can reach the host as `10.0.2.2`
 - server Docker config should publish the API on a guest-reachable address, for
-  example `./bin/configure-server --qemu-testing`
+  example `./bin/configure-server --qemu-testing` followed by
+  `./bin/start-server --restart`
 
 So from the client VM, a common enrollment target is:
 
