@@ -61,6 +61,7 @@ Behavior:
 - runs migrations between installed and repo versions
 - records the upgraded version in a writable install-state file
 - if the server stack is already running, it rebuilds and restarts the containers so the new repo contents take effect
+- when crossing `0.16.0`, ensures the `sensos.admin_users` table exists for named admin accounts; if the database container is offline, the controller applies the same schema on startup
 - does not require `sudo` for the normal repo-owned Docker runtime path
 - `--offline` skips `git pull` and upgrades from the repo contents already on disk, including force-running an upgrade when the checkout has not changed
 - `--refresh-service` reinstalls the optional `sensos-server` unit after pull and should be run from an admin account with `sudo`
