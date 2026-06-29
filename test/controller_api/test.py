@@ -27,6 +27,10 @@ def client():
         "username": "admin",
         "role": "owner",
     }
+    app.dependency_overrides[admin_api.require_admin_owner] = lambda: {
+        "username": "admin",
+        "role": "owner",
+    }
     app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="sensos", password="test"
     )
@@ -64,6 +68,125 @@ def test_create_network_invalid_port(client):
         json={"name": "test", "wg_public_ip": "1.2.3.4", "wg_port": 99999},
     )
     assert resp.status_code == 422
+
+
+def test_list_admin_users(monkeypatch, client):
+    monkeypatch.setattr(
+        admin_api,
+        "list_admin_users",
+        lambda: [
+            {
+                "username": "alice",
+                "display_name": "Alice Example",
+                "role": "owner",
+                "is_active": True,
+                "created_at": None,
+                "updated_at": None,
+                "last_login_at": None,
+            }
+        ],
+    )
+
+    resp = client.get("/api/v1/admin/users")
+    assert resp.status_code == 200
+    assert resp.json()["users"][0]["username"] == "alice"
+
+
+def test_create_admin_user(monkeypatch, client):
+    captured = {}
+
+    def fake_upsert_admin_user(**kwargs):
+        captured.update(kwargs)
+        return {
+            "username": kwargs["username"],
+            "display_name": kwargs["display_name"],
+            "role": kwargs["role"],
+            "is_active": kwargs["is_active"],
+        }
+
+    monkeypatch.setattr(admin_api, "upsert_admin_user", fake_upsert_admin_user)
+    monkeypatch.setattr(admin_api, "get_admin_user", lambda username: None)
+
+    resp = client.post(
+        "/api/v1/admin/users",
+        json={
+            "username": "alice",
+            "display_name": "Alice Example",
+            "role": "owner",
+            "password": "long-password-here",
+            "is_active": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert captured == {
+        "username": "alice",
+        "display_name": "Alice Example",
+        "role": "owner",
+        "password": "long-password-here",
+        "is_active": True,
+    }
+
+
+def test_update_admin_user_preserves_omitted_fields(monkeypatch, client):
+    captured = {}
+
+    def fake_upsert_admin_user(**kwargs):
+        captured.update(kwargs)
+        return {
+            "username": kwargs["username"],
+            "display_name": kwargs["display_name"],
+            "role": kwargs["role"],
+            "is_active": kwargs["is_active"],
+        }
+
+    monkeypatch.setattr(
+        admin_api,
+        "get_admin_user",
+        lambda username: {
+            "username": username,
+            "display_name": "Existing Name",
+            "role": "viewer",
+            "is_active": False,
+        },
+    )
+    monkeypatch.setattr(admin_api, "upsert_admin_user", fake_upsert_admin_user)
+
+    resp = client.post(
+        "/api/v1/admin/users",
+        json={"username": "alice", "role": "operator"},
+    )
+    assert resp.status_code == 200
+    assert captured == {
+        "username": "alice",
+        "display_name": "Existing Name",
+        "role": "operator",
+        "password": None,
+        "is_active": False,
+    }
+
+
+def test_deactivate_admin_user(monkeypatch, client):
+    captured = {}
+
+    def fake_set_admin_user_active(username, is_active):
+        captured["username"] = username
+        captured["is_active"] = is_active
+        return True
+
+    monkeypatch.setattr(admin_api, "set_admin_user_active", fake_set_admin_user_active)
+
+    resp = client.patch("/api/v1/admin/users/alice/active", json={"is_active": False})
+    assert resp.status_code == 200
+    assert captured == {"username": "alice", "is_active": False}
+    assert resp.json() == {"username": "alice", "is_active": False}
+
+
+def test_delete_admin_user(monkeypatch, client):
+    monkeypatch.setattr(admin_api, "delete_admin_user", lambda username: username == "alice")
+
+    resp = client.delete("/api/v1/admin/users/alice")
+    assert resp.status_code == 200
+    assert resp.json() == {"username": "alice", "deleted": True}
 
 
 def test_create_network_waits_for_readiness(monkeypatch, client):

@@ -152,6 +152,38 @@ Behavior:
 - defaults API and public dashboard binds to `127.0.0.1`
 - `--qemu-testing` binds API and public dashboard ports inside the server guest so QEMU host forwards can reach them from a separate client guest
 
+### `bin/admin-users`
+
+Lists and manages named admin dashboard/API users through the running server
+API.
+
+Typical use from the server checkout:
+
+```sh
+./bin/admin-users list
+./bin/admin-users create alice --role owner --password '<long-password>'
+./bin/admin-users create bob --role viewer --display-name 'Bob Example' --password '<long-password>'
+./bin/admin-users update bob --role operator
+./bin/admin-users deactivate bob
+./bin/admin-users activate bob
+./bin/admin-users delete bob
+```
+
+Behavior:
+
+- requires the server API to already be running
+- defaults to bootstrap username `sensos` and `ADMIN_API_PASSWORD` from `docker/.env`
+- accepts `--admin-username`, `--api-password`, and `--api-port` before the subcommand
+- requires an owner credential for all subcommands
+- creates users with `owner`, `operator`, or `viewer` roles
+- does not print password hashes or stored password material
+
+After creating a named owner, the same command can authenticate as that user:
+
+```sh
+./bin/admin-users --admin-username alice --api-password '<alice-password>' list
+```
+
 ### `bin/create-network`
 
 Creates or reconciles a named client network through the running server API.

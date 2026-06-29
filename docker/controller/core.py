@@ -1125,6 +1125,33 @@ def list_admin_users() -> list[dict]:
     ]
 
 
+def get_admin_user(username: str) -> dict | None:
+    username = validate_admin_username(username)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username, display_name, role, is_active, created_at, updated_at, last_login_at
+                FROM sensos.admin_users
+                WHERE username = %s;
+                """,
+                (username,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "username": row[0],
+        "display_name": row[1],
+        "role": row[2],
+        "is_active": row[3],
+        "created_at": row[4],
+        "updated_at": row[5],
+        "last_login_at": row[6],
+        "source": "database",
+    }
+
+
 def validate_admin_username(username: str) -> str:
     value = username.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", value):

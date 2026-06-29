@@ -1,0 +1,301 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${REPO_ROOT}/docker/.env"
+
+API_PORT=""
+ADMIN_USERNAME="sensos"
+API_PASSWORD=""
+COMMAND=""
+USERNAME=""
+DISPLAY_NAME=""
+ROLE=""
+PASSWORD=""
+IS_ACTIVE="true"
+RESPONSE_FILE=""
+
+log() {
+    printf '[admin-users] %s\n' "$*" >&2
+}
+
+die() {
+    printf '[admin-users] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [auth-options] <command> [command-options]
+
+Manage named SensOS admin users through the running server API.
+
+Auth options:
+  --admin-username USER  Admin API username (default: sensos)
+  --api-password PASS    Admin API password (default: docker/.env ADMIN_API_PASSWORD)
+  --api-port PORT        Local API port (default: docker/.env API_PORT or 8765)
+
+Commands:
+  list
+  create USER --role ROLE --password PASS [--display-name NAME] [--inactive]
+  update USER --role ROLE [--password PASS] [--display-name NAME]
+  activate USER
+  deactivate USER
+  delete USER
+
+Roles:
+  owner      Manage users and all operational settings
+  operator   Perform network/client operations
+  viewer     Read-only dashboard/API access
+
+Examples:
+  $(basename "$0") list
+  $(basename "$0") create alice --role owner --password 'long-password-here'
+  $(basename "$0") update alice --role operator
+  $(basename "$0") deactivate alice
+EOF
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+load_env_defaults() {
+    if [[ -f "${ENV_FILE}" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${ENV_FILE}"
+        set +a
+    fi
+
+    API_PORT="${API_PORT:-8765}"
+    API_PASSWORD="${SENSOS_ADMIN_API_PASSWORD:-${ADMIN_API_PASSWORD:-${API_PASSWORD:-}}}"
+}
+
+parse_global_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --admin-username)
+                [[ $# -ge 2 ]] || die "--admin-username requires a value"
+                ADMIN_USERNAME="$2"
+                shift 2
+                ;;
+            --api-password)
+                [[ $# -ge 2 ]] || die "--api-password requires a value"
+                API_PASSWORD="$2"
+                shift 2
+                ;;
+            --api-port)
+                [[ $# -ge 2 ]] || die "--api-port requires a value"
+                API_PORT="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            list|create|update|activate|deactivate|delete)
+                COMMAND="$1"
+                shift
+                parse_command_args "$@"
+                return
+                ;;
+            *)
+                die "unknown option or command: $1"
+                ;;
+        esac
+    done
+    die "command is required"
+}
+
+parse_command_args() {
+    case "${COMMAND}" in
+        list)
+            [[ $# -eq 0 ]] || die "list does not accept command arguments"
+            ;;
+        create|update)
+            [[ $# -ge 1 ]] || die "${COMMAND} requires a username"
+            USERNAME="$1"
+            shift
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --role)
+                        [[ $# -ge 2 ]] || die "--role requires a value"
+                        ROLE="$2"
+                        shift 2
+                        ;;
+                    --password)
+                        [[ $# -ge 2 ]] || die "--password requires a value"
+                        PASSWORD="$2"
+                        shift 2
+                        ;;
+                    --display-name)
+                        [[ $# -ge 2 ]] || die "--display-name requires a value"
+                        DISPLAY_NAME="$2"
+                        shift 2
+                        ;;
+                    --inactive)
+                        [[ "${COMMAND}" == "create" ]] || die "--inactive is only valid with create; use deactivate USER for existing users"
+                        IS_ACTIVE="false"
+                        shift
+                        ;;
+                    --*)
+                        die "unknown ${COMMAND} option: $1"
+                        ;;
+                    *)
+                        die "unexpected extra argument: $1"
+                        ;;
+                esac
+            done
+            ;;
+        activate|deactivate|delete)
+            [[ $# -eq 1 ]] || die "${COMMAND} requires exactly one username"
+            USERNAME="$1"
+            ;;
+    esac
+}
+
+validate_required() {
+    [[ -n "${API_PORT}" ]] || die "API port is not set"
+    [[ -n "${ADMIN_USERNAME}" ]] || die "admin username is not set"
+    [[ -n "${API_PASSWORD}" ]] || die "admin API password is not set; pass --api-password or configure ADMIN_API_PASSWORD in docker/.env"
+
+    case "${COMMAND}" in
+        create)
+            [[ -n "${USERNAME}" ]] || die "username is required"
+            [[ -n "${ROLE}" ]] || die "create requires --role"
+            [[ -n "${PASSWORD}" ]] || die "create requires --password"
+            ;;
+        update)
+            [[ -n "${USERNAME}" ]] || die "username is required"
+            [[ -n "${ROLE}" ]] || die "update requires --role"
+            ;;
+    esac
+}
+
+json_payload() {
+    python3 - "$COMMAND" "$USERNAME" "$ROLE" "$PASSWORD" "$DISPLAY_NAME" "$IS_ACTIVE" <<'PY'
+import json
+import sys
+
+command, username, role, password, display_name, is_active = sys.argv[1:7]
+payload = {"username": username}
+if command == "create":
+    payload["is_active"] = is_active == "true"
+if role:
+    payload["role"] = role
+if password:
+    payload["password"] = password
+if display_name:
+    payload["display_name"] = display_name
+if command == "create" and "display_name" not in payload:
+    payload["display_name"] = None
+print(json.dumps(payload))
+PY
+}
+
+print_response() {
+    local response_file="$1"
+    local command="$2"
+
+    python3 - "$response_file" "$command" <<'PY'
+import json
+import sys
+
+response_path, command = sys.argv[1:3]
+with open(response_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+if isinstance(data, dict) and data.get("error"):
+    print(data["error"])
+    sys.exit(0)
+
+if command == "list":
+    rows = data.get("users", [])
+    if not rows:
+        print("No named admin users. Bootstrap login 'sensos' remains available.")
+        sys.exit(0)
+    print("username\trole\tactive\tlast_login\tdisplay_name")
+    for row in rows:
+        print(
+            "\t".join(
+                [
+                    str(row.get("username") or ""),
+                    str(row.get("role") or ""),
+                    "yes" if row.get("is_active") else "no",
+                    str(row.get("last_login_at") or ""),
+                    str(row.get("display_name") or ""),
+                ]
+            )
+        )
+else:
+    print(json.dumps(data, indent=2, sort_keys=True))
+PY
+}
+
+api_request() {
+    local method="$1"
+    local path="$2"
+    local payload="${3:-}"
+    local status_code
+    local -a curl_args
+
+    RESPONSE_FILE="$(mktemp)"
+    trap 'rm -f "${RESPONSE_FILE}"' EXIT
+
+    curl_args=(
+        -sS
+        -o "${RESPONSE_FILE}"
+        -w '%{http_code}'
+        -u "${ADMIN_USERNAME}:${API_PASSWORD}"
+        -X "${method}"
+    )
+    if [[ -n "${payload}" ]]; then
+        curl_args+=(-H "Content-Type: application/json" --data "${payload}")
+    fi
+
+    if ! status_code="$(curl "${curl_args[@]}" "http://127.0.0.1:${API_PORT}${path}")"; then
+        die "failed to contact the server API at http://127.0.0.1:${API_PORT}${path}"
+    fi
+    if [[ "${status_code}" -lt 200 || "${status_code}" -ge 300 ]]; then
+        print_response "${RESPONSE_FILE}" "${COMMAND}" >&2 || true
+        die "server API returned HTTP ${status_code}"
+    fi
+    print_response "${RESPONSE_FILE}" "${COMMAND}"
+}
+
+main() {
+    local payload
+
+    require_command curl
+    require_command python3
+    load_env_defaults
+    parse_global_args "$@"
+    validate_required
+
+    case "${COMMAND}" in
+        list)
+            api_request GET "/api/v1/admin/users"
+            ;;
+        create|update)
+            payload="$(json_payload)"
+            api_request POST "/api/v1/admin/users" "${payload}"
+            ;;
+        activate)
+            api_request PATCH "/api/v1/admin/users/${USERNAME}/active" '{"is_active":true}'
+            ;;
+        deactivate)
+            api_request PATCH "/api/v1/admin/users/${USERNAME}/active" '{"is_active":false}'
+            ;;
+        delete)
+            api_request DELETE "/api/v1/admin/users/${USERNAME}"
+            ;;
+    esac
+}
+
+main "$@"

@@ -10,19 +10,27 @@ from fastapi.responses import JSONResponse
 from core import (
     authenticate_admin,
     create_network_entry,
+    delete_admin_user,
     delete_network,
     delete_peer,
+    get_admin_user,
     get_db,
+    list_admin_users,
+    require_admin_owner,
     require_admin_write,
+    set_admin_user_active,
     set_peer_active_state,
     update_network_endpoint,
+    upsert_admin_user,
     wait_for_network_ready,
 )
 from models import (
     CreateNetworkRequest,
     DeleteNetworkRequest,
     DeletePeerRequest,
+    SetAdminUserActiveRequest,
     SetPeerActiveRequest,
+    UpsertAdminUserRequest,
     UpdateNetworkEndpointRequest,
 )
 
@@ -32,6 +40,64 @@ HANDSHAKE_RE = re.compile(r"^(\d+)\s+(\w+)\s+ago$")
 
 def error_response(status_code: int, message: str):
     return JSONResponse(status_code=status_code, content={"error": message})
+
+
+@router.get("/users")
+def get_admin_users(credentials=Depends(require_admin_owner)):
+    return {"users": list_admin_users()}
+
+
+@router.post("/users")
+def upsert_admin_user_route(
+    request: UpsertAdminUserRequest,
+    credentials=Depends(require_admin_owner),
+):
+    try:
+        existing = get_admin_user(request.username)
+        display_name = request.display_name
+        is_active = request.is_active
+        if existing is not None:
+            if "display_name" not in request.model_fields_set:
+                display_name = existing["display_name"]
+            if "is_active" not in request.model_fields_set:
+                is_active = existing["is_active"]
+        if is_active is None:
+            is_active = True
+        return upsert_admin_user(
+            username=request.username,
+            password=request.password,
+            role=request.role,
+            display_name=display_name,
+            is_active=is_active,
+        )
+    except ValueError as exc:
+        return error_response(status.HTTP_400_BAD_REQUEST, str(exc))
+    except Exception as exc:
+        return error_response(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
+
+
+@router.patch("/users/{username}/active")
+def set_admin_user_active_route(
+    username: str,
+    request: SetAdminUserActiveRequest,
+    credentials=Depends(require_admin_owner),
+):
+    try:
+        if not set_admin_user_active(username, request.is_active):
+            return error_response(404, f"Admin user '{username}' not found.")
+        return {"username": username, "is_active": request.is_active}
+    except ValueError as exc:
+        return error_response(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+@router.delete("/users/{username}")
+def delete_admin_user_route(username: str, credentials=Depends(require_admin_owner)):
+    try:
+        if not delete_admin_user(username):
+            return error_response(404, f"Admin user '{username}' not found.")
+        return {"username": username, "deleted": True}
+    except ValueError as exc:
+        return error_response(status.HTTP_400_BAD_REQUEST, str(exc))
 
 
 @router.get("/networks")
