@@ -1654,10 +1654,35 @@ def admin_users_page(request: Request, flash: str | None = None):
         return redirect
 
     rows = list_admin_users()
+
     role_options = "".join(
         f"<option value='{role}'>{role.title()}</option>"
         for role in (ADMIN_ROLE_VIEWER, ADMIN_ROLE_OPERATOR, ADMIN_ROLE_OWNER)
     )
+
+    users_rows = "".join(
+        "<tr>"
+        f"<td><div>{html.escape(row['username'])}</div><div class='dim'>{html.escape(row['display_name'] or '—')}</div></td>"
+        f"<td>{html.escape(row['role'])}</td>"
+        f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
+        f"<td>{html.escape(format_timestamp(row['last_login_at']))}</td>"
+        "<td>"
+        f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/active'>"
+        f"<input type='hidden' name='is_active' value='{'false' if row['is_active'] else 'true'}'>"
+        f"<button class='secondary' type='submit'>{'Deactivate' if row['is_active'] else 'Activate'}</button>"
+        "</form>"
+        f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/delete' "
+        "onsubmit=\"return confirm('Delete this admin user?');\">"
+        "<button class='danger' type='submit'>Delete</button>"
+        "</form>"
+        "</td>"
+        "</tr>"
+        for row in rows
+    )
+
+    if not users_rows:
+        users_rows = '<tr><td colspan="5" class="dim">No named admin users exist yet. The bootstrap sensos account remains available.</td></tr>'
+
     body = f"""
 <div class="split">
   <section class="panel">
@@ -1667,25 +1692,7 @@ def admin_users_page(request: Request, flash: str | None = None):
         <tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Actions</th></tr>
       </thead>
       <tbody>
-        {''.join(
-            "<tr>"
-            f"<td><div>{html.escape(row['username'])}</div><div class='dim'>{html.escape(row['display_name'] or '—')}</div></td>"
-            f"<td>{html.escape(row['role'])}</td>"
-            f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
-            f"<td>{html.escape(format_timestamp(row['last_login_at']))}</td>"
-            "<td>"
-            f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/active'>"
-            f"<input type='hidden' name='is_active' value='{'false' if row['is_active'] else 'true'}'>"
-            f"<button class='secondary' type='submit'>{'Deactivate' if row['is_active'] else 'Activate'}</button>"
-            "</form>"
-            f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/delete' "
-            "onsubmit=\"return confirm('Delete this admin user?');\">"
-            "<button class='danger' type='submit'>Delete</button>"
-            "</form>"
-            "</td>"
-            "</tr>"
-            for row in rows
-        ) or '<tr><td colspan="5" class="dim">No named admin users exist yet. The bootstrap sensos account remains available.</td></tr>'}
+        {users_rows}
       </tbody>
     </table>
   </section>
@@ -1720,7 +1727,6 @@ def admin_users_page(request: Request, flash: str | None = None):
         current_path="/admin/users",
         flash=flash,
     )
-
 
 @router.post("/users")
 async def admin_user_save_action(request: Request):
