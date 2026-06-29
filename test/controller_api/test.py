@@ -23,6 +23,10 @@ def client():
     app.dependency_overrides[admin_api.authenticate_admin] = lambda: HTTPBasicCredentials(
         username="admin", password="admin"
     )
+    app.dependency_overrides[admin_api.require_admin_write] = lambda: {
+        "username": "admin",
+        "role": "owner",
+    }
     app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="sensos", password="test"
     )
@@ -570,6 +574,20 @@ def test_client_credentials_cannot_access_admin_route(monkeypatch):
 
     resp = client.get("/api/v1/admin/networks")
     assert resp.status_code == 401
+
+
+def test_viewer_admin_cannot_mutate_admin_route():
+    app = FastAPI()
+    app.include_router(router)
+    app.state.schema_ready = True
+    app.dependency_overrides[admin_api.authenticate_admin] = lambda: {
+        "username": "viewer",
+        "role": "viewer",
+    }
+    client = TestClient(app)
+
+    resp = client.delete("/api/v1/admin/networks/testing")
+    assert resp.status_code == 403
 
 
 def test_get_defined_networks_returns_names(monkeypatch, client):

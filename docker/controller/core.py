@@ -59,6 +59,11 @@ RUNTIME_ROLE_OPS = "ops"
 PUBLIC_WG_PORT_START = 51281
 PUBLIC_WG_PORT_END = 51289
 PUBLIC_DB_ROLE = "sensos_public"
+ADMIN_ROLE_OWNER = "owner"
+ADMIN_ROLE_OPERATOR = "operator"
+ADMIN_ROLE_VIEWER = "viewer"
+ADMIN_ROLES = {ADMIN_ROLE_OWNER, ADMIN_ROLE_OPERATOR, ADMIN_ROLE_VIEWER}
+ADMIN_WRITE_ROLES = {ADMIN_ROLE_OWNER, ADMIN_ROLE_OPERATOR}
 
 
 @dataclass(frozen=True, order=True)
@@ -132,12 +137,109 @@ async def lifespan(app: FastAPI):
 security = HTTPBasic()
 
 
+def bootstrap_admin_identity() -> dict:
+    return {
+        "username": "sensos",
+        "display_name": "Bootstrap admin",
+        "role": ADMIN_ROLE_OWNER,
+        "source": "bootstrap",
+    }
+
+
+def password_hash(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = sha256(salt + password.encode("utf-8")).hexdigest()
+    return f"{base64.b64encode(salt).decode('ascii')}:{digest}"
+
+
+def verify_password(password: str, encoded_hash: str) -> bool:
+    try:
+        encoded_salt, expected_digest = encoded_hash.split(":", 1)
+        salt = base64.b64decode(encoded_salt.encode("ascii"))
+    except Exception:
+        return False
+    actual_digest = sha256(salt + password.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(actual_digest, expected_digest)
+
+
+def authenticate_admin_credentials(username: str, password: str) -> dict | None:
+    if secrets.compare_digest(username, "sensos") and secrets.compare_digest(
+        password, ADMIN_API_PASSWORD
+    ):
+        return bootstrap_admin_identity()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username, display_name, role, password_hash
+                FROM sensos.admin_users
+                WHERE username = %s
+                  AND is_active = TRUE;
+                """,
+                (username,),
+            )
+            row = cur.fetchone()
+
+    if row is None or row[2] not in ADMIN_ROLES or not verify_password(password, row[3]):
+        return None
+
+    return {
+        "username": row[0],
+        "display_name": row[1],
+        "role": row[2],
+        "source": "database",
+    }
+
+
+def lookup_admin_identity(username: str) -> dict | None:
+    if username == "sensos":
+        return bootstrap_admin_identity()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username, display_name, role
+                FROM sensos.admin_users
+                WHERE username = %s
+                  AND is_active = TRUE;
+                """,
+                (username,),
+            )
+            row = cur.fetchone()
+
+    if row is None or row[2] not in ADMIN_ROLES:
+        return None
+    return {
+        "username": row[0],
+        "display_name": row[1],
+        "role": row[2],
+        "source": "database",
+    }
+
+
 def authenticate_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    if not secrets.compare_digest(credentials.username, "sensos"):
+    identity = authenticate_admin_credentials(
+        str(credentials.username), str(credentials.password)
+    )
+    if identity is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if not secrets.compare_digest(credentials.password, ADMIN_API_PASSWORD):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return credentials
+    return identity
+
+
+def require_admin_role(identity: dict, allowed_roles: set[str]) -> dict:
+    if identity.get("role") not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return identity
+
+
+def require_admin_write(identity: dict = Depends(authenticate_admin)):
+    return require_admin_role(identity, ADMIN_WRITE_ROLES)
+
+
+def require_admin_owner(identity: dict = Depends(authenticate_admin)):
+    return require_admin_role(identity, {ADMIN_ROLE_OWNER})
 
 
 def authenticate_client(credentials: HTTPBasicCredentials = Depends(security)):
@@ -221,6 +323,7 @@ def create_initial_schema(cur):
     ensure_shared_extensions(cur)
     cur.execute("SET search_path TO sensos, public;")
     create_version_history_table(cur)
+    create_admin_users_table(cur)
     create_networks_table(cur)
     create_wireguard_peers_table(cur)
     create_wireguard_keys_table(cur)
@@ -443,6 +546,12 @@ def migrate_0_15_0_birdnet_weighted_label_schema(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_16_0_admin_user_accounts(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_admin_users_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -504,6 +613,11 @@ SCHEMA_MIGRATIONS = [
         name="add weighted BirdNET label fields and public views",
         apply=migrate_0_15_0_birdnet_weighted_label_schema,
     ),
+    SchemaMigration(
+        version=parse_version_key("0.16.0"),
+        name="add database-backed admin user accounts",
+        apply=migrate_0_16_0_admin_user_accounts,
+    ),
 ]
 
 
@@ -562,19 +676,11 @@ def lookup_peer_identity(conn, peer_uuid: str) -> tuple[int, str]:
 
 
 def hash_peer_api_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = sha256(salt + password.encode("utf-8")).hexdigest()
-    return f"{base64.b64encode(salt).decode('ascii')}:{digest}"
+    return password_hash(password, salt)
 
 
 def verify_peer_api_password(password: str, encoded_hash: str) -> bool:
-    try:
-        encoded_salt, expected_digest = encoded_hash.split(":", 1)
-        salt = base64.b64decode(encoded_salt.encode("ascii"))
-    except Exception:
-        return False
-    actual_digest = sha256(salt + password.encode("utf-8")).hexdigest()
-    return secrets.compare_digest(actual_digest, expected_digest)
+    return verify_password(password, encoded_hash)
 
 
 def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
@@ -953,6 +1059,202 @@ def create_version_history_table(cur):
         );
         """
     )
+
+
+def create_admin_users_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.admin_users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            display_name TEXT,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            password_hash TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_login_at TIMESTAMPTZ,
+            CHECK (role IN ('owner', 'operator', 'viewer')),
+            CHECK (username ~ '^[A-Za-z0-9_.-]{3,64}$')
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_admin_users_active_role
+        ON sensos.admin_users (is_active, role, username);
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.admin_users
+        ADD COLUMN IF NOT EXISTS display_name TEXT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.admin_users
+        ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+        """
+    )
+
+
+def list_admin_users() -> list[dict]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username, display_name, role, is_active, created_at, updated_at, last_login_at
+                FROM sensos.admin_users
+                ORDER BY username;
+                """
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "username": row[0],
+            "display_name": row[1],
+            "role": row[2],
+            "is_active": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "last_login_at": row[6],
+            "source": "database",
+        }
+        for row in rows
+    ]
+
+
+def validate_admin_username(username: str) -> str:
+    value = username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", value):
+        raise ValueError("username must be 3-64 characters using letters, numbers, '.', '_' or '-'")
+    if value == "sensos":
+        raise ValueError("username 'sensos' is reserved for the bootstrap admin credential")
+    return value
+
+
+def validate_admin_role(role: str) -> str:
+    value = role.strip().lower()
+    if value not in ADMIN_ROLES:
+        raise ValueError(f"role must be one of: {', '.join(sorted(ADMIN_ROLES))}")
+    return value
+
+
+def upsert_admin_user(
+    username: str,
+    password: str | None,
+    role: str,
+    display_name: str | None = None,
+    is_active: bool = True,
+) -> dict:
+    username = validate_admin_username(username)
+    role = validate_admin_role(role)
+    display_name = (display_name or "").strip() or None
+    if password is not None and len(password) < 12:
+        raise ValueError("admin user passwords must be at least 12 characters")
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if password is None:
+                cur.execute(
+                    "SELECT 1 FROM sensos.admin_users WHERE username = %s;",
+                    (username,),
+                )
+                if cur.fetchone() is None:
+                    raise ValueError("password is required when creating a new admin user")
+                cur.execute(
+                    """
+                    UPDATE sensos.admin_users
+                    SET display_name = %s,
+                        role = %s,
+                        is_active = %s,
+                        updated_at = NOW()
+                    WHERE username = %s
+                    RETURNING username, display_name, role, is_active;
+                    """,
+                    (display_name, role, is_active, username),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO sensos.admin_users
+                        (username, display_name, role, password_hash, is_active)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE
+                    SET display_name = EXCLUDED.display_name,
+                        role = EXCLUDED.role,
+                        password_hash = EXCLUDED.password_hash,
+                        is_active = EXCLUDED.is_active,
+                        updated_at = NOW()
+                    RETURNING username, display_name, role, is_active;
+                    """,
+                    (username, display_name, role, password_hash(password), is_active),
+                )
+            row = cur.fetchone()
+            conn.commit()
+    return {
+        "username": row[0],
+        "display_name": row[1],
+        "role": row[2],
+        "is_active": row[3],
+    }
+
+
+def set_admin_user_active(username: str, is_active: bool) -> bool:
+    username = validate_admin_username(username)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.admin_users
+                SET is_active = %s,
+                    updated_at = NOW()
+                WHERE username = %s
+                RETURNING username;
+                """,
+                (is_active, username),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
+def delete_admin_user(username: str) -> bool:
+    username = validate_admin_username(username)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM sensos.admin_users
+                WHERE username = %s
+                RETURNING username;
+                """,
+                (username,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
+def mark_admin_login(username: str):
+    if username == "sensos":
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.admin_users
+                SET last_login_at = NOW()
+                WHERE username = %s;
+                """,
+                (username,),
+            )
+            conn.commit()
 
 
 def create_networks_table(cur):

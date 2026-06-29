@@ -497,13 +497,15 @@ Behavior:
 
 ## Admin UI
 
-The built-in admin UI now includes a `BirdNET` view at `/admin/birdnet`.
+The built-in admin UI includes operator views under `/admin`, including
+`/admin/birdnet` and owner-only admin account management at `/admin/users`.
 
 Behavior:
 
 - shows recent accepted BirdNET upload batches
 - summarizes total uploaded batches and processed-file records stored on the server
 - helps confirm that client-side BirdNET uploads are arriving without needing direct database inspection
+- lets owners create named admin users with `owner`, `operator`, or `viewer` roles
 
 ## Public Dashboard
 

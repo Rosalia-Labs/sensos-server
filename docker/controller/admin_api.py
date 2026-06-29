@@ -13,6 +13,7 @@ from core import (
     delete_network,
     delete_peer,
     get_db,
+    require_admin_write,
     set_peer_active_state,
     update_network_endpoint,
     wait_for_network_ready,
@@ -84,7 +85,7 @@ def get_network_info(network_name: str, credentials=Depends(authenticate_admin))
 
 
 @router.post("/networks")
-def create_network(request: CreateNetworkRequest, credentials=Depends(authenticate_admin)):
+def create_network(request: CreateNetworkRequest, credentials=Depends(require_admin_write)):
     try:
         with get_db() as conn:
             result, created = create_network_entry(
@@ -111,7 +112,7 @@ def create_network(request: CreateNetworkRequest, credentials=Depends(authentica
 def update_network_endpoint_route(
     network_name: str,
     request: UpdateNetworkEndpointRequest,
-    credentials=Depends(authenticate_admin),
+    credentials=Depends(require_admin_write),
 ):
     try:
         with get_db() as conn:
@@ -136,7 +137,7 @@ def update_network_endpoint_route(
 
 
 @router.delete("/networks/{network_name}")
-def delete_network_endpoint(network_name: str, credentials=Depends(authenticate_admin)):
+def delete_network_endpoint(network_name: str, credentials=Depends(require_admin_write)):
     if not delete_network(network_name):
         return error_response(404, f"Network '{network_name}' not found.")
     return {"network_name": network_name, "deleted": True}
@@ -220,7 +221,7 @@ def get_peer_info(ip_address: str, credentials=Depends(authenticate_admin)):
 
 @router.patch("/peers/{wg_ip}/active")
 def set_peer_active(
-    wg_ip: str, request: SetPeerActiveRequest, credentials=Depends(authenticate_admin)
+    wg_ip: str, request: SetPeerActiveRequest, credentials=Depends(require_admin_write)
 ):
     if wg_ip != request.wg_ip:
         return error_response(400, "Path wg_ip must match request body wg_ip.")
@@ -230,7 +231,7 @@ def set_peer_active(
 
 
 @router.delete("/peers/{wg_ip}")
-def delete_peer_endpoint(wg_ip: str, credentials=Depends(authenticate_admin)):
+def delete_peer_endpoint(wg_ip: str, credentials=Depends(require_admin_write)):
     if not delete_peer(wg_ip):
         return error_response(404, f"Peer '{wg_ip}' not found.")
     return {"wg_ip": wg_ip, "deleted": True}
