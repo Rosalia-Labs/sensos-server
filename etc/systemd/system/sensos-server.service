@@ -1,6 +1,7 @@
 [Unit]
 Description=SensOS Server
-After=network.target docker.service
+Wants=network-online.target
+After=network-online.target docker.service
 Requires=docker.service
 
 [Service]
@@ -11,6 +12,9 @@ ExecStart={{REPO_ROOT}}/bin/start-server --no-detach --restart
 ExecStop={{REPO_ROOT}}/bin/stop-server
 User={{SERVICE_USER}}
 Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target

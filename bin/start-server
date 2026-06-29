@@ -21,6 +21,25 @@ compose_cmd() {
     exit 1
 }
 
+wait_for_docker() {
+    local timeout_sec="${1:-120}"
+    local elapsed=0
+
+    echo "⏳ Waiting for Docker daemon..."
+    while true; do
+        if docker info >/dev/null 2>&1; then
+            echo "✅ Docker daemon is ready"
+            return 0
+        fi
+        if [ "${elapsed}" -ge "${timeout_sec}" ]; then
+            echo "❌ Timeout waiting for Docker daemon." >&2
+            return 1
+        fi
+        sleep 2
+        ((elapsed += 2))
+    done
+}
+
 wait_for_container_health() {
     local container_name="$1"
     local timeout_sec="${2:-120}"
@@ -102,6 +121,7 @@ done
 cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
+wait_for_docker
 read -r -a COMPOSE_CMD <<< "$(compose_cmd)"
 
 # Load environment variables from .env if available
@@ -198,11 +218,10 @@ echo "   Git commit=${GIT_COMMIT}, branch=${GIT_BRANCH}, tag=${GIT_TAG}, dirty=$
 
 # Bring up the database first so downstream depends_on/service_healthy checks
 # do not race against a freshly recreated container after a full compose down.
-DB_UP_CMD=("${COMPOSE_CMD[@]}" up)
-if [ "$DETACH" = true ]; then
-    DB_UP_CMD+=(-d)
-fi
-DB_UP_CMD+=(sensos-database)
+# This bootstrap phase must be detached even when the final stack is run in the
+# foreground for systemd; otherwise the script attaches to postgres logs forever
+# and never starts the remaining services.
+DB_UP_CMD=("${COMPOSE_CMD[@]}" up -d sensos-database)
 echo "🚀 Executing command: ${DB_UP_CMD[*]}"
 "${DB_UP_CMD[@]}"
 
