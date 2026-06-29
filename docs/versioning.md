@@ -81,7 +81,7 @@ database itself; do not introduce a separate external migration framework just
 to manage the SensOS schema.
 
 Host upgrade hooks may still pre-create compatibility schema when it makes an
-upgrade safer. For example, crossing `0.16.0` creates `sensos.admin_users` when
+upgrade safer. For example, crossing `0.17.0` creates `sensos.admin_users` when
 the database container is already running, while the controller startup path
 performs the same idempotent migration if the stack was stopped during upgrade.
 The existing `ADMIN_API_PASSWORD` remains a bootstrap owner credential for

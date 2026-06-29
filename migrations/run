@@ -41,7 +41,7 @@ run_database_sql() {
     docker exec -i sensos-database psql -U postgres -d postgres -v ON_ERROR_STOP=1
 }
 
-migrate_0_16_0_admin_user_accounts() {
+migrate_0_17_0_admin_user_accounts() {
     if ! command -v docker >/dev/null 2>&1; then
         log "docker is not available; controller startup will apply the admin user schema"
         return
@@ -92,8 +92,8 @@ main() {
     validate_version "${from_version}"
     validate_version "${to_version}"
 
-    if crosses_version "${from_version}" "${to_version}" "0.16.0"; then
-        migrate_0_16_0_admin_user_accounts
+    if crosses_version "${from_version}" "${to_version}" "0.17.0"; then
+        migrate_0_17_0_admin_user_accounts
     else
         log "no server migrations required for ${from_version} -> ${to_version}"
     fi

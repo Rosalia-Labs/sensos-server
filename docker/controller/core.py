@@ -546,7 +546,7 @@ def migrate_0_15_0_birdnet_weighted_label_schema(cur):
     ensure_public_dashboard_role(cur)
 
 
-def migrate_0_16_0_admin_user_accounts(cur):
+def migrate_0_17_0_admin_user_accounts(cur):
     ensure_shared_extensions(cur)
     cur.execute("SET search_path TO sensos, public;")
     create_admin_users_table(cur)
@@ -614,9 +614,9 @@ SCHEMA_MIGRATIONS = [
         apply=migrate_0_15_0_birdnet_weighted_label_schema,
     ),
     SchemaMigration(
-        version=parse_version_key("0.16.0"),
+        version=parse_version_key("0.17.0"),
         name="add database-backed admin user accounts",
-        apply=migrate_0_16_0_admin_user_accounts,
+        apply=migrate_0_17_0_admin_user_accounts,
     ),
 ]
 
