@@ -67,7 +67,7 @@ BIRDNET_RANKING_WEIGHTING = {
 }
 
 BIRDNET_LABEL_MODES = {
-    "weighted": {"label": "Top weighted score"},
+    "weighted": {"label": "Top likely score"},
     "raw": {"label": "Top score"},
 }
 
@@ -1570,7 +1570,7 @@ def fetch_site_detail(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
                        count(*)::integer AS detection_count,
-                       sum(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS evidence_weight,
+                       sum(({selected_score_expr}) * ({selected_likely_expr})) AS evidence_weight,
                        avg({selected_score_expr}) AS average_score,
                        max({selected_score_expr}) AS best_score,
                        max(processed_at) AS latest_processed_at
@@ -1957,7 +1957,7 @@ def fetch_site_status(site_id: str) -> dict:
                 """
                 SELECT top_label,
                        count(*)::integer AS detection_count,
-                       sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, top_score)) AS evidence_weight,
+                       sum((end_sec - start_sec) * top_score * top_likely_score) AS evidence_weight,
                        avg(top_score) AS average_score,
                        max(top_score) AS best_score,
                        max(processed_at) AS latest_processed_at
@@ -2362,7 +2362,7 @@ def fetch_site_birdnet_rankings(
                 "detection": "1::double precision",
                 "duration": "greatest(end_sec - start_sec, 0)::double precision",
                 "score": f"({selected_score_expr})::double precision",
-                "occup": f"coalesce({selected_likely_expr}, {selected_score_expr})::double precision",
+                "occup": f"({selected_likely_expr})::double precision",
                 "volume": (
                     "volume::double precision"
                     if has_window_volume
@@ -2372,7 +2372,7 @@ def fetch_site_birdnet_rankings(
             variable_expr = base_variable_expr_map[normalized_variable]
             if normalized_weight == "yes" and normalized_variable != "occup":
                 variable_expr = (
-                    f"({variable_expr}) * coalesce({selected_likely_expr}, 1.0)::double precision"
+                    f"({variable_expr}) * ({selected_likely_expr})::double precision"
                 )
 
             statistic_expr_map = {
@@ -2414,12 +2414,12 @@ def fetch_site_birdnet_rankings(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
                        count(*)::integer AS detection_count,
-                       sum(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS sum_score_x_likely,
-                       sum((end_sec - start_sec) * ({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS sum_score_x_occup,
+                       sum(({selected_score_expr}) * ({selected_likely_expr})) AS sum_score_x_likely,
+                       sum((end_sec - start_sec) * ({selected_score_expr}) * ({selected_likely_expr})) AS sum_score_x_occup,
                        sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                       max(({selected_score_expr}) * coalesce({selected_likely_expr}, 1.0)) AS max_score_x_occup,
+                       max(({selected_score_expr}) * ({selected_likely_expr})) AS max_score_x_occup,
                        max({selected_score_expr}) AS max_score,
-                       max(coalesce({selected_likely_expr}, {selected_score_expr})) AS max_occup,
+                       max({selected_likely_expr}) AS max_occup,
                        {avg_volume_expr},
                        {selected_metric_expr} AS selected_metric,
                        max(processed_at) AS latest_processed_at
@@ -2499,6 +2499,12 @@ def fetch_site_birdnet_species(
                     SELECT processed_at,
                            {selected_score_expr} AS selected_score,
                            {selected_likely_expr} AS selected_likely_score,
+                           top_label,
+                           top_score,
+                           top_likely_score,
+                           weighted_label,
+                           weighted_score,
+                           weighted_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
@@ -2522,6 +2528,12 @@ def fetch_site_birdnet_species(
                     SELECT d.processed_at,
                            {selected_score_expr} AS selected_score,
                            {selected_likely_expr} AS selected_likely_score,
+                           top_label,
+                           top_score,
+                           top_likely_score,
+                           weighted_label,
+                           weighted_score,
+                           weighted_likely_score,
                            start_sec,
                            end_sec,
                            source_path,
@@ -2562,6 +2574,12 @@ def fetch_site_birdnet_species(
         processed_at,
         selected_score,
         selected_likely_score,
+        top_label,
+        top_score,
+        top_likely_score,
+        weighted_label,
+        weighted_score,
+        weighted_likely_score,
         start_sec,
         end_sec,
         source_path,
@@ -2579,11 +2597,10 @@ def fetch_site_birdnet_species(
         occupancy_value = (
             float(selected_likely_score)
             if selected_likely_score is not None
-            else score_value
+            else None
         )
         duration_sec = max(float(end_sec) - float(start_sec), 0.0)
         duration_values.append(duration_sec)
-        weighted_value = duration_sec * score_value * occupancy_value
         score_points.append({"processed_at": processed_text, "value": score_value})
         if volume is not None:
             volume_value = float(volume)
@@ -2603,12 +2620,14 @@ def fetch_site_birdnet_species(
             twilight_count += 1
         else:
             night_count += 1
-        occupancy_points.append(
-            {"processed_at": processed_text, "value": occupancy_value}
-        )
-        weighted_points.append(
-            {"processed_at": processed_text, "activity": weighted_value}
-        )
+        if occupancy_value is not None:
+            weighted_value = duration_sec * score_value * occupancy_value
+            occupancy_points.append(
+                {"processed_at": processed_text, "value": occupancy_value}
+            )
+            weighted_points.append(
+                {"processed_at": processed_text, "activity": weighted_value}
+            )
         detections.append(
             {
                 "processed_at": processed_text,
@@ -2623,6 +2642,22 @@ def fetch_site_birdnet_species(
                 "source_path": source_path,
                 "channel_index": int(channel_index),
                 "volume": float(volume) if volume is not None else None,
+                "raw_label": top_label,
+                "raw_score": float(top_score),
+                "raw_likely_score": (
+                    float(top_likely_score)
+                    if top_likely_score is not None
+                    else None
+                ),
+                "weighted_label": weighted_label,
+                "weighted_score": (
+                    float(weighted_score) if weighted_score is not None else None
+                ),
+                "weighted_likely_score": (
+                    float(weighted_likely_score)
+                    if weighted_likely_score is not None
+                    else None
+                ),
             }
         )
     site["species_label"] = label
@@ -2756,10 +2791,37 @@ def render_birdnet_species_html(site: dict) -> str:
     wait_mean = site.get("species_wait_mean_sec")
     wait_burstiness = site.get("species_wait_burstiness")
     night_fraction = site.get("species_night_fraction")
+
+    def render_alternate_detection_label(item: dict) -> str:
+        if label_mode == "raw":
+            alternate_title = "Top likely label"
+            alternate_label = item.get("weighted_label")
+            alternate_score = item.get("weighted_score")
+            alternate_likely_score = item.get("weighted_likely_score")
+        else:
+            alternate_title = "Top score label"
+            alternate_label = item.get("raw_label")
+            alternate_score = item.get("raw_score")
+            alternate_likely_score = item.get("raw_likely_score")
+        if not alternate_label or alternate_label == site["species_label"]:
+            return ""
+        score_text = "n/a" if alternate_score is None else f"{float(alternate_score):.2f}"
+        likely_text = (
+            "n/a"
+            if alternate_likely_score is None
+            else f"{float(alternate_likely_score):.2f}"
+        )
+        return (
+            f'<div class="dim">{alternate_title}: '
+            f'<strong>{escape_html(str(alternate_label))}</strong> '
+            f'<span>score {score_text} · occup {likely_text}</span></div>'
+        )
+
     recent_cards = (
         "".join(f"""
         <article class="record-card">
           <div><strong>{escape_html(site['species_label'])}</strong> <span class="dim">score {item['top_score']:.2f} · occup {'n/a' if item['top_likely_score'] is None else f"{item['top_likely_score']:.2f}"} · vol {'n/a' if item.get('volume') is None else f"{item['volume']:.3f}"}</span></div>
+          {render_alternate_detection_label(item)}
           <div class="dim">{render_local_time(item['processed_at'])} · ch {item['channel_index']} · {item['start_sec']:.1f}s-{item['end_sec']:.1f}s</div>
           <div class="mono">{escape_html(item['source_path'])}</div>
         </article>
