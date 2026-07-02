@@ -527,6 +527,17 @@ def peer_display_label(row: dict) -> str:
     return str(row.get("wg_ip") or "Unknown")
 
 
+def derive_peer_hostname(network_name, wg_ip) -> str:
+    network_text = str(network_name or "").strip()
+    ip_text = str(wg_ip or "").strip()
+    if not network_text or not ip_text:
+        return ""
+    parts = ip_text.split(".")
+    if len(parts) != 4:
+        return ""
+    return f"{network_text}-{parts[2]}-{parts[3]}"
+
+
 def truncate_middle(value, max_chars: int = 36) -> str:
     text = str(value or "")
     if len(text) <= max_chars:
@@ -791,6 +802,7 @@ def fetch_peer_rows(
             "peer_uuid": row[0],
             "wg_ip": row[1],
             "network_name": row[2],
+            "peer_hostname": derive_peer_hostname(row[2], row[1]),
             "is_active": row[3],
             "note": row[4],
             "registered_at": row[5],
@@ -810,7 +822,7 @@ def fetch_peer_rows(
 
     sorters = {
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
-        "host": lambda row: ((row["hostname"] or "").lower(), row["wg_ip"]),
+        "host": lambda row: ((row["peer_hostname"] or "").lower(), row["wg_ip"]),
         "checkin": lambda row: (
             row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc),
             row["wg_ip"],
@@ -956,6 +968,10 @@ def fetch_wireguard_peer_health_rows() -> list[dict]:
                     "wg_ip": allowed_ip,
                     "network_name": peer_meta.get("network_name") or runtime["network_name"],
                     "client_label": peer_meta.get("note") or allowed_ip,
+                    "peer_hostname": derive_peer_hostname(
+                        peer_meta.get("network_name") or runtime["network_name"],
+                        allowed_ip,
+                    ),
                     "hostname": peer_meta.get("hostname") or "Unknown",
                     "is_active": bool(peer_meta.get("is_active", True)),
                     "last_check_in": peer_meta.get("last_check_in"),
@@ -1030,6 +1046,7 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
             "wg_ip": row[0],
             "note": row[1],
             "network_name": row[2] or "—",
+            "peer_hostname": derive_peer_hostname(row[2], row[0]),
             "hostname": row[3] or "—",
             "client_version": row[4] or "—",
             "source_path": row[5] or "—",
@@ -1098,6 +1115,7 @@ def fetch_sensor_rows(limit: int = 100) -> list[dict]:
             "wg_ip": row[0],
             "note": row[1],
             "network_name": row[2] or "—",
+            "peer_hostname": derive_peer_hostname(row[2], row[0]),
             "hostname": row[3] or "—",
             "client_version": row[4] or "—",
             "recorded_at": row[5],
@@ -1138,6 +1156,7 @@ def summarize_sensor_clients(rows: list[dict]) -> list[dict]:
                 "wg_ip": row["wg_ip"],
                 "note": row["note"],
                 "network_name": row["network_name"],
+                "peer_hostname": row["peer_hostname"],
                 "hostname": row["hostname"],
                 "client_version": row["client_version"],
                 "last_recorded_at": row["recorded_at"],
@@ -1188,6 +1207,7 @@ def summarize_birdnet_clients(rows: list[dict]) -> list[dict]:
                 "wg_ip": row["wg_ip"],
                 "note": row["note"],
                 "network_name": row["network_name"],
+                "peer_hostname": row["peer_hostname"],
                 "hostname": row["hostname"],
                 "client_version": row["client_version"],
                 "last_clip_end": row["clip_end_time"],
@@ -1302,12 +1322,12 @@ def overview_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Latest peer check-ins</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Last check-in</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>Last check-in</th></tr>
       </thead>
       <tbody>
         {''.join(
             f"<tr><td>{html.escape(peer_display_label(row))}</td><td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
+            f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td><td>{html.escape(summarize_age(row['last_check_in']))}</td></tr>"
             for row in peers
         ) or '<tr><td colspan="4" class="dim">No peer check-ins reported yet.</td></tr>'}
       </tbody>
@@ -1342,7 +1362,7 @@ def overview_page(request: Request, flash: str | None = None):
       {''.join(
           "<tr>"
           f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
-          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or (row['hostname'] or '—'))}</div></td>"
+          f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>reported {html.escape(row['hostname'] or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td>{html.escape(row['version'] or '—')}</td>"
           f"<td>{html.escape(row['status_message'] or '—')}</td>"
@@ -1532,7 +1552,7 @@ def peers_page(
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
             f"<div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'] or 'Unknown')}</td>"
+            f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
             f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
             "<td>"
@@ -1566,7 +1586,7 @@ def peers_page(
     <select name="sort" onchange="this.form.submit()">
       <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
       <option value="client"{' selected' if sort == 'client' else ''}>Client</option>
-      <option value="host"{' selected' if sort == 'host' else ''}>Client name</option>
+      <option value="host"{' selected' if sort == 'host' else ''}>Assigned hostname</option>
       <option value="checkin"{' selected' if sort == 'checkin' else ''}>Last check-in</option>
       <option value="state"{' selected' if sort == 'state' else ''}>State</option>
     </select>
@@ -1585,7 +1605,7 @@ def peers_page(
   {filter_form}
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client name</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {''.join(body_rows) or '<tr><td colspan="7" class="dim">No clients registered.</td></tr>'}
@@ -1817,14 +1837,14 @@ def wireguard_page(request: Request, flash: str | None = None):
   <h2 class="section-title">WireGuard peer health</h2>
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Client name</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>Handshake</th><th>Last check-in</th><th>Endpoint</th><th>Transfer</th><th>Runtime</th></tr>
     </thead>
     <tbody>
       {''.join(
           "<tr>"
           f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['client_label'] or '').strip() or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
-          f"<td>{html.escape(row['hostname'])}</td>"
+          f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
           f"<td><div>{badge_for_status(row['handshake_bucket'])}</div><div class='dim'>{html.escape(row['last_handshake'])}</div></td>"
           f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
           f"<td class='mono' title='{html.escape(row['endpoint'])}'>{html.escape(truncate_middle(row['endpoint'], 26))}</td>"
@@ -1857,7 +1877,7 @@ def checkins_page(request: Request, flash: str | None = None):
   <h2 class="section-title">Recent client status posts</h2>
   <table>
     <thead>
-      <tr><th>When</th><th>Client</th><th>Network</th><th>Client name</th><th>Version</th><th>Status</th><th>Uptime</th><th>Disk GB</th><th>Memory MB</th><th>Load</th></tr>
+      <tr><th>When</th><th>Client</th><th>Network</th><th>Reported hostname</th><th>Version</th><th>Status</th><th>Uptime</th><th>Disk GB</th><th>Memory MB</th><th>Load</th></tr>
     </thead>
     <tbody>
       {''.join(
@@ -1972,14 +1992,14 @@ def birdnet_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Client BirdNET activity summary</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>Detections</th><th>Top species</th><th>Latest clip end</th></tr>
       </thead>
       <tbody>
         {''.join(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'])}</td>"
+            f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
             f"<td>{row['detection_count']}</td>"
             f"<td><div>{html.escape(row['top_label'])}</div><div class='dim'>{row['top_label_count']} detections</div></td>"
             f"<td><div>{html.escape(summarize_age(row['last_clip_end']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_clip_end']))}</div></td>"
@@ -2023,14 +2043,14 @@ def sensors_page(request: Request, flash: str | None = None):
     <h2 class="section-title">Client sensor freshness summary</h2>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Client name</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
+        <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>Readings</th><th>Key signals</th><th>Last recorded</th><th>Last received</th></tr>
       </thead>
       <tbody>
         {''.join(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
-            f"<td>{html.escape(row['hostname'])}</td>"
+            f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
             f"<td>{row['reading_count']}</td>"
             f"<td><div class='dim'>temp {row['signals'].get('temp', '—') if row['signals'].get('temp', '—') == '—' else format(row['signals'].get('temp'), '.2f')}</div><div class='dim'>humidity {row['signals'].get('humidity', '—') if row['signals'].get('humidity', '—') == '—' else format(row['signals'].get('humidity'), '.2f')} · pressure {row['signals'].get('pressure', '—') if row['signals'].get('pressure', '—') == '—' else format(row['signals'].get('pressure'), '.2f')} · co2 {row['signals'].get('co2', '—') if row['signals'].get('co2', '—') == '—' else format(row['signals'].get('co2'), '.1f')}</div></td>"
             f"<td><div>{html.escape(summarize_age(row['last_recorded_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_recorded_at']))}</div></td>"

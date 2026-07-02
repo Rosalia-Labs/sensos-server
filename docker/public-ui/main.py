@@ -492,13 +492,24 @@ def _format_sensor_label(
     return base
 
 
-def choose_site_display_label(note, hostname, wg_ip) -> str:
+def derive_peer_hostname(network_name, wg_ip) -> str:
+    network_text = str(network_name or "").strip()
+    ip_text = str(wg_ip or "").strip()
+    if not network_text or not ip_text:
+        return ""
+    parts = ip_text.split(".")
+    if len(parts) != 4:
+        return ""
+    return f"{network_text}-{parts[2]}-{parts[3]}"
+
+
+def choose_site_display_label(note, network_name, wg_ip) -> str:
     note_text = str(note or "").strip()
     if note_text:
         return note_text
-    hostname_text = str(hostname or "").strip()
-    if hostname_text:
-        return hostname_text
+    peer_hostname = derive_peer_hostname(network_name, wg_ip)
+    if peer_hostname:
+        return peer_hostname
     ip_text = str(wg_ip or "").strip()
     return ip_text or "unknown"
 
@@ -1419,7 +1430,8 @@ def fetch_sites() -> list[dict]:
             "wg_ip": row[1],
             "network_name": row[2],
             "note": row[3],
-            "site_label": choose_site_display_label(row[3], row[11], row[1]),
+            "site_label": choose_site_display_label(row[3], row[2], row[1]),
+            "peer_hostname": derive_peer_hostname(row[2], row[1]),
             "is_active": row[5],
             "registered_at": format_rfc3339_utc(row[6]),
             "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -1756,7 +1768,8 @@ def fetch_site_detail(
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
-        "site_label": choose_site_display_label(row[3], row[11], row[1]),
+        "site_label": choose_site_display_label(row[3], row[2], row[1]),
+        "peer_hostname": derive_peer_hostname(row[2], row[1]),
         "is_active": row[5],
         "registered_at": format_rfc3339_utc(row[6]),
         "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -1979,7 +1992,8 @@ def fetch_site_status(site_id: str) -> dict:
         "wg_ip": row[1],
         "network_name": row[2],
         "note": row[3],
-        "site_label": choose_site_display_label(row[3], row[11], row[1]),
+        "site_label": choose_site_display_label(row[3], row[2], row[1]),
+        "peer_hostname": derive_peer_hostname(row[2], row[1]),
         "is_active": row[5],
         "registered_at": format_rfc3339_utc(row[6]),
         "location_recorded_at": format_rfc3339_utc(row[7]),
@@ -2018,7 +2032,8 @@ def fetch_site_status(site_id: str) -> dict:
 def render_site_status_html(site: dict) -> str:
     infrastructure_rows = [
         ("Site label", site["site_label"], False),
-        ("Hostname", site.get("hostname") or "unknown", False),
+        ("Assigned hostname", site.get("peer_hostname") or "unknown", False),
+        ("Reported hostname", site.get("hostname") or "unknown", False),
         ("WireGuard IP", site["wg_ip"], False),
         ("Network", site["network_name"], False),
         ("Client version", site.get("client_version") or "unknown", False),
@@ -2217,7 +2232,7 @@ def render_site_status_html(site: dict) -> str:
     </div>
     <div class="grid">
       <section class="panel"><div class="metric-label">Client Status</div><div class="metric-value">{escape_html(site['status_message'] or ('Active' if site['is_active'] else 'Inactive'))}</div></section>
-      <section class="panel"><div class="metric-label">Hostname</div><div class="metric-value">{escape_html(site['hostname'] or 'unknown')}</div></section>
+      <section class="panel"><div class="metric-label">Assigned Hostname</div><div class="metric-value">{escape_html(site.get('peer_hostname') or 'unknown')}</div></section>
       <section class="panel"><div class="metric-label">Coordinates</div><div class="metric-value">{site['latitude']:.4f}, {site['longitude']:.4f}</div><div class="dim mono">{escape_html(site['wg_ip'])}</div></section>
       <section class="panel"><div class="metric-label">Last Check-In</div><div class="metric-value">{render_local_time(site['last_check_in'], 'No check-in yet')}</div></section>
     </div>
@@ -4377,8 +4392,8 @@ def render_index_html() -> str:
     function displaySiteName(site) {{
       const note = String(site?.note || "").trim();
       if (note) return note;
-      const hostname = String(site?.hostname || "").trim();
-      if (hostname) return hostname;
+      const peerHostname = String(site?.peer_hostname || "").trim();
+      if (peerHostname) return peerHostname;
       const ip = String(site?.wg_ip || "").trim();
       if (ip) return ip;
       const label = String(site?.site_label || "").trim();
@@ -4430,7 +4445,7 @@ def render_index_html() -> str:
           <h2 class="site-popup-title">${{escapeHtml(displaySiteName(site))}}</h2>
           <div class="site-popup-meta">
             <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
-            <div>${{escapeHtml(site.hostname || site.network_name || "")}}</div>
+            <div>Reported hostname: ${{escapeHtml(site.hostname || "unknown")}}</div>
             <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in || site.last_activity_at))}}</div>
             <div>BirdNET detections: ${{escapeHtml(site.birdnet_detection_count ?? 0)}}</div>
           </div>
