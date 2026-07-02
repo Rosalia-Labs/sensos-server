@@ -80,6 +80,13 @@ inside the controller code as ordered Python migration steps recorded in the
 database itself; do not introduce a separate external migration framework just
 to manage the SensOS schema.
 
+Host upgrade hooks may still pre-create compatibility schema when it makes an
+upgrade safer. For example, crossing `0.17.0` creates `sensos.admin_users` when
+the database container is already running, while the controller startup path
+performs the same idempotent migration if the stack was stopped during upgrade.
+The existing `ADMIN_API_PASSWORD` remains a bootstrap owner credential for
+upgraded servers, so operators can sign in as `sensos` and create named users.
+
 The repo also includes [`bin/install-service`](../bin/install-service) for the
 optional systemd integration step. It prompts with a `[y/N]` warning, then runs
 the repo's setup scripts and installs host integration around the live repo

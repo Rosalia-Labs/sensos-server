@@ -17,16 +17,26 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from core import (
-    ADMIN_API_PASSWORD,
+    ADMIN_ROLE_OPERATOR,
+    ADMIN_ROLE_OWNER,
+    ADMIN_ROLE_VIEWER,
     GIT_BRANCH,
     GIT_COMMIT,
     GIT_DIRTY,
     GIT_TAG,
+    ADMIN_WRITE_ROLES,
+    authenticate_admin_credentials,
     create_network_entry,
     current_server_version,
     delete_peer,
+    delete_admin_user,
     get_db,
+    list_admin_users,
+    lookup_admin_identity,
+    mark_admin_login,
+    set_admin_user_active,
     set_peer_active_state,
+    upsert_admin_user,
     update_network_endpoint,
     wait_for_network_ready,
 )
@@ -36,7 +46,7 @@ router = APIRouter(prefix="/admin", tags=["admin-ui"])
 COOKIE_NAME = "sensos_admin_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 SESSION_SECRET = hashlib.sha256(
-    f"sensos-admin-ui:{ADMIN_API_PASSWORD}".encode("utf-8")
+    f"sensos-admin-ui:{os.getenv('ADMIN_API_PASSWORD', '')}".encode("utf-8")
 ).digest()
 HANDSHAKE_RE = re.compile(r"(\d+)\s+(\w+)\s+ago")
 IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
@@ -104,10 +114,10 @@ def _vscode_dark_theme_tokens() -> dict[str, str]:
     return tokens
 
 
-def issue_session_token() -> str:
+def issue_session_token(username: str, role: str) -> str:
     expires_at = int(time.time()) + SESSION_TTL_SECONDS
     nonce = secrets.token_urlsafe(8)
-    payload = f"sensos|{expires_at}|{nonce}"
+    payload = f"{username}|{role}|{expires_at}|{nonce}"
     signature = hmac.new(
         SESSION_SECRET, payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
@@ -115,27 +125,65 @@ def issue_session_token() -> str:
     return base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii")
 
 
-def session_is_valid(token: str | None) -> bool:
+def session_identity(token: str | None) -> dict | None:
     if not token:
-        return False
+        return None
     try:
         decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        username, expires_at_text, nonce, signature = decoded.split("|", 3)
-        payload = f"{username}|{expires_at_text}|{nonce}"
+        username, role, expires_at_text, nonce, signature = decoded.split("|", 4)
+        payload = f"{username}|{role}|{expires_at_text}|{nonce}"
     except Exception:
-        return False
+        return None
     expected_signature = hmac.new(
         SESSION_SECRET, payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
-        return False
-    if username != "sensos":
-        return False
+        return None
+    if role not in {ADMIN_ROLE_OWNER, ADMIN_ROLE_OPERATOR, ADMIN_ROLE_VIEWER}:
+        return None
     try:
         expires_at = int(expires_at_text)
     except ValueError:
-        return False
-    return expires_at >= int(time.time())
+        return None
+    if expires_at < int(time.time()):
+        return None
+    return {"username": username, "role": role}
+
+
+def current_session_identity(request: Request) -> dict | None:
+    identity = session_identity(request.cookies.get(COOKIE_NAME))
+    if identity is None:
+        return None
+    try:
+        current = lookup_admin_identity(identity["username"])
+    except Exception:
+        return None
+    return current
+
+
+def session_is_valid(token: str | None) -> bool:
+    return session_identity(token) is not None
+
+
+def require_session(request: Request) -> RedirectResponse | None:
+    if current_session_identity(request):
+        return None
+    return redirect_to_login(str(request.url.path))
+
+
+def require_ui_role(request: Request, allowed_roles: set[str]) -> RedirectResponse | None:
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+    identity = current_session_identity(request)
+    if identity is None:
+        return redirect_to_login(str(request.url.path))
+    if identity["role"] not in allowed_roles:
+        return RedirectResponse(
+            url="/admin?flash=Insufficient+privileges+for+that+action.",
+            status_code=303,
+        )
+    return None
 
 
 def redirect_to_login(next_path: str) -> RedirectResponse:
@@ -143,12 +191,6 @@ def redirect_to_login(next_path: str) -> RedirectResponse:
         url=f"/admin/login?next={quote_plus(sanitize_next_path(next_path))}",
         status_code=303,
     )
-
-
-def require_session(request: Request) -> RedirectResponse | None:
-    if session_is_valid(request.cookies.get(COOKIE_NAME)):
-        return None
-    return redirect_to_login(str(request.url.path))
 
 
 def sanitize_next_path(next_path: str | None) -> str:
@@ -177,6 +219,7 @@ def render_page(
         ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
         ("/admin/runtime", "Runtime"),
+        ("/admin/users", "Admin Users"),
     ]
     nav_links = "".join(
         (
@@ -365,21 +408,21 @@ def render_login_page(next_path: str, error: str | None = None) -> HTMLResponse:
 <body>
   <div class="card">
     <h1>Sign in</h1>
-    <p>Use the existing admin API credential to open the operator dashboard.</p>
+    <p>Use your admin username and password to open the operator dashboard.</p>
     {error_html}
     <form method="post" action="/admin/login">
       <input type="hidden" name="next" value="{html.escape(next_path)}">
       <label>
         Username
-        <input type="text" name="username" value="sensos" autocomplete="username" required>
+        <input type="text" name="username" autocomplete="username" required autofocus>
       </label>
       <label>
-        Admin password
+        Password
         <input type="password" name="password" autocomplete="current-password" required>
       </label>
       <button type="submit">Open dashboard</button>
     </form>
-    <p class="help">This UI creates a same-site admin session cookie instead of relying on browser Basic auth prompts.</p>
+    <p class="help">The bootstrap username is sensos. Owners can create named accounts after signing in.</p>
   </div>
 </body>
 </html>
@@ -1192,7 +1235,7 @@ def stat_card(label: str, value: str, help_text: str) -> str:
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/admin"):
-    if session_is_valid(request.cookies.get(COOKIE_NAME)):
+    if current_session_identity(request):
         return RedirectResponse(url=sanitize_next_path(next), status_code=303)
     return render_login_page(next_path=sanitize_next_path(next))
 
@@ -1203,15 +1246,17 @@ async def login_submit(request: Request):
     username = str(form.get("username", ""))
     password = str(form.get("password", ""))
     next_path = sanitize_next_path(str(form.get("next", "/admin")) or "/admin")
-    if username != "sensos" or password != ADMIN_API_PASSWORD:
+    identity = authenticate_admin_credentials(username, password)
+    if identity is None:
         return render_login_page(
             next_path=next_path, error="Invalid admin credentials."
         )
+    mark_admin_login(identity["username"])
 
     response = RedirectResponse(url=next_path, status_code=303)
     response.set_cookie(
         COOKIE_NAME,
-        issue_session_token(),
+        issue_session_token(identity["username"], identity["role"]),
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="strict",
@@ -1389,7 +1434,7 @@ def networks_page(request: Request, flash: str | None = None):
 
 @router.post("/networks")
 async def create_network_action(request: Request):
-    redirect = require_session(request)
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
     if redirect:
         return redirect
     form = await request.form()
@@ -1432,7 +1477,7 @@ async def create_network_action(request: Request):
 
 @router.post("/networks/endpoint")
 async def update_network_endpoint_action(request: Request):
-    redirect = require_session(request)
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
     if redirect:
         return redirect
     form = await request.form()
@@ -1558,7 +1603,7 @@ def peers_page(
 
 @router.post("/peers/{peer_uuid}/active")
 async def peer_active_action(request: Request, peer_uuid: str):
-    redirect = require_session(request)
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
     if redirect:
         return redirect
     form = await request.form()
@@ -1584,7 +1629,7 @@ async def peer_active_action(request: Request, peer_uuid: str):
 
 @router.post("/peers/{peer_uuid}/delete")
 def peer_delete_action(request: Request, peer_uuid: str):
-    redirect = require_session(request)
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
     if redirect:
         return redirect
     with get_db() as conn:
@@ -1599,6 +1644,154 @@ def peer_delete_action(request: Request, peer_uuid: str):
     message = f"Peer '{wg_ip}' deleted." if ok else f"Peer '{wg_ip}' was not found."
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+    )
+
+
+@router.get("/users", response_class=HTMLResponse)
+def admin_users_page(request: Request, flash: str | None = None):
+    redirect = require_ui_role(request, {ADMIN_ROLE_OWNER})
+    if redirect:
+        return redirect
+
+    rows = list_admin_users()
+
+    role_options = "".join(
+        f"<option value='{role}'>{role.title()}</option>"
+        for role in (ADMIN_ROLE_VIEWER, ADMIN_ROLE_OPERATOR, ADMIN_ROLE_OWNER)
+    )
+
+    users_rows = "".join(
+        "<tr>"
+        f"<td><div>{html.escape(row['username'])}</div><div class='dim'>{html.escape(row['display_name'] or '—')}</div></td>"
+        f"<td>{html.escape(row['role'])}</td>"
+        f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
+        f"<td>{html.escape(format_timestamp(row['last_login_at']))}</td>"
+        "<td>"
+        f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/active'>"
+        f"<input type='hidden' name='is_active' value='{'false' if row['is_active'] else 'true'}'>"
+        f"<button class='secondary' type='submit'>{'Deactivate' if row['is_active'] else 'Activate'}</button>"
+        "</form>"
+        f"<form class='inline' method='post' action='/admin/users/{quote_plus(row['username'])}/delete' "
+        "onsubmit=\"return confirm('Delete this admin user?');\">"
+        "<button class='danger' type='submit'>Delete</button>"
+        "</form>"
+        "</td>"
+        "</tr>"
+        for row in rows
+    )
+
+    if not users_rows:
+        users_rows = '<tr><td colspan="5" class="dim">No named admin users exist yet. The bootstrap sensos account remains available.</td></tr>'
+
+    body = f"""
+<div class="split">
+  <section class="panel">
+    <h2 class="section-title">Named admin accounts</h2>
+    <table>
+      <thead>
+        <tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {users_rows}
+      </tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2 class="section-title">Create or update user</h2>
+    <form class="block" method="post" action="/admin/users">
+      <label>Username<input type="text" name="username" placeholder="alice" autocomplete="username" required></label>
+      <label>Display name<input type="text" name="display_name" placeholder="Alice Example"></label>
+      <label>Role<select name="role" required>{role_options}</select></label>
+      <label>Password<input type="password" name="password" autocomplete="new-password" minlength="12"></label>
+      <label><input type="checkbox" name="is_active" value="true" checked> Active</label>
+      <button type="submit">Save user</button>
+    </form>
+    <p class="help">Leave password blank only when updating an existing user without changing their password.</p>
+  </section>
+</div>
+<section class="panel">
+  <h2 class="section-title">Role privileges</h2>
+  <table>
+    <thead><tr><th>Role</th><th>Access</th></tr></thead>
+    <tbody>
+      <tr><td>Owner</td><td>Manage admin users and all operational settings.</td></tr>
+      <tr><td>Operator</td><td>View dashboards and perform network/client operations.</td></tr>
+      <tr><td>Viewer</td><td>View dashboards and read-only admin API endpoints.</td></tr>
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="Admin Users",
+        body=body,
+        current_path="/admin/users",
+        flash=flash,
+    )
+
+@router.post("/users")
+async def admin_user_save_action(request: Request):
+    redirect = require_ui_role(request, {ADMIN_ROLE_OWNER})
+    if redirect:
+        return redirect
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    display_name = str(form.get("display_name", "")).strip()
+    role = str(form.get("role", "")).strip()
+    password = str(form.get("password", ""))
+    is_active = str(form.get("is_active", "")).strip().lower() == "true"
+    try:
+        upsert_admin_user(
+            username=username,
+            display_name=display_name,
+            role=role,
+            password=password or None,
+            is_active=is_active,
+        )
+        message = f"Saved admin user '{username}'."
+    except Exception as exc:
+        message = f"Admin user save failed: {exc}"
+    return RedirectResponse(
+        url=f"/admin/users?flash={quote_plus(message)}", status_code=303
+    )
+
+
+@router.post("/users/{username}/active")
+async def admin_user_active_action(request: Request, username: str):
+    redirect = require_ui_role(request, {ADMIN_ROLE_OWNER})
+    if redirect:
+        return redirect
+    form = await request.form()
+    is_active = str(form.get("is_active", "")).strip().lower() == "true"
+    try:
+        ok = set_admin_user_active(username, is_active)
+        message = (
+            f"Admin user '{username}' set to {'active' if is_active else 'inactive'}."
+            if ok
+            else f"Admin user '{username}' was not found."
+        )
+    except Exception as exc:
+        message = f"Admin user update failed: {exc}"
+    return RedirectResponse(
+        url=f"/admin/users?flash={quote_plus(message)}", status_code=303
+    )
+
+
+@router.post("/users/{username}/delete")
+def admin_user_delete_action(request: Request, username: str):
+    redirect = require_ui_role(request, {ADMIN_ROLE_OWNER})
+    if redirect:
+        return redirect
+    try:
+        ok = delete_admin_user(username)
+        message = (
+            f"Admin user '{username}' deleted."
+            if ok
+            else f"Admin user '{username}' was not found."
+        )
+    except Exception as exc:
+        message = f"Admin user delete failed: {exc}"
+    return RedirectResponse(
+        url=f"/admin/users?flash={quote_plus(message)}", status_code=303
     )
 
 

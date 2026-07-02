@@ -61,6 +61,7 @@ Behavior:
 - runs migrations between installed and repo versions
 - records the upgraded version in a writable install-state file
 - if the server stack is already running, it rebuilds and restarts the containers so the new repo contents take effect
+- when crossing `0.17.0`, ensures the `sensos.admin_users` table exists for named admin accounts; if the database container is offline, the controller applies the same schema on startup
 - does not require `sudo` for the normal repo-owned Docker runtime path
 - `--offline` skips `git pull` and upgrades from the repo contents already on disk, including force-running an upgrade when the checkout has not changed
 - `--refresh-service` reinstalls the optional `sensos-server` unit after pull and should be run from an admin account with `sudo`
@@ -150,6 +151,38 @@ Behavior:
 - configures the published public dashboard port and the read-only public dashboard DB credential
 - defaults API and public dashboard binds to `127.0.0.1`
 - `--qemu-testing` binds API and public dashboard ports inside the server guest so QEMU host forwards can reach them from a separate client guest
+
+### `bin/admin-users`
+
+Lists and manages named admin dashboard/API users through the running server
+API.
+
+Typical use from the server checkout:
+
+```sh
+./bin/admin-users list
+./bin/admin-users create alice --role owner --password '<long-password>'
+./bin/admin-users create bob --role viewer --display-name 'Bob Example' --password '<long-password>'
+./bin/admin-users update bob --role operator
+./bin/admin-users deactivate bob
+./bin/admin-users activate bob
+./bin/admin-users delete bob
+```
+
+Behavior:
+
+- requires the server API to already be running
+- defaults to bootstrap username `sensos` and `ADMIN_API_PASSWORD` from `docker/.env`
+- accepts `--admin-username`, `--api-password`, and `--api-port` before the subcommand
+- requires an owner credential for all subcommands
+- creates users with `owner`, `operator`, or `viewer` roles
+- does not print password hashes or stored password material
+
+After creating a named owner, the same command can authenticate as that user:
+
+```sh
+./bin/admin-users --admin-username alice --api-password '<alice-password>' list
+```
 
 ### `bin/create-network`
 
@@ -497,13 +530,15 @@ Behavior:
 
 ## Admin UI
 
-The built-in admin UI now includes a `BirdNET` view at `/admin/birdnet`.
+The built-in admin UI includes operator views under `/admin`, including
+`/admin/birdnet` and owner-only admin account management at `/admin/users`.
 
 Behavior:
 
 - shows recent accepted BirdNET upload batches
 - summarizes total uploaded batches and processed-file records stored on the server
 - helps confirm that client-side BirdNET uploads are arriving without needing direct database inspection
+- lets owners create named admin users with `owner`, `operator`, or `viewer` roles
 
 ## Public Dashboard
 

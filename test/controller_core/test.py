@@ -179,7 +179,7 @@ def test_parse_version_key_orders_release_after_prerelease():
 
 def test_apply_schema_migrations_records_applied_versions():
     fake_cur = mock.MagicMock()
-    fake_cur.fetchone.side_effect = [None] * 20
+    fake_cur.fetchone.side_effect = [None] * 40
     fake_cur.fetchall.return_value = []
 
     core.apply_schema_migrations(fake_cur, "0.15.0")
@@ -192,6 +192,7 @@ def test_apply_schema_migrations_records_applied_versions():
     assert "CREATE TABLE IF NOT EXISTS sensos.birdnet_detections" in executed
     assert "ADD COLUMN IF NOT EXISTS weighted_label TEXT" in executed
     assert "CREATE OR REPLACE VIEW sensos.public_sites" in executed
+    assert "CREATE TABLE IF NOT EXISTS sensos.admin_users" in executed
     assert "INSERT INTO sensos.schema_migrations" in executed
     assert "wg_public_ip TEXT NOT NULL" in executed
     assert "peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
@@ -311,15 +312,57 @@ def test_get_db_retries_and_fails(mock_connect):
 def test_authenticate_admin_success(monkeypatch):
     monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
     credentials = HTTPBasicCredentials(username="sensos", password="admin-secret")
-    assert core.authenticate_admin(credentials) == credentials
+    assert core.authenticate_admin(credentials) == {
+        "username": "sensos",
+        "display_name": "Bootstrap admin",
+        "role": "owner",
+        "source": "bootstrap",
+    }
 
 
-def test_authenticate_admin_failure(monkeypatch):
+@mock.patch("core.get_db")
+def test_authenticate_admin_failure(mock_get_db, monkeypatch):
     monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "admin-secret")
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = None
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
     credentials = HTTPBasicCredentials(username="other", password="admin-secret")
     with pytest.raises(HTTPException) as exc_info:
         core.authenticate_admin(credentials)
     assert exc_info.value.status_code == 401
+
+
+@mock.patch("core.get_db")
+def test_authenticate_admin_accepts_database_user(mock_get_db, monkeypatch):
+    password = "named-admin-secret"
+    monkeypatch.setattr(core, "ADMIN_API_PASSWORD", "bootstrap-secret")
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (
+        "alice",
+        "Alice Example",
+        "operator",
+        core.password_hash(password),
+    )
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    credentials = HTTPBasicCredentials(username="alice", password=password)
+    assert core.authenticate_admin(credentials) == {
+        "username": "alice",
+        "display_name": "Alice Example",
+        "role": "operator",
+        "source": "database",
+    }
+
+
+def test_require_admin_write_rejects_viewer():
+    with pytest.raises(HTTPException) as exc_info:
+        core.require_admin_write({"username": "viewer", "role": "viewer"})
+    assert exc_info.value.status_code == 403
 
 
 def test_authenticate_client_accepts_client_password(monkeypatch):

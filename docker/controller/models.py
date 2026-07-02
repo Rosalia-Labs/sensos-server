@@ -43,6 +43,18 @@ class UpdateNetworkEndpointRequest(BaseModel):
     wg_port: int = Field(ge=1, le=65535)
 
 
+class UpsertAdminUserRequest(BaseModel):
+    username: str
+    role: Literal["owner", "operator", "viewer"]
+    password: Optional[str] = None
+    display_name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class SetAdminUserActiveRequest(BaseModel):
+    is_active: bool
+
+
 class RegisterSSHKeyRequest(BaseModel):
     username: str
     uid: int
