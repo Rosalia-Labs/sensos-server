@@ -500,6 +500,9 @@ def test_store_birdnet_results_upload_inserts_detections():
             label="Bird",
             score=0.9,
             likely_score=0.7,
+            weighted_label=None,
+            weighted_score=None,
+            weighted_likely_score=None,
             volume=0.018,
             clip_start_time=datetime(2026, 4, 7, 11, 57, tzinfo=timezone.utc),
             clip_end_time=datetime(2026, 4, 7, 11, 58, tzinfo=timezone.utc),
@@ -513,6 +516,10 @@ def test_store_birdnet_results_upload_inserts_detections():
     assert result["receipt_id"]
     assert result["server_received_at"]
     fake_cur.executemany.assert_called_once()
+    stored_detection = fake_cur.executemany.call_args.args[1][0]
+    assert stored_detection[13] is None
+    assert stored_detection[14] is None
+    assert stored_detection[15] is None
     fake_conn.transaction.assert_called_once()
 
 

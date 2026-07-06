@@ -1717,27 +1717,6 @@ def create_birdnet_detections_table(cur):
     )
     cur.execute(
         """
-        UPDATE sensos.birdnet_detections
-        SET weighted_label = label
-        WHERE weighted_label IS NULL;
-        """
-    )
-    cur.execute(
-        """
-        UPDATE sensos.birdnet_detections
-        SET weighted_score = score
-        WHERE weighted_score IS NULL;
-        """
-    )
-    cur.execute(
-        """
-        UPDATE sensos.birdnet_detections
-        SET weighted_likely_score = likely_score
-        WHERE weighted_likely_score IS NULL;
-        """
-    )
-    cur.execute(
-        """
         CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
         ON sensos.birdnet_detections (peer_id, clip_start_time DESC, channel_index, window_index);
         """
@@ -2079,13 +2058,9 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                         detection.label,
                         detection.score,
                         detection.likely_score,
-                        detection.weighted_label or detection.label,
-                        detection.weighted_score
-                        if detection.weighted_score is not None
-                        else detection.score,
-                        detection.weighted_likely_score
-                        if detection.weighted_likely_score is not None
-                        else detection.likely_score,
+                        detection.weighted_label,
+                        detection.weighted_score,
+                        detection.weighted_likely_score,
                         detection.volume,
                         detection.clip_start_time,
                         detection.clip_end_time,

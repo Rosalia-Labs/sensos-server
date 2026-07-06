@@ -399,12 +399,12 @@ def birdnet_label_sql(
             "likely": "top_likely_score",
         }
     return {
-        "label": "coalesce(weighted_label, top_label)",
-        "score": "coalesce(weighted_score, top_score)",
+        "label": "weighted_label",
+        "score": "weighted_score",
         "likely": (
-            "coalesce(weighted_likely_score, top_likely_score)"
+            "weighted_likely_score"
             if has_weighted_likely_score
-            else "top_likely_score"
+            else "NULL::double precision"
         ),
     }
 
@@ -1558,6 +1558,8 @@ def fetch_site_detail(
             )
             birdnet_where = "WHERE wg_ip = %s"
             birdnet_params: tuple = (lookup_wg_ip,)
+            if normalized_label_mode == "weighted":
+                birdnet_where += " AND weighted_label IS NOT NULL AND weighted_score IS NOT NULL"
             if anchored_evidence_cutoff is not None:
                 birdnet_where += " AND processed_at >= %s"
                 birdnet_params = (lookup_wg_ip, anchored_evidence_cutoff)
@@ -2412,6 +2414,8 @@ def fetch_site_birdnet_rankings(
             )
             ranking_where = "WHERE wg_ip = %s"
             ranking_params: tuple = (site["wg_ip"],)
+            if normalized_label_mode == "weighted":
+                ranking_where += " AND weighted_label IS NOT NULL AND weighted_score IS NOT NULL"
             if range_cutoff is not None:
                 cur.execute(
                     """

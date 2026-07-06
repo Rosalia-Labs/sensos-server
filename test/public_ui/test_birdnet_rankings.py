@@ -22,6 +22,7 @@ def load_public_ui_module():
 class FakeCursor:
     def __init__(self):
         self.executed: list[str] = []
+        self.params: list[object] = []
 
     def __enter__(self):
         return self
@@ -31,6 +32,7 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.executed.append(sql)
+        self.params.append(params)
 
     def fetchone(self):
         return (datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),)
@@ -139,6 +141,38 @@ def test_birdnet_rankings_raw_label_mode_can_weight_statistics(monkeypatch):
     )
     assert site["birdnet_ranking_weight"] == "yes"
     assert site["birdnet_ranking_metric_label"] == "Sum Score \u00d7 occup"
+
+
+def test_birdnet_rankings_weighted_label_mode_requires_real_weighted_fields(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = FakeCursor()
+
+    monkeypatch.setattr(
+        public_ui,
+        "fetch_site_detail",
+        lambda *args, **kwargs: {
+            "peer_uuid": "peer-1",
+            "wg_ip": "10.0.1.7",
+            "synoptic_url": "/sites/peer-1/synoptic",
+            "status_url": "/sites/peer-1/status",
+        },
+    )
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(public_ui, "relation_has_column", lambda *args: True)
+
+    public_ui.fetch_site_birdnet_rankings(
+        "peer-1",
+        variable_key="score",
+        statistic_key="sum",
+        weight_key="no",
+        range_key="day",
+        label_mode="weighted",
+    )
+
+    ranking_sql = cursor.executed[-1]
+    assert "coalesce(weighted_label, top_label)" not in ranking_sql
+    assert "weighted_label AS selected_label" in ranking_sql
+    assert "weighted_label IS NOT NULL AND weighted_score IS NOT NULL" in ranking_sql
 
 
 def test_birdnet_species_page_uses_raw_or_weighted_label(monkeypatch):
