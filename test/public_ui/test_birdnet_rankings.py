@@ -68,7 +68,7 @@ class FakeConnection:
         yield self._cursor
 
 
-def test_birdnet_rankings_weight_missing_likelihood_as_one(monkeypatch):
+def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatch):
     public_ui = load_public_ui_module()
     cursor = FakeCursor()
 
@@ -95,5 +95,6 @@ def test_birdnet_rankings_weight_missing_likelihood_as_one(monkeypatch):
     )
 
     ranking_sql = cursor.executed[-1]
-    assert "coalesce((top_likely_score)::double precision, 1.0)" in ranking_sql
+    assert "coalesce((top_likely_score)::double precision, 1.0)" not in ranking_sql
+    assert "max((top_score)::double precision) AS selected_metric" in ranking_sql
     assert site["birdnet_rankings"][0]["selected_metric"] == 0.91
