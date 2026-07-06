@@ -163,7 +163,13 @@ class BirdNETDetectionUploadEntry(BaseModel):
     def validate_timestamps(cls, value: datetime) -> datetime:
         return _validate_utc_timestamp(value)
 
-    @field_validator("volume", "score", "likely_score")
+    @field_validator(
+        "volume",
+        "score",
+        "likely_score",
+        "weighted_score",
+        "weighted_likely_score",
+    )
     @classmethod
     def validate_scores(cls, value: Optional[float]) -> Optional[float]:
         if value is None:

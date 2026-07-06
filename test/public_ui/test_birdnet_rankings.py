@@ -68,6 +68,11 @@ class FakeConnection:
         yield self._cursor
 
 
+class EmptyRowsCursor(FakeCursor):
+    def fetchall(self):
+        return []
+
+
 def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatch):
     public_ui = load_public_ui_module()
     cursor = FakeCursor()
@@ -89,7 +94,7 @@ def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatc
         "peer-1",
         variable_key="score",
         statistic_key="max",
-        weight_key="yes",
+        weight_key="no",
         range_key="day",
         label_mode="raw",
     )
@@ -98,3 +103,72 @@ def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatc
     assert "coalesce((top_likely_score)::double precision, 1.0)" not in ranking_sql
     assert "max((top_score)::double precision) AS selected_metric" in ranking_sql
     assert site["birdnet_rankings"][0]["selected_metric"] == 0.91
+
+
+def test_birdnet_rankings_raw_label_mode_can_weight_statistics(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = FakeCursor()
+
+    monkeypatch.setattr(
+        public_ui,
+        "fetch_site_detail",
+        lambda *args, **kwargs: {
+            "peer_uuid": "peer-1",
+            "wg_ip": "10.0.1.7",
+            "synoptic_url": "/sites/peer-1/synoptic",
+            "status_url": "/sites/peer-1/status",
+        },
+    )
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(public_ui, "relation_has_column", lambda *args: True)
+
+    site = public_ui.fetch_site_birdnet_rankings(
+        "peer-1",
+        variable_key="score",
+        statistic_key="sum",
+        weight_key="yes",
+        range_key="day",
+        label_mode="raw",
+    )
+
+    ranking_sql = cursor.executed[-1]
+    assert "coalesce((top_likely_score)::double precision, 1.0)" not in ranking_sql
+    assert (
+        "sum(((top_score)::double precision) * (top_likely_score)) AS selected_metric"
+        in ranking_sql
+    )
+    assert site["birdnet_ranking_weight"] == "yes"
+    assert site["birdnet_ranking_metric_label"] == "Sum Score \u00d7 occup"
+
+
+def test_birdnet_species_page_uses_raw_or_weighted_label(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = EmptyRowsCursor()
+
+    monkeypatch.setattr(
+        public_ui,
+        "fetch_site_detail",
+        lambda *args, **kwargs: {
+            "peer_uuid": "peer-1",
+            "wg_ip": "10.0.1.7",
+            "synoptic_url": "/sites/peer-1/synoptic",
+            "status_url": "/sites/peer-1/status",
+            "public_url": "/sites/peer-1",
+            "latitude": 30.0,
+            "longitude": -97.0,
+        },
+    )
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(public_ui, "relation_has_column", lambda *args: True)
+
+    site = public_ui.fetch_site_birdnet_species(
+        "peer-1",
+        "White-winged Dove (Zenaida asiatica)",
+        range_key="all",
+        label_mode="raw",
+    )
+
+    species_sql = cursor.executed[-1]
+    assert "(top_label = %s OR weighted_label = %s)" in species_sql
+    assert "top_label IS DISTINCT FROM %s" in species_sql
+    assert "label_mode" not in site["birdnet_species_url"]

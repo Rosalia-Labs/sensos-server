@@ -62,13 +62,13 @@ BIRDNET_RANKING_STATISTICS = {
 }
 
 BIRDNET_RANKING_WEIGHTING = {
-    "no": {"label": "Weighted: no"},
-    "yes": {"label": "Weighted: yes"},
+    "no": {"label": "No likelihood weight"},
+    "yes": {"label": "Weight by likelihood"},
 }
 
 BIRDNET_LABEL_MODES = {
-    "weighted": {"label": "Top likely score"},
-    "raw": {"label": "Top score"},
+    "weighted": {"label": "Score x likelihood label"},
+    "raw": {"label": "Raw score label"},
 }
 
 
@@ -377,7 +377,7 @@ def birdnet_species_url(
     label_mode: str | None = None,
 ) -> str:
     path = f"/sites/{site_id}/birdnet-species/{quote(label, safe='')}"
-    return build_url(path, range=range_key, label_mode=label_mode)
+    return build_url(path, range=range_key)
 
 
 def birdnet_label_sql(
@@ -2355,7 +2355,7 @@ def fetch_site_birdnet_rankings(
     normalized_variable = normalize_birdnet_ranking_variable(variable_key)
     normalized_statistic = normalize_birdnet_ranking_statistic(statistic_key)
     normalized_weight = normalize_birdnet_ranking_weight(weight_key)
-    if normalized_label_mode == "raw" or normalized_variable in {"occup", "volume"}:
+    if normalized_variable in {"occup", "volume"}:
         normalized_weight = "no"
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_cutoff = BIRDNET_RANKING_RANGES[normalized_range]
@@ -2491,8 +2491,7 @@ def fetch_site_birdnet_species(
     range_key: str | None = None,
     label_mode: str | None = None,
 ) -> dict:
-    normalized_label_mode = normalize_birdnet_label_mode(label_mode)
-    site = fetch_site_detail(site_id, range_key, normalized_label_mode)
+    site = fetch_site_detail(site_id, range_key)
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_window = BIRDNET_RANKING_RANGES[normalized_range]
     range_seconds = (
@@ -2506,10 +2505,20 @@ def fetch_site_birdnet_species(
                 "public_site_birdnet_detections",
                 "volume",
             )
-            label_sql = birdnet_label_sql(normalized_label_mode)
-            selected_label_expr = label_sql["label"]
-            selected_score_expr = label_sql["score"]
-            selected_likely_expr = label_sql["likely"]
+            selected_score_expr = """
+                CASE
+                    WHEN weighted_label = %s AND top_label IS DISTINCT FROM %s
+                    THEN weighted_score
+                    ELSE top_score
+                END
+            """
+            selected_likely_expr = """
+                CASE
+                    WHEN weighted_label = %s AND top_label IS DISTINCT FROM %s
+                    THEN weighted_likely_score
+                    ELSE top_likely_score
+                END
+            """
             volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             if range_seconds is None:
                 cur.execute(
@@ -2530,10 +2539,10 @@ def fetch_site_birdnet_species(
                            {volume_expr}
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
-                      AND {selected_label_expr} = %s
+                      AND (top_label = %s OR weighted_label = %s)
                     ORDER BY processed_at ASC, channel_index, start_sec;
                     """,
-                    (site["wg_ip"], label),
+                    (label, label, label, label, site["wg_ip"], label, label),
                 )
             else:
                 cur.execute(
@@ -2560,7 +2569,7 @@ def fetch_site_birdnet_species(
                     FROM sensos.public_site_birdnet_detections d
                     CROSS JOIN anchor a
                     WHERE d.wg_ip = %s
-                      AND {selected_label_expr} = %s
+                      AND (d.top_label = %s OR d.weighted_label = %s)
                       AND a.latest_at IS NOT NULL
                       AND d.processed_at >= (
                           a.latest_at - make_interval(secs => %s)
@@ -2568,8 +2577,13 @@ def fetch_site_birdnet_species(
                     ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
                     """,
                     (
+                        label,
+                        label,
+                        label,
+                        label,
                         site["wg_ip"],
                         site["wg_ip"],
+                        label,
                         label,
                         range_seconds,
                     ),
@@ -2681,14 +2695,12 @@ def fetch_site_birdnet_species(
     site["species_label"] = label
     site["species_range"] = normalized_range
     site["species_range_window"] = range_window
-    site["birdnet_label_mode"] = normalized_label_mode
     site["birdnet_species_url"] = birdnet_species_url(
-        site["peer_uuid"], label, normalized_range, normalized_label_mode
+        site["peer_uuid"], label, normalized_range
     )
     site["birdnet_rankings_url"] = birdnet_rankings_url(
         site["peer_uuid"],
         range_key=normalized_range,
-        label_mode=normalized_label_mode,
     )
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["species_score_series"] = downsample_points(score_points, 180)
@@ -2761,9 +2773,8 @@ def fetch_site_birdnet_species(
 
 def render_birdnet_species_html(site: dict) -> str:
     selected_range = normalize_birdnet_ranking_range(site.get("species_range"))
-    label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     range_links = "".join(
-        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key, label_mode))}">{label}</a>'
+        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key))}">{label}</a>'
         for key, label in (
             ("hour", "Hour"),
             ("day", "Day"),
@@ -2771,10 +2782,6 @@ def render_birdnet_species_html(site: dict) -> str:
             ("month", "Month"),
             ("all", "All"),
         )
-    )
-    mode_links = "".join(
-        f'<a class="range-pill{" active" if key == label_mode else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], selected_range, key))}">{escape_html(config["label"])}</a>'
-        for key, config in BIRDNET_LABEL_MODES.items()
     )
     score_chart = (
         render_event_timeline_svg(
@@ -2811,13 +2818,13 @@ def render_birdnet_species_html(site: dict) -> str:
     night_fraction = site.get("species_night_fraction")
 
     def render_alternate_detection_label(item: dict) -> str:
-        if label_mode == "raw":
-            alternate_title = "Top likely label"
+        if item.get("raw_label") == site["species_label"]:
+            alternate_title = "Score x likelihood label"
             alternate_label = item.get("weighted_label")
             alternate_score = item.get("weighted_score")
             alternate_likely_score = item.get("weighted_likely_score")
         else:
-            alternate_title = "Top score label"
+            alternate_title = "Raw score label"
             alternate_label = item.get("raw_label")
             alternate_score = item.get("raw_score")
             alternate_likely_score = item.get("raw_likely_score")
@@ -2939,7 +2946,7 @@ def render_birdnet_species_html(site: dict) -> str:
     <div class="masthead">
       <div class="nav-row">
         <a class="nav-link-inline" href="{escape_html(site['public_url'])}">Overview</a>
-        <a class="nav-link-inline" href="{escape_html(build_url(site['synoptic_url'], range=selected_range, label_mode=label_mode))}">Time series</a>
+        <a class="nav-link-inline" href="{escape_html(build_url(site['synoptic_url'], range=selected_range))}">Time series</a>
         <a class="nav-link-inline" href="{escape_html(site['birdnet_rankings_url'])}">BirdNET rankings</a>
         <a class="nav-link-inline" href="{escape_html(site['status_url'])}">Status</a>
       </div>
@@ -2950,7 +2957,7 @@ def render_birdnet_species_html(site: dict) -> str:
     </div>
     <div class="stack">
       <section class="panel">
-        <div class="range-pills">{mode_links}{range_links}</div>
+        <div class="range-pills">{range_links}</div>
       </section>
       <section class="panel">
         <div class="summary-grid">
@@ -3627,22 +3634,36 @@ def render_birdnet_rankings_html(site: dict) -> str:
     }}
     .controls {{
       display: grid;
-      grid-template-columns: minmax(150px, 1.2fr) minmax(120px, 0.9fr) minmax(170px, 1fr) minmax(150px, 1fr) minmax(120px, 0.8fr);
+      grid-template-columns: minmax(140px, 1fr) minmax(110px, 0.8fr) minmax(170px, 1fr) minmax(120px, 0.8fr);
       gap: 0.65rem;
-      align-items: center;
+      align-items: end;
     }}
     .controls-wrap {{
       display: flex;
-      align-items: center;
-      gap: 1.25rem;
+      align-items: end;
+      gap: 1.1rem;
       flex-wrap: wrap;
     }}
     .label-mode-control {{
-      min-width: 12rem;
+      min-width: 14rem;
       flex: 0 0 auto;
+      padding-right: 1.1rem;
+      border-right: 1px solid var(--border);
     }}
     .controls-main {{
       flex: 1 1 38rem;
+    }}
+    .control-field {{
+      display: grid;
+      gap: 0.28rem;
+    }}
+    .control-label {{
+      color: var(--muted);
+      font-size: 0.7rem;
+      line-height: 1.1;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
     }}
     select {{
       width: 100%;
@@ -3711,11 +3732,19 @@ def render_birdnet_rankings_html(site: dict) -> str:
       color: var(--muted);
       background: rgba(255,255,255,0.45);
     }}
-    @media (max-width: 980px) {{
+	    @media (max-width: 980px) {{
       .masthead {{ flex-direction: column; }}
       .controls {{ grid-template-columns: 1fr; }}
       .controls-wrap {{ align-items: stretch; }}
-      .label-mode-control, .controls-main {{ width: 100%; flex: 1 1 100%; }}
+      .label-mode-control {{
+        width: 100%;
+        flex: 1 1 100%;
+        padding-right: 0;
+        padding-bottom: 0.75rem;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }}
+      .controls-main {{ width: 100%; flex: 1 1 100%; }}
     }}
     {_theme_override_css()}
   </style>
@@ -3739,14 +3768,27 @@ def render_birdnet_rankings_html(site: dict) -> str:
           <h2 class="section-title">Rankings</h2>
           <form method="get" action="{escape_html(f"/sites/{site['peer_uuid']}/birdnet-rankings")}" id="birdnetRankingControls">
             <div class="controls-wrap">
-              <div class="label-mode-control">
-                <select name="label_mode" onchange="submitBirdnetRankingControls()" aria-label="Top score mode">{label_mode_options}</select>
+              <div class="control-field label-mode-control">
+                <label class="control-label" for="birdnetLabelMode">Label shown</label>
+                <select id="birdnetLabelMode" name="label_mode" onchange="submitBirdnetRankingControls()" aria-label="Label shown">{label_mode_options}</select>
               </div>
               <div class="controls controls-main">
-                <select name="variable" onchange="handleBirdnetVariableChange()" aria-label="Variable">{variable_options}</select>
-                <select name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
-                <select name="weight" onchange="submitBirdnetRankingControls()" aria-label="Weighted">{weight_options}</select>
-                <select name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
+                <div class="control-field">
+                  <label class="control-label" for="birdnetRankVariable">Statistic variable</label>
+                  <select id="birdnetRankVariable" name="variable" onchange="handleBirdnetVariableChange()" aria-label="Statistic variable">{variable_options}</select>
+                </div>
+                <div class="control-field">
+                  <label class="control-label" for="birdnetRankStat">Statistic</label>
+                  <select id="birdnetRankStat" name="stat" onchange="submitBirdnetRankingControls()" aria-label="Statistic">{statistic_options}</select>
+                </div>
+                <div class="control-field">
+                  <label class="control-label" for="birdnetRankWeight">Statistic weighting</label>
+                  <select id="birdnetRankWeight" name="weight" onchange="submitBirdnetRankingControls()" aria-label="Statistic weighting">{weight_options}</select>
+                </div>
+                <div class="control-field">
+                  <label class="control-label" for="birdnetRankRange">Time window</label>
+                  <select id="birdnetRankRange" name="range" onchange="submitBirdnetRankingControls()" aria-label="Time window">{range_options}</select>
+                </div>
               </div>
             </div>
           </form>
@@ -3872,7 +3914,6 @@ def birdnet_species_site_page(site_id: str, label: str, request: Request):
                 site_id,
                 label,
                 request.query_params.get("range"),
-                request.query_params.get("label_mode"),
             )
         )
     )
