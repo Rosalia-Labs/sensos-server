@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: MIT
+
+import importlib.util
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+PUBLIC_UI_PATH = (
+    Path(__file__).resolve().parents[2] / "docker" / "public-ui" / "main.py"
+)
+
+
+def load_public_ui_module():
+    spec = importlib.util.spec_from_file_location("public_ui_main", PUBLIC_UI_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeCursor:
+    def __init__(self):
+        self.executed: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+
+    def fetchone(self):
+        return (datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),)
+
+    def fetchall(self):
+        return [
+            (
+                "Northern Cardinal (Cardinalis cardinalis)",
+                1,
+                0.91,
+                2.73,
+                3.0,
+                0.91,
+                0.91,
+                None,
+                0.018,
+                0.91,
+                datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+            )
+        ]
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    @contextmanager
+    def cursor(self):
+        yield self._cursor
+
+
+def test_birdnet_rankings_weight_missing_likelihood_as_one(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = FakeCursor()
+
+    monkeypatch.setattr(
+        public_ui,
+        "fetch_site_detail",
+        lambda *args, **kwargs: {
+            "peer_uuid": "peer-1",
+            "wg_ip": "10.0.1.7",
+            "synoptic_url": "/sites/peer-1/synoptic",
+            "status_url": "/sites/peer-1/status",
+        },
+    )
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(public_ui, "relation_has_column", lambda *args: True)
+
+    site = public_ui.fetch_site_birdnet_rankings(
+        "peer-1",
+        variable_key="score",
+        statistic_key="max",
+        weight_key="yes",
+        range_key="day",
+        label_mode="raw",
+    )
+
+    ranking_sql = cursor.executed[-1]
+    assert "coalesce((top_likely_score)::double precision, 1.0)" in ranking_sql
+    assert site["birdnet_rankings"][0]["selected_metric"] == 0.91

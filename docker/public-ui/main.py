@@ -409,6 +409,10 @@ def birdnet_label_sql(
     }
 
 
+def birdnet_likelihood_weight_sql(likely_expr: str) -> str:
+    return f"coalesce(({likely_expr})::double precision, 1.0)"
+
+
 def window_cutoff_from_latest(
     latest_timestamp: datetime | None,
     window: timedelta | None,
@@ -1465,6 +1469,7 @@ def fetch_site_detail(
     selected_label_expr = label_sql["label"]
     selected_score_expr = label_sql["score"]
     selected_likely_expr = label_sql["likely"]
+    selected_likelihood_weight_expr = birdnet_likelihood_weight_sql(selected_likely_expr)
     with get_db() as conn:
         with conn.cursor() as cur:
             has_latest_i2c_upload_at = relation_has_column(
@@ -1582,7 +1587,7 @@ def fetch_site_detail(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
                        count(*)::integer AS detection_count,
-                       sum(({selected_score_expr}) * ({selected_likely_expr})) AS evidence_weight,
+                       sum(({selected_score_expr}) * ({selected_likelihood_weight_expr})) AS evidence_weight,
                        avg({selected_score_expr}) AS average_score,
                        max({selected_score_expr}) AS best_score,
                        max(processed_at) AS latest_processed_at
@@ -1970,7 +1975,7 @@ def fetch_site_status(site_id: str) -> dict:
                 """
                 SELECT top_label,
                        count(*)::integer AS detection_count,
-                       sum((end_sec - start_sec) * top_score * top_likely_score) AS evidence_weight,
+                       sum((end_sec - start_sec) * top_score * coalesce(top_likely_score, 1.0)) AS evidence_weight,
                        avg(top_score) AS average_score,
                        max(top_score) AS best_score,
                        max(processed_at) AS latest_processed_at
@@ -2372,6 +2377,9 @@ def fetch_site_birdnet_rankings(
             selected_label_expr = label_sql["label"]
             selected_score_expr = label_sql["score"]
             selected_likely_expr = label_sql["likely"]
+            selected_likelihood_weight_expr = birdnet_likelihood_weight_sql(
+                selected_likely_expr
+            )
 
             base_variable_expr_map = {
                 "detection": "1::double precision",
@@ -2387,7 +2395,7 @@ def fetch_site_birdnet_rankings(
             variable_expr = base_variable_expr_map[normalized_variable]
             if normalized_weight == "yes" and normalized_variable != "occup":
                 variable_expr = (
-                    f"({variable_expr}) * ({selected_likely_expr})::double precision"
+                    f"({variable_expr}) * ({selected_likelihood_weight_expr})"
                 )
 
             statistic_expr_map = {
@@ -2429,10 +2437,10 @@ def fetch_site_birdnet_rankings(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
                        count(*)::integer AS detection_count,
-                       sum(({selected_score_expr}) * ({selected_likely_expr})) AS sum_score_x_likely,
-                       sum((end_sec - start_sec) * ({selected_score_expr}) * ({selected_likely_expr})) AS sum_score_x_occup,
+                       sum(({selected_score_expr}) * ({selected_likelihood_weight_expr})) AS sum_score_x_likely,
+                       sum((end_sec - start_sec) * ({selected_score_expr}) * ({selected_likelihood_weight_expr})) AS sum_score_x_occup,
                        sum(greatest(end_sec - start_sec, 0)) AS duration_sec,
-                       max(({selected_score_expr}) * ({selected_likely_expr})) AS max_score_x_occup,
+                       max(({selected_score_expr}) * ({selected_likelihood_weight_expr})) AS max_score_x_occup,
                        max({selected_score_expr}) AS max_score,
                        max({selected_likely_expr}) AS max_occup,
                        {avg_volume_expr},
