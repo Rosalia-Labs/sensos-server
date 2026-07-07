@@ -225,6 +225,28 @@ def test_apply_schema_migrations_runs_0_6_0_after_0_5_0():
     assert ("0.8.0", "add per-peer api credentials") in insert_calls
     assert ("0.9.0", "add runtime operator key publication") in insert_calls
     assert ("0.10.0", "add birdnet results upload schema") in insert_calls
+
+
+def test_apply_schema_migrations_repairs_legacy_birdnet_weighted_fallbacks():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = [("0.17.0",)]
+
+    core.apply_schema_migrations(fake_cur, "0.18.0")
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "SET weighted_label = NULL" in executed
+    assert "weighted_score = NULL" in executed
+    assert "weighted_likely_score = NULL" in executed
+    assert "client_version ~" in executed
+    assert "^0\\.[0-9]\\." in executed
+    assert "weighted_label = label" in executed
+    assert "weighted_score = score" in executed
+    insert_calls = [
+        call.args[1]
+        for call in fake_cur.execute.call_args_list
+        if "INSERT INTO sensos.schema_migrations" in call.args[0]
+    ]
+    assert ("0.18.0", "clear legacy BirdNET weighted label fallbacks") in insert_calls
     assert ("0.11.0", "add public dashboard views and read-only role") in insert_calls
 
 

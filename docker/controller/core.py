@@ -552,6 +552,27 @@ def migrate_0_17_0_admin_user_accounts(cur):
     create_admin_users_table(cur)
 
 
+def migrate_0_18_0_clear_legacy_birdnet_weighted_fallbacks(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_birdnet_detections_table(cur)
+    cur.execute(
+        """
+        UPDATE sensos.birdnet_detections
+        SET weighted_label = NULL,
+            weighted_score = NULL,
+            weighted_likely_score = NULL
+        WHERE client_version ~ '^0\\.[0-9]\\.'
+          AND weighted_label = label
+          AND weighted_score = score
+          AND weighted_likely_score IS NOT DISTINCT FROM likely_score;
+        """
+    )
+    create_public_site_birdnet_recent_view(cur)
+    create_public_site_birdnet_detections_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -617,6 +638,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.17.0"),
         name="add database-backed admin user accounts",
         apply=migrate_0_17_0_admin_user_accounts,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.18.0"),
+        name="clear legacy BirdNET weighted label fallbacks",
+        apply=migrate_0_18_0_clear_legacy_birdnet_weighted_fallbacks,
     ),
 ]
 
