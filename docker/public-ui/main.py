@@ -1426,24 +1426,6 @@ def fetch_site_detail(
     )
     with get_db() as conn:
         with conn.cursor() as cur:
-            has_latest_i2c_upload_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "latest_i2c_upload_at",
-            )
-            has_latest_birdnet_upload_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "latest_birdnet_upload_at",
-            )
-            has_last_activity_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "last_activity_at",
-            )
             has_window_volume = relation_has_column(
                 cur,
                 "sensos",
@@ -1465,32 +1447,10 @@ def fetch_site_detail(
                        last_check_in,
                        hostname,
                        version,
-                       status_message,
-                       birdnet_detection_count,
-                       birdnet_source_count,
-                       latest_birdnet_result_at,
-                       {latest_i2c_upload_at_expr},
-                       {latest_birdnet_upload_at_expr},
-                       {last_activity_at_expr}
-                FROM sensos.public_sites
+                       status_message
+                FROM sensos.public_site_map
                 WHERE peer_uuid = %s OR wg_ip = %s;
-                """.format(
-                    latest_i2c_upload_at_expr=(
-                        "latest_i2c_upload_at"
-                        if has_latest_i2c_upload_at
-                        else "NULL::timestamptz AS latest_i2c_upload_at"
-                    ),
-                    latest_birdnet_upload_at_expr=(
-                        "latest_birdnet_upload_at"
-                        if has_latest_birdnet_upload_at
-                        else "NULL::timestamptz AS latest_birdnet_upload_at"
-                    ),
-                    last_activity_at_expr=(
-                        "last_activity_at"
-                        if has_last_activity_at
-                        else "NULL::timestamptz AS last_activity_at"
-                    ),
-                ),
+                """,
                 (site_id, site_id),
             )
             row = cur.fetchone()
@@ -1740,10 +1700,6 @@ def fetch_site_detail(
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
-        "birdnet_source_count": int(row[15]),
-        "latest_i2c_upload_at": format_rfc3339_utc(row[17]),
-        "latest_birdnet_upload_at": format_rfc3339_utc(row[18]),
-        "last_activity_at": format_rfc3339_utc(row[19]),
         "public_url": site_detail_url(
             peer_uuid, normalized_evidence_range, normalized_label_mode
         ),
@@ -1862,24 +1818,6 @@ def fetch_site_detail(
 def fetch_site_status(site_id: str) -> dict:
     with get_db() as conn:
         with conn.cursor() as cur:
-            has_latest_i2c_upload_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "latest_i2c_upload_at",
-            )
-            has_latest_birdnet_upload_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "latest_birdnet_upload_at",
-            )
-            has_last_activity_at = relation_has_column(
-                cur,
-                "sensos",
-                "public_sites",
-                "last_activity_at",
-            )
             cur.execute(
                 """
                 SELECT peer_uuid,
@@ -1895,58 +1833,15 @@ def fetch_site_status(site_id: str) -> dict:
                        last_check_in,
                        hostname,
                        version,
-                       status_message,
-                       birdnet_detection_count,
-                       birdnet_source_count,
-                       latest_birdnet_result_at,
-                       {latest_i2c_upload_at_expr},
-                       {latest_birdnet_upload_at_expr},
-                       {last_activity_at_expr}
-                FROM sensos.public_sites
+                       status_message
+                FROM sensos.public_site_map
                 WHERE peer_uuid = %s OR wg_ip = %s;
-                """.format(
-                    latest_i2c_upload_at_expr=(
-                        "latest_i2c_upload_at"
-                        if has_latest_i2c_upload_at
-                        else "NULL::timestamptz AS latest_i2c_upload_at"
-                    ),
-                    latest_birdnet_upload_at_expr=(
-                        "latest_birdnet_upload_at"
-                        if has_latest_birdnet_upload_at
-                        else "NULL::timestamptz AS latest_birdnet_upload_at"
-                    ),
-                    last_activity_at_expr=(
-                        "last_activity_at"
-                        if has_last_activity_at
-                        else "NULL::timestamptz AS last_activity_at"
-                    ),
-                ),
+                """,
                 (site_id, site_id),
             )
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Site not found.")
-            lookup_wg_ip = row[1]
-            cur.execute(
-                """
-                SELECT top_label,
-                       count(*)::integer AS detection_count,
-                       sum((end_sec - start_sec) * top_score * top_likely_score) AS evidence_weight,
-                       avg(top_score) AS average_score,
-                       max(top_score) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s
-                GROUP BY top_label
-                ORDER BY evidence_weight DESC,
-                         best_score DESC,
-                         detection_count DESC,
-                         top_label ASC
-                LIMIT 5;
-                """,
-                (lookup_wg_ip,),
-            )
-            top_birdnet_evidence = cur.fetchall()
     return {
         "peer_uuid": row[0],
         "site_id": row[0],
@@ -1964,29 +1859,10 @@ def fetch_site_status(site_id: str) -> dict:
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
-        "birdnet_detection_count": int(row[14]),
-        "birdnet_source_count": int(row[15]),
-        "latest_birdnet_result_at": format_rfc3339_utc(row[16]),
-        "latest_i2c_upload_at": format_rfc3339_utc(row[17]),
-        "latest_birdnet_upload_at": format_rfc3339_utc(row[18]),
-        "last_activity_at": format_rfc3339_utc(row[19]),
         "public_url": f"/sites/{row[0]}",
         "status_url": f"/sites/{row[0]}/status",
         "synoptic_url": f"/sites/{row[0]}/synoptic",
         "birdnet_rankings_url": f"/sites/{row[0]}/birdnet-rankings",
-        "top_birdnet_evidence": [
-            {
-                "label": summary[0],
-                "detection_count": int(summary[1]),
-                "evidence_weight": (
-                    float(summary[2]) if summary[2] is not None else None
-                ),
-                "average_score": float(summary[3]) if summary[3] is not None else None,
-                "best_score": float(summary[4]) if summary[4] is not None else None,
-                "latest_processed_at": format_rfc3339_utc(summary[5]),
-            }
-            for summary in top_birdnet_evidence
-        ],
     }
 
 
@@ -2015,20 +1891,6 @@ def render_site_status_html(site: dict) -> str:
           <div><strong>{value if is_html else escape_html(value)}</strong></div>
         </article>
         """ for label, value, is_html in infrastructure_rows)
-    top_species_cards = (
-        "".join(f"""
-            <div class="summary-row">
-              <div>
-                <div class="summary-label">{escape_html(summary["label"])}</div>
-                <div class="summary-bar" style="width:{max((float(summary.get("evidence_weight") or 0.0) / max(float(site["top_birdnet_evidence"][0].get("evidence_weight") or 0.0), 1e-9)) * 100.0, 3.0):.1f}%"></div>
-              </div>
-              <div class="summary-value">{escape_html(f"{float(summary.get('evidence_weight') or 0.0):.2f}")}</div>
-            </div>
-            """ for summary in site["top_birdnet_evidence"])
-        if site.get("top_birdnet_evidence")
-        else '<div class="empty">No weighted BirdNET detections are available yet.</div>'
-    )
-
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3789,7 +3651,7 @@ async def lifespan(app: FastAPI):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM sensos.public_sites;")
+                cur.execute("SELECT count(*) FROM sensos.public_site_map;")
                 cur.fetchone()
         app.state.ready = True
     except Exception:

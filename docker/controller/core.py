@@ -576,10 +576,23 @@ def migrate_0_18_0_clear_legacy_birdnet_weighted_fallbacks(cur):
 def migrate_0_19_0_fast_public_site_map(cur):
     ensure_shared_extensions(cur)
     cur.execute("SET search_path TO sensos, public;")
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_wg_ip_clip_time
+        ON sensos.birdnet_detections (wireguard_ip, clip_start_time DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_i2c_readings_wg_ip_recorded_at
+        ON sensos.i2c_readings (wireguard_ip, recorded_at DESC, server_received_at DESC);
+        """
+    )
     create_public_site_map_view(cur)
     create_public_site_birdnet_recent_view(cur)
     create_public_site_birdnet_detections_view(cur)
     create_public_site_i2c_recent_view(cur)
+    cur.execute("DROP VIEW IF EXISTS sensos.public_sites;")
     ensure_public_dashboard_role(cur)
 
 
@@ -1894,7 +1907,7 @@ def create_public_site_birdnet_recent_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_recent AS
-        SELECT host(d.wireguard_ip)::text AS wg_ip,
+        SELECT d.wireguard_ip AS wg_ip,
                d.hostname,
                d.client_version,
                d.source_path,
@@ -1920,7 +1933,7 @@ def create_public_site_birdnet_detections_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_detections AS
-        SELECT host(d.wireguard_ip)::text AS wg_ip,
+        SELECT d.wireguard_ip AS wg_ip,
                d.hostname,
                d.client_version,
                d.source_path,
@@ -1948,7 +1961,7 @@ def create_public_site_i2c_recent_view(cur):
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_i2c_recent AS
-        SELECT host(r.wireguard_ip)::text AS wg_ip,
+        SELECT r.wireguard_ip AS wg_ip,
                r.hostname,
                r.client_version,
                r.recorded_at,
@@ -1999,7 +2012,6 @@ def ensure_public_dashboard_role(cur):
         """,
         (
             [
-                "public_sites",
                 "public_site_map",
                 "public_site_birdnet_recent",
                 "public_site_birdnet_detections",

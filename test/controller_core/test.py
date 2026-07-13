@@ -266,6 +266,11 @@ def test_fast_public_site_map_migration_excludes_telemetry_summaries():
     assert "sensos.i2c_readings" not in map_view_sql
     assert "birdnet_detection_count" not in map_view_sql
     assert "row_number() OVER" not in executed
+    assert "idx_birdnet_detections_wg_ip_clip_time" in executed
+    assert "idx_i2c_readings_wg_ip_recorded_at" in executed
+    assert "host(d.wireguard_ip)" not in executed
+    assert "host(r.wireguard_ip)" not in executed
+    assert "DROP VIEW IF EXISTS sensos.public_sites" in executed
 
 
 def test_create_client_status_table_reconciles_legacy_schema():
