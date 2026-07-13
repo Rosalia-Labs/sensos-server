@@ -250,6 +250,24 @@ def test_apply_schema_migrations_repairs_legacy_birdnet_weighted_fallbacks():
     assert ("0.11.0", "add public dashboard views and read-only role") in insert_calls
 
 
+def test_fast_public_site_map_migration_excludes_telemetry_summaries():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = [("public_site_map",)]
+
+    core.migrate_0_19_0_fast_public_site_map(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    map_view_sql = executed.split(
+        "CREATE OR REPLACE VIEW sensos.public_site_map AS", 1
+    )[1].split("DROP VIEW", 1)[0]
+    assert "sensos.client_status" in map_view_sql
+    assert "sensos.peer_locations" in map_view_sql
+    assert "sensos.birdnet_detections" not in map_view_sql
+    assert "sensos.i2c_readings" not in map_view_sql
+    assert "birdnet_detection_count" not in map_view_sql
+    assert "row_number() OVER" not in executed
+
+
 def test_create_client_status_table_reconciles_legacy_schema():
     fake_cur = mock.MagicMock()
 

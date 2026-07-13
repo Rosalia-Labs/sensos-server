@@ -573,6 +573,16 @@ def migrate_0_18_0_clear_legacy_birdnet_weighted_fallbacks(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_19_0_fast_public_site_map(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_public_site_map_view(cur)
+    create_public_site_birdnet_recent_view(cur)
+    create_public_site_birdnet_detections_view(cur)
+    create_public_site_i2c_recent_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -643,6 +653,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.18.0"),
         name="clear legacy BirdNET weighted label fallbacks",
         apply=migrate_0_18_0_clear_legacy_birdnet_weighted_fallbacks,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.19.0"),
+        name="add telemetry-free public site map view",
+        apply=migrate_0_19_0_fast_public_site_map,
     ),
 ]
 
@@ -1828,7 +1843,54 @@ def create_public_sites_view(cur):
     )
 
 
+def create_public_site_map_view(cur):
+    """Create the lightweight map view without scanning telemetry history."""
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_site_map AS
+        WITH latest_status AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                last_check_in,
+                hostname,
+                version,
+                status_message
+            FROM sensos.client_status
+            ORDER BY peer_id, last_check_in DESC
+        ),
+        latest_location AS (
+            SELECT DISTINCT ON (peer_id)
+                peer_id,
+                recorded_at,
+                public.ST_Y(location::public.geometry)::float AS latitude,
+                public.ST_X(location::public.geometry)::float AS longitude
+            FROM sensos.peer_locations
+            ORDER BY peer_id, recorded_at DESC
+        )
+        SELECT p.uuid::text AS peer_uuid,
+               host(p.wg_ip)::text AS wg_ip,
+               n.name AS network_name,
+               p.note,
+               coalesce(nullif(p.note, ''), host(p.wg_ip)::text) AS site_label,
+               p.is_active,
+               p.registered_at,
+               ll.recorded_at AS location_recorded_at,
+               ll.latitude,
+               ll.longitude,
+               ls.last_check_in,
+               ls.hostname,
+               ls.version,
+               ls.status_message
+        FROM sensos.wireguard_peers p
+        JOIN sensos.networks n ON n.id = p.network_id
+        LEFT JOIN latest_status ls ON ls.peer_id = p.id
+        LEFT JOIN latest_location ll ON ll.peer_id = p.id;
+        """
+    )
+
+
 def create_public_site_birdnet_recent_view(cur):
+    cur.execute("DROP VIEW IF EXISTS sensos.public_site_birdnet_recent;")
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_recent AS
@@ -1844,14 +1906,6 @@ def create_public_site_birdnet_recent_view(cur):
                d.score,
                d.likely_score,
                d.volume,
-               row_number() OVER (
-                   PARTITION BY d.wireguard_ip
-                   ORDER BY d.clip_start_time DESC,
-                            d.clip_end_time DESC,
-                            d.channel_index,
-                            d.window_index,
-                            d.id DESC
-               ) AS detection_rank,
                d.weighted_label,
                d.weighted_score,
                d.weighted_likely_score
@@ -1862,6 +1916,7 @@ def create_public_site_birdnet_recent_view(cur):
 
 
 def create_public_site_birdnet_detections_view(cur):
+    cur.execute("DROP VIEW IF EXISTS sensos.public_site_birdnet_detections;")
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_birdnet_detections AS
@@ -1879,14 +1934,6 @@ def create_public_site_birdnet_detections_view(cur):
                d.label AS top_label,
                d.score AS top_score,
                d.likely_score AS top_likely_score,
-               row_number() OVER (
-                   PARTITION BY d.wireguard_ip
-                   ORDER BY d.clip_start_time DESC,
-                            d.server_received_at DESC,
-                            d.id DESC,
-                            d.channel_index,
-                            d.window_index
-               ) AS detection_rank,
                d.volume,
                d.weighted_label,
                d.weighted_score,
@@ -1897,6 +1944,7 @@ def create_public_site_birdnet_detections_view(cur):
 
 
 def create_public_site_i2c_recent_view(cur):
+    cur.execute("DROP VIEW IF EXISTS sensos.public_site_i2c_recent;")
     cur.execute(
         """
         CREATE OR REPLACE VIEW sensos.public_site_i2c_recent AS
@@ -1908,13 +1956,7 @@ def create_public_site_i2c_recent_view(cur):
                r.sensor_type,
                r.reading_key,
                r.reading_value,
-               r.server_received_at,
-               row_number() OVER (
-                   PARTITION BY r.wireguard_ip
-                   ORDER BY r.recorded_at DESC,
-                            r.server_received_at DESC,
-                            r.id DESC
-               ) AS reading_rank
+               r.server_received_at
         FROM sensos.i2c_readings r;
         """
     )
@@ -1958,6 +2000,7 @@ def ensure_public_dashboard_role(cur):
         (
             [
                 "public_sites",
+                "public_site_map",
                 "public_site_birdnet_recent",
                 "public_site_birdnet_detections",
                 "public_site_i2c_recent",

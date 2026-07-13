@@ -75,6 +75,43 @@ class EmptyRowsCursor(FakeCursor):
         return []
 
 
+class SiteMapCursor(FakeCursor):
+    def fetchall(self):
+        return [
+            (
+                "site-uuid",
+                "10.88.1.2",
+                "biosense",
+                "biosense-1-2",
+                "biosense-1-2",
+                True,
+                datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+                datetime(2026, 4, 7, 11, 0, tzinfo=timezone.utc),
+                30.2,
+                -97.7,
+                datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+                "biosense-1-2",
+                "0.19.0",
+                "ok",
+            )
+        ]
+
+
+def test_site_map_uses_telemetry_free_view(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = SiteMapCursor()
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+
+    sites = public_ui.fetch_sites()
+
+    query = cursor.executed[0]
+    assert "FROM sensos.public_site_map" in query
+    assert "birdnet_detection_count" not in query
+    assert "latest_i2c_upload_at" not in query
+    assert "birdnet_detection_count" not in sites[0]
+    assert sites[0]["last_check_in"] == "2026-04-07T12:00:00Z"
+
+
 def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatch):
     public_ui = load_public_ui_module()
     cursor = FakeCursor()
