@@ -377,7 +377,7 @@ def birdnet_species_url(
     label_mode: str | None = None,
 ) -> str:
     path = f"/sites/{site_id}/birdnet-species/{quote(label, safe='')}"
-    return build_url(path, range=range_key)
+    return build_url(path, range=range_key, label_mode=label_mode)
 
 
 def birdnet_label_sql(
@@ -2311,7 +2311,8 @@ def fetch_site_birdnet_species(
     range_key: str | None = None,
     label_mode: str | None = None,
 ) -> dict:
-    site = fetch_site_detail(site_id, range_key)
+    normalized_label_mode = normalize_birdnet_label_mode(label_mode)
+    site = fetch_site_detail(site_id, range_key, normalized_label_mode)
     normalized_range = normalize_birdnet_ranking_range(range_key)
     range_window = BIRDNET_RANKING_RANGES[normalized_range]
     range_seconds = (
@@ -2325,20 +2326,10 @@ def fetch_site_birdnet_species(
                 "public_site_birdnet_detections",
                 "volume",
             )
-            selected_score_expr = """
-                CASE
-                    WHEN weighted_label = %s AND top_label IS DISTINCT FROM %s
-                    THEN weighted_score
-                    ELSE top_score
-                END
-            """
-            selected_likely_expr = """
-                CASE
-                    WHEN weighted_label = %s AND top_label IS DISTINCT FROM %s
-                    THEN weighted_likely_score
-                    ELSE top_likely_score
-                END
-            """
+            label_sql = birdnet_label_sql(normalized_label_mode)
+            selected_label_expr = label_sql["label"]
+            selected_score_expr = label_sql["score"]
+            selected_likely_expr = label_sql["likely"]
             volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             if range_seconds is None:
                 cur.execute(
@@ -2359,12 +2350,16 @@ def fetch_site_birdnet_species(
                            {volume_expr}
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s
-                      AND (top_label = %s OR weighted_label = %s)
+                      AND {selected_label_expr} = %s
+                      AND {selected_score_expr} IS NOT NULL
                     ORDER BY processed_at ASC, channel_index, start_sec;
                     """,
-                    (label, label, label, label, site["wg_ip"], label, label),
+                    (site["wg_ip"], label),
                 )
             else:
+                selected_label_expr_d = f"d.{selected_label_expr}"
+                selected_score_expr_d = f"d.{selected_score_expr}"
+                selected_likely_expr_d = f"d.{selected_likely_expr}"
                 cur.execute(
                     f"""
                     WITH anchor AS (
@@ -2373,8 +2368,8 @@ def fetch_site_birdnet_species(
                         WHERE wg_ip = %s
                     )
                     SELECT d.processed_at,
-                           {selected_score_expr} AS selected_score,
-                           {selected_likely_expr} AS selected_likely_score,
+                           {selected_score_expr_d} AS selected_score,
+                           {selected_likely_expr_d} AS selected_likely_score,
                            top_label,
                            top_score,
                            top_likely_score,
@@ -2389,7 +2384,8 @@ def fetch_site_birdnet_species(
                     FROM sensos.public_site_birdnet_detections d
                     CROSS JOIN anchor a
                     WHERE d.wg_ip = %s
-                      AND (d.top_label = %s OR d.weighted_label = %s)
+                      AND {selected_label_expr_d} = %s
+                      AND {selected_score_expr_d} IS NOT NULL
                       AND a.latest_at IS NOT NULL
                       AND d.processed_at >= (
                           a.latest_at - make_interval(secs => %s)
@@ -2397,13 +2393,8 @@ def fetch_site_birdnet_species(
                     ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
                     """,
                     (
-                        label,
-                        label,
-                        label,
-                        label,
                         site["wg_ip"],
                         site["wg_ip"],
-                        label,
                         label,
                         range_seconds,
                     ),
@@ -2513,14 +2504,16 @@ def fetch_site_birdnet_species(
             }
         )
     site["species_label"] = label
+    site["birdnet_label_mode"] = normalized_label_mode
     site["species_range"] = normalized_range
     site["species_range_window"] = range_window
     site["birdnet_species_url"] = birdnet_species_url(
-        site["peer_uuid"], label, normalized_range
+        site["peer_uuid"], label, normalized_range, normalized_label_mode
     )
     site["birdnet_rankings_url"] = birdnet_rankings_url(
         site["peer_uuid"],
         range_key=normalized_range,
+        label_mode=normalized_label_mode,
     )
     site["synoptic_url"] = f"/sites/{site['peer_uuid']}/synoptic"
     site["species_score_series"] = downsample_points(score_points, 180)
@@ -2593,8 +2586,9 @@ def fetch_site_birdnet_species(
 
 def render_birdnet_species_html(site: dict) -> str:
     selected_range = normalize_birdnet_ranking_range(site.get("species_range"))
+    selected_label_mode = normalize_birdnet_label_mode(site.get("birdnet_label_mode"))
     range_links = "".join(
-        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key))}">{label}</a>'
+        f'<a class="range-pill{" active" if key == selected_range else ""}" href="{escape_html(birdnet_species_url(site["peer_uuid"], site["species_label"], key, selected_label_mode))}">{label}</a>'
         for key, label in (
             ("hour", "Hour"),
             ("day", "Day"),
@@ -3734,6 +3728,7 @@ def birdnet_species_site_page(site_id: str, label: str, request: Request):
                 site_id,
                 label,
                 request.query_params.get("range"),
+                request.query_params.get("label_mode"),
             )
         )
     )

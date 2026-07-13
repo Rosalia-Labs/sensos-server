@@ -240,6 +240,45 @@ def test_birdnet_species_page_uses_raw_or_weighted_label(monkeypatch):
     )
 
     species_sql = cursor.executed[-1]
-    assert "(top_label = %s OR weighted_label = %s)" in species_sql
-    assert "top_label IS DISTINCT FROM %s" in species_sql
-    assert "label_mode" not in site["birdnet_species_url"]
+    assert "top_label = %s" in species_sql
+    assert "weighted_label = %s" not in species_sql
+    assert cursor.params[-1] == ("10.0.1.7", "White-winged Dove (Zenaida asiatica)")
+    assert "label_mode=raw" in site["birdnet_species_url"]
+
+
+def test_birdnet_species_weighted_range_anchors_on_site_before_label(monkeypatch):
+    public_ui = load_public_ui_module()
+    cursor = EmptyRowsCursor()
+    monkeypatch.setattr(
+        public_ui,
+        "fetch_site_detail",
+        lambda *args, **kwargs: {
+            "peer_uuid": "peer-1",
+            "wg_ip": "10.0.1.7",
+            "synoptic_url": "/sites/peer-1/synoptic",
+            "status_url": "/sites/peer-1/status",
+            "public_url": "/sites/peer-1",
+            "latitude": 30.0,
+            "longitude": -97.0,
+        },
+    )
+    monkeypatch.setattr(public_ui, "get_db", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(public_ui, "relation_has_column", lambda *args: True)
+
+    site = public_ui.fetch_site_birdnet_species(
+        "peer-1",
+        "White-winged Dove (Zenaida asiatica)",
+        range_key="day",
+        label_mode="weighted",
+    )
+
+    species_sql = cursor.executed[-1]
+    assert "d.weighted_label = %s" in species_sql
+    assert "d.weighted_score IS NOT NULL" in species_sql
+    assert cursor.params[-1] == (
+        "10.0.1.7",
+        "10.0.1.7",
+        "White-winged Dove (Zenaida asiatica)",
+        86400,
+    )
+    assert "label_mode=weighted" in site["birdnet_species_url"]
