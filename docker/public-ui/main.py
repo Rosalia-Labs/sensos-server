@@ -409,6 +409,11 @@ def birdnet_label_sql(
     }
 
 
+def passive_birdnet_label_sql() -> dict[str, str]:
+    """Use the score-by-likelihood winner for views without a label selector."""
+    return birdnet_label_sql("weighted")
+
+
 def window_cutoff_from_latest(
     latest_timestamp: datetime | None,
     window: timedelta | None,
@@ -462,6 +467,8 @@ def _format_axis_value(value: float) -> str:
         return f"{value:.0f}"
     if abs(value) >= 10:
         return f"{value:.1f}".rstrip("0").rstrip(".")
+    if 0 < abs(value) < 0.01:
+        return f"{value:.3g}"
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
@@ -1415,15 +1422,14 @@ def fetch_site_detail(
     normalized_evidence_range = normalize_detail_range(evidence_range)
     normalized_label_mode = normalize_birdnet_label_mode(label_mode)
     evidence_window = DETAIL_EVIDENCE_RANGES[normalized_evidence_range]
-    label_sql = birdnet_label_sql(normalized_label_mode)
+    # Overview has no label-mode control. Passive summaries consistently show
+    # the label selected by max(score * likelihood); raw/weighted selection is
+    # available on the dedicated BirdNET rankings and species pages.
+    label_sql = passive_birdnet_label_sql()
     selected_label_expr = label_sql["label"]
     selected_score_expr = label_sql["score"]
     selected_likely_expr = label_sql["likely"]
-    selected_evidence_expr = (
-        f"({selected_score_expr})"
-        if normalized_label_mode == "raw"
-        else f"({selected_score_expr}) * ({selected_likely_expr})"
-    )
+    selected_evidence_expr = f"({selected_score_expr}) * ({selected_likely_expr})"
     with get_db() as conn:
         with conn.cursor() as cur:
             has_window_volume = relation_has_column(
@@ -1472,8 +1478,11 @@ def fetch_site_detail(
             )
             birdnet_where = "WHERE wg_ip = %s"
             birdnet_params: tuple = (lookup_wg_ip,)
-            if normalized_label_mode == "weighted":
-                birdnet_where += " AND weighted_label IS NOT NULL AND weighted_score IS NOT NULL"
+            birdnet_where += (
+                " AND weighted_label IS NOT NULL"
+                " AND weighted_score IS NOT NULL"
+                " AND weighted_likely_score IS NOT NULL"
+            )
             if anchored_evidence_cutoff is not None:
                 birdnet_where += " AND processed_at >= %s"
                 birdnet_params = (lookup_wg_ip, anchored_evidence_cutoff)

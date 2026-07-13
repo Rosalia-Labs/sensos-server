@@ -112,6 +112,26 @@ def test_site_map_uses_telemetry_free_view(monkeypatch):
     assert sites[0]["last_check_in"] == "2026-04-07T12:00:00Z"
 
 
+def test_passive_birdnet_views_use_score_by_likelihood_label():
+    public_ui = load_public_ui_module()
+
+    label_sql = public_ui.passive_birdnet_label_sql()
+
+    assert label_sql == {
+        "label": "weighted_label",
+        "score": "weighted_score",
+        "likely": "weighted_likely_score",
+    }
+
+
+def test_small_nonzero_chart_values_do_not_render_as_zero():
+    public_ui = load_public_ui_module()
+
+    assert public_ui._format_axis_value(0.0042) == "0.0042"
+    assert public_ui._format_axis_value(0.000042) == "4.2e-05"
+    assert public_ui._format_axis_value(0.0) == "0"
+
+
 def test_birdnet_rankings_raw_mode_does_not_impute_missing_likelihood(monkeypatch):
     public_ui = load_public_ui_module()
     cursor = FakeCursor()
