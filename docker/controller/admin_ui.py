@@ -31,6 +31,7 @@ from core import (
     delete_peer,
     delete_admin_user,
     get_db,
+    issue_client_access_token,
     list_admin_users,
     lookup_admin_identity,
     mark_admin_login,
@@ -778,9 +779,12 @@ def fetch_peer_rows(
                ll.recorded_at,
                ll.latitude,
                ll.longitude,
-               ls.last_check_in AS last_activity_at
+               ls.last_check_in AS last_activity_at,
+               c.uuid::text,
+               c.access_token_hash IS NOT NULL
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
+        LEFT JOIN sensos.clients c ON c.id = p.client_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
         LEFT JOIN latest_location ll ON ll.peer_id = p.id
     """
@@ -813,6 +817,8 @@ def fetch_peer_rows(
             "location_recorded_at": row[10],
             "latitude": row[11],
             "longitude": row[12],
+            "client_uuid": row[14],
+            "has_access_token": row[15],
             "last_activity_at": row[13],
         }
         for row in rows
@@ -1547,6 +1553,15 @@ def peers_page(
     for row in rows:
         action_label = "Deactivate" if row["is_active"] else "Activate"
         action_value = "false" if row["is_active"] else "true"
+        token_action = ""
+        if row["client_uuid"]:
+            token_label = "Rotate token" if row["has_access_token"] else "Issue token"
+            token_action = (
+                f"<form class='inline' method='post' action='/admin/clients/{quote_plus(row['client_uuid'])}/access-token' "
+                f"onsubmit=\"return confirm('{token_label} for this client? Any previously issued token will stop working.');\">"
+                f"<button class='secondary' type='submit'>{token_label}</button>"
+                "</form>"
+            )
         body_rows.append(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
@@ -1564,6 +1579,7 @@ def peers_page(
             f"<input type='hidden' name='is_active' value='{action_value}'>"
             f"<button class='secondary' type='submit'>{action_label}</button>"
             "</form>"
+            f"{token_action}"
             f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/delete' "
             "onsubmit=\"return confirm('Delete this peer and all related state?');\">"
             "<button class='danger' type='submit'>Delete</button>"
@@ -1619,6 +1635,37 @@ def peers_page(
         current_path="/admin/peers",
         flash=flash,
     )
+
+
+@router.post("/clients/{client_uuid}/access-token", response_class=HTMLResponse)
+def client_access_token_action(request: Request, client_uuid: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    access_token = issue_client_access_token(client_uuid)
+    if access_token is None:
+        return RedirectResponse(
+            url=f"/admin/peers?flash={quote_plus(f'Active client {client_uuid!r} was not found.')}",
+            status_code=303,
+        )
+    body = f"""
+<section class="panel">
+  <h2 class="section-title">Client access token issued</h2>
+  <p>Copy this token now. It is not stored in plaintext and cannot be shown again.</p>
+  <p class="dim">Client UUID</p>
+  <pre>{html.escape(client_uuid)}</pre>
+  <p class="dim">Access token</p>
+  <pre>{html.escape(access_token)}</pre>
+  <p><a href="/admin/peers">Return to clients</a></p>
+</section>
+"""
+    response = render_page(
+        title="Client access token",
+        body=body,
+        current_path="/admin/peers",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/peers/{peer_uuid}/active")

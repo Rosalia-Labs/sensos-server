@@ -15,6 +15,7 @@ from core import (
     delete_peer,
     get_admin_user,
     get_db,
+    issue_client_access_token,
     list_admin_users,
     require_admin_owner,
     require_admin_write,
@@ -40,6 +41,20 @@ HANDSHAKE_RE = re.compile(r"^(\d+)\s+(\w+)\s+ago$")
 
 def error_response(status_code: int, message: str):
     return JSONResponse(status_code=status_code, content={"error": message})
+
+
+@router.post("/clients/{client_uuid}/access-token")
+def issue_client_access_token_route(
+    client_uuid: str,
+    credentials=Depends(require_admin_write),
+):
+    access_token = issue_client_access_token(client_uuid)
+    if access_token is None:
+        return error_response(404, f"Active client '{client_uuid}' not found.")
+    return JSONResponse(
+        content={"client_uuid": client_uuid, "access_token": access_token},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/users")

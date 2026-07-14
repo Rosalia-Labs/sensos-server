@@ -283,7 +283,7 @@ def test_durable_client_identity_migration_backfills_existing_peers():
     assert "access_token_hash TEXT" in executed
     assert "location public.geography(Point, 4326)" in executed
     assert "ADD COLUMN IF NOT EXISTS client_id INTEGER" in executed
-    assert "p.api_password_hash" in executed
+    assert "p.api_password_hash" not in executed
     assert "p.note" in executed
     assert "FROM sensos.peer_locations pl" in executed
     assert "ORDER BY pl.recorded_at DESC, pl.id DESC" in executed
@@ -294,6 +294,35 @@ def test_durable_client_identity_migration_backfills_existing_peers():
     assert "ON DELETE CASCADE" in executed
     assert "ALTER COLUMN client_id SET NOT NULL" not in executed
     assert "idx_wireguard_peers_client_id" in executed
+
+
+def test_issue_client_access_token_stores_hash_and_returns_plaintext(monkeypatch):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = ("client-uuid",)
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(core, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(core.secrets, "token_urlsafe", lambda length: "plain-token")
+
+    token = core.issue_client_access_token("client-uuid")
+
+    assert token == "plain-token"
+    params = fake_cur.execute.call_args.args[1]
+    assert params[1] == "client-uuid"
+    assert params[0] != token
+    assert core.verify_password(token, params[0])
+    assert "is_active = TRUE" in fake_cur.execute.call_args.args[0]
+    assert "token_last_used_at = NULL" in fake_cur.execute.call_args.args[0]
+
+
+def test_issue_client_access_token_returns_none_for_unknown_or_inactive_client(monkeypatch):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = None
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(core, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+
+    assert core.issue_client_access_token("missing-client") is None
 
 
 def test_schema_migrations_include_durable_client_identity_migration():

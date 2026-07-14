@@ -619,7 +619,7 @@ def migrate_0_20_0_durable_client_identities(cur):
         )
         SELECT
             p.uuid,
-            p.api_password_hash,
+            NULL,
             p.note,
             latest_location.location,
             COALESCE(p.registered_at, NOW()),
@@ -817,6 +817,28 @@ def hash_peer_api_password(password: str, salt: bytes | None = None) -> str:
 
 def verify_peer_api_password(password: str, encoded_hash: str) -> bool:
     return verify_password(password, encoded_hash)
+
+
+def issue_client_access_token(client_uuid: str) -> str | None:
+    access_token = secrets.token_urlsafe(32)
+    access_token_hash = password_hash(access_token)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.clients
+                SET access_token_hash = %s,
+                    updated_at = NOW(),
+                    token_last_used_at = NULL
+                WHERE uuid = %s
+                  AND is_active = TRUE
+                RETURNING uuid::text;
+                """,
+                (access_token_hash, client_uuid),
+            )
+            if cur.fetchone() is None:
+                return None
+    return access_token
 
 
 def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):

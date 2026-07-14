@@ -286,6 +286,27 @@ def test_create_network_accepts_hostname_endpoint(monkeypatch, client):
     assert resp.json()["wg_public_ip"] == "server.example.org"
 
 
+def test_issue_client_access_token(monkeypatch, client):
+    monkeypatch.setattr(admin_api, "issue_client_access_token", lambda client_uuid: "one-time-secret")
+
+    resp = client.post("/api/v1/admin/clients/client-uuid/access-token")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "client_uuid": "client-uuid",
+        "access_token": "one-time-secret",
+    }
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_issue_client_access_token_rejects_unknown_or_inactive_client(monkeypatch, client):
+    monkeypatch.setattr(admin_api, "issue_client_access_token", lambda client_uuid: None)
+
+    resp = client.post("/api/v1/admin/clients/missing/access-token")
+
+    assert resp.status_code == 404
+
+
 def test_update_network_endpoint_invalid_port(client):
     resp = client.put(
         "/api/v1/admin/networks/test/endpoint",
