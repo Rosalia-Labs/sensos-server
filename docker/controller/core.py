@@ -596,6 +596,83 @@ def migrate_0_19_0_fast_public_site_map(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_20_0_durable_client_identities(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_clients_table(cur)
+
+    cur.execute(
+        """
+        ALTER TABLE sensos.wireguard_peers
+        ADD COLUMN IF NOT EXISTS client_id INTEGER;
+        """
+    )
+    cur.execute(
+        """
+        INSERT INTO sensos.clients (
+            uuid,
+            access_token_hash,
+            note,
+            location,
+            created_at,
+            updated_at
+        )
+        SELECT
+            p.uuid,
+            p.api_password_hash,
+            p.note,
+            latest_location.location,
+            COALESCE(p.registered_at, NOW()),
+            NOW()
+        FROM sensos.wireguard_peers p
+        LEFT JOIN LATERAL (
+            SELECT pl.location
+            FROM sensos.peer_locations pl
+            WHERE pl.peer_id = p.id
+            ORDER BY pl.recorded_at DESC, pl.id DESC
+            LIMIT 1
+        ) latest_location ON TRUE
+        WHERE p.client_id IS NULL
+        ON CONFLICT (uuid) DO NOTHING;
+        """
+    )
+    cur.execute(
+        """
+        UPDATE sensos.wireguard_peers p
+        SET client_id = c.id
+        FROM sensos.clients c
+        WHERE p.client_id IS NULL
+          AND c.uuid = p.uuid;
+        """
+    )
+    cur.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'wireguard_peers_client_id_fkey'
+                  AND conrelid = 'sensos.wireguard_peers'::regclass
+            ) THEN
+                ALTER TABLE sensos.wireguard_peers
+                ADD CONSTRAINT wireguard_peers_client_id_fkey
+                FOREIGN KEY (client_id)
+                REFERENCES sensos.clients(id)
+                ON DELETE CASCADE;
+            END IF;
+        END
+        $$;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_wireguard_peers_client_id
+        ON sensos.wireguard_peers (client_id);
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -671,6 +748,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.19.0"),
         name="add telemetry-free public site map view",
         apply=migrate_0_19_0_fast_public_site_map,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.20.0"),
+        name="add durable client identities",
+        apply=migrate_0_20_0_durable_client_identities,
     ),
 ]
 
@@ -1376,6 +1458,25 @@ def create_networks_table(cur):
         """
         ALTER TABLE sensos.networks
         ALTER COLUMN wg_public_key DROP NOT NULL;
+        """
+    )
+
+
+def create_clients_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.clients (
+            id SERIAL PRIMARY KEY,
+            uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+            access_token_hash TEXT,
+            note TEXT,
+            location public.geography(Point, 4326),
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            token_last_used_at TIMESTAMPTZ,
+            UNIQUE (uuid)
+        );
         """
     )
 

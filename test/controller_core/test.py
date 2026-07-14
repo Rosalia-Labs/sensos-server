@@ -273,6 +273,43 @@ def test_fast_public_site_map_migration_excludes_telemetry_summaries():
     assert "DROP VIEW IF EXISTS sensos.public_sites" in executed
 
 
+def test_durable_client_identity_migration_backfills_existing_peers():
+    fake_cur = mock.MagicMock()
+
+    core.migrate_0_20_0_durable_client_identities(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS sensos.clients" in executed
+    assert "access_token_hash TEXT" in executed
+    assert "location public.geography(Point, 4326)" in executed
+    assert "ADD COLUMN IF NOT EXISTS client_id INTEGER" in executed
+    assert "p.api_password_hash" in executed
+    assert "p.note" in executed
+    assert "FROM sensos.peer_locations pl" in executed
+    assert "ORDER BY pl.recorded_at DESC, pl.id DESC" in executed
+    assert "ON CONFLICT (uuid) DO NOTHING" in executed
+    assert "SET client_id = c.id" in executed
+    assert "wireguard_peers_client_id_fkey" in executed
+    assert "REFERENCES sensos.clients(id)" in executed
+    assert "ON DELETE CASCADE" in executed
+    assert "ALTER COLUMN client_id SET NOT NULL" not in executed
+    assert "idx_wireguard_peers_client_id" in executed
+
+
+def test_schema_migrations_include_durable_client_identity_migration():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = [("0.19.0",)]
+
+    core.apply_schema_migrations(fake_cur, "0.20.0")
+
+    insert_calls = [
+        call.args[1]
+        for call in fake_cur.execute.call_args_list
+        if "INSERT INTO sensos.schema_migrations" in call.args[0]
+    ]
+    assert ("0.20.0", "add durable client identities") in insert_calls
+
+
 def test_create_client_status_table_reconciles_legacy_schema():
     fake_cur = mock.MagicMock()
 
