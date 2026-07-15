@@ -907,19 +907,21 @@ def create_client_identity(
                 INSERT INTO sensos.clients (
                     access_token_hash, note, network_id, subnet_offset, location
                 )
-                VALUES (
-                    %s, %s,
-                    (SELECT id FROM sensos.networks WHERE name = %s),
-                    %s,
+                SELECT
+                    %s, %s, n.id, %s,
                     CASE WHEN %s IS NULL THEN NULL
                          ELSE public.ST_SetSRID(public.ST_MakePoint(%s, %s), 4326)::public.geography
                     END
-                )
+                FROM sensos.networks n
+                WHERE n.name = %s
                 RETURNING uuid::text;
                 """,
-                (access_token_hash, note, network_name, subnet_offset, latitude, longitude, latitude),
+                (access_token_hash, note, subnet_offset, latitude, longitude, latitude, network_name),
             )
-            client_uuid = cur.fetchone()[0]
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"Network {network_name!r} does not exist.")
+            client_uuid = row[0]
     return client_uuid, access_token
 
 

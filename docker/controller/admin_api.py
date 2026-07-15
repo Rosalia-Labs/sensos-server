@@ -52,10 +52,13 @@ def create_client_identity_route(
     request: ClientProvisioningRequest,
     credentials=Depends(require_admin_write),
 ):
-    client_uuid, access_token = create_client_identity(
-        request.note, request.network_name, request.subnet_offset,
-        request.latitude, request.longitude,
-    )
+    try:
+        client_uuid, access_token = create_client_identity(
+            request.note, request.network_name, request.subnet_offset,
+            request.latitude, request.longitude,
+        )
+    except ValueError as exc:
+        return error_response(404, str(exc))
     return JSONResponse(
         content={"client_uuid": client_uuid, "access_token": access_token},
         headers={"Cache-Control": "no-store"},

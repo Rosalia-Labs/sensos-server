@@ -218,7 +218,6 @@ def render_page(
     nav_items = [
         ("/admin", "Overview"),
         ("/admin/networks", "Networks"),
-        ("/admin/peers", "Clients"),
         ("/admin/checkins", "Check-ins"),
         ("/admin/wireguard", "WireGuard"),
         ("/admin/sensors", "Sensors"),
@@ -910,6 +909,33 @@ def fetch_network_names() -> list[str]:
             return [row[0] for row in cur.fetchall()]
 
 
+def fetch_assigned_client_rows(network_name: str) -> list[dict]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT c.uuid::text, c.note, c.is_active,
+                       public.ST_Y(c.location::public.geometry),
+                       public.ST_X(c.location::public.geometry),
+                       p.uuid::text, p.wg_ip::text
+                FROM sensos.clients c
+                JOIN sensos.networks n ON n.id = c.network_id
+                LEFT JOIN LATERAL (
+                    SELECT uuid, wg_ip FROM sensos.wireguard_peers
+                    WHERE client_id = c.id ORDER BY registered_at DESC, id DESC LIMIT 1
+                ) p ON TRUE
+                WHERE n.name = %s ORDER BY c.created_at, c.id;
+                """,
+                (network_name,),
+            )
+            rows = cur.fetchall()
+    return [
+        {"client_uuid": r[0], "note": r[1], "is_active": r[2],
+         "latitude": r[3], "longitude": r[4], "peer_uuid": r[5], "wg_ip": r[6]}
+        for r in rows
+    ]
+
+
 def fetch_runtime_rows() -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1424,7 +1450,7 @@ def networks_page(request: Request, flash: str | None = None):
       <tbody>
         {''.join(
             "<tr>"
-            f"<td>{html.escape(row['name'])}</td>"
+            f"<td><a href='/admin/networks/{quote_plus(row['name'])}'>{html.escape(row['name'])}</a></td>"
             f"<td class='mono'>{html.escape(row['ip_range'])}</td>"
             f"<td class='mono'>{html.escape(row['wg_public_ip'])}:{row['wg_port']}</td>"
             f"<td>{badge_for_status('ready' if row['wg_public_key'] else 'starting')}</td>"
@@ -1536,11 +1562,11 @@ async def update_network_endpoint_action(request: Request):
     )
 
 
-@router.get("/peers", response_class=HTMLResponse)
-def peers_page(
+@router.get("/networks/{network_name}", response_class=HTMLResponse)
+def network_clients_page(
     request: Request,
+    network_name: str,
     flash: str | None = None,
-    network: str | None = None,
     sort: str = "checkin",
     direction: str = "desc",
 ):
@@ -1548,12 +1574,15 @@ def peers_page(
     if redirect:
         return redirect
 
-    selected_network = (network or "").strip() or None
+    selected_network = network_name.strip()
+    if selected_network not in fetch_network_names():
+        return RedirectResponse(url="/admin/networks?flash=Network+not+found.", status_code=303)
     sort = (
         sort if sort in {"network", "host", "checkin", "state", "client"} else "checkin"
     )
     direction = direction if direction in {"asc", "desc"} else "desc"
     rows = fetch_peer_rows(selected_network, sort, direction)
+    assigned_clients = fetch_assigned_client_rows(selected_network)
     network_names = fetch_network_names()
     body_rows = []
     for row in rows:
@@ -1618,16 +1647,7 @@ def peers_page(
             "</tr>"
         )
     filter_form = f"""
-<form class="inline" method="get" action="/admin/peers" style="margin-bottom: 1rem;">
-  <label>Network
-    <select name="network" onchange="this.form.submit()">
-      <option value="">All networks</option>
-      {''.join(
-          f"<option value='{html.escape(name)}'{' selected' if selected_network == name else ''}>{html.escape(name)}</option>"
-          for name in network_names
-      )}
-    </select>
-  </label>
+<form class="inline" method="get" action="/admin/networks/{quote_plus(selected_network)}" style="margin-bottom: 1rem;">
   <label>Sort
     <select name="sort" onchange="this.form.submit()">
       <option value="network"{' selected' if sort == 'network' else ''}>Network</option>
@@ -1647,17 +1667,26 @@ def peers_page(
 """
     body = f"""
 <section class="panel">
-  <h2 class="section-title">Registered clients</h2>
-  <form method="post" action="/admin/clients" style="margin-bottom: 1rem;"
+  <h2 class="section-title">{html.escape(selected_network)} clients</h2>
+  <p><a href="/admin/networks">← All networks</a></p>
+  <form method="post" action="/admin/networks/{quote_plus(selected_network)}/clients" style="margin-bottom: 1rem;"
         onsubmit="return confirm('Create a new client identity and one-time access token?');">
-    <label>Network<select name="network_name" required>
-      {''.join(f"<option value='{html.escape(name)}'>{html.escape(name)}</option>" for name in network_names)}
-    </select></label>
     <label>Note<input name="note"></label>
     <label>Latitude<input name="latitude" type="number" step="any"></label>
     <label>Longitude<input name="longitude" type="number" step="any"></label>
     <button type="submit">Create client identity</button>
   </form>
+  <h3>Assigned identities</h3>
+  <table><thead><tr><th>Identity</th><th>Note</th><th>Location</th><th>Activation</th></tr></thead><tbody>
+    {''.join(
+        f"<tr><td class='mono'>{html.escape(item['client_uuid'])}</td>"
+        f"<td>{html.escape(item['note'] or '—')}</td>"
+        f"<td>{html.escape(format_peer_location(item))}</td>"
+        f"<td>{html.escape(item['wg_ip'] or 'Pending activation')}</td></tr>"
+        for item in assigned_clients
+    ) or '<tr><td colspan="4" class="dim">No clients assigned.</td></tr>'}
+  </tbody></table>
+  <h3>Activated peers</h3>
   {filter_form}
   <table>
     <thead>
@@ -1670,11 +1699,16 @@ def peers_page(
 </section>
 """
     return render_page(
-        title="Clients",
+        title=f"{selected_network} clients",
         body=body,
-        current_path="/admin/peers",
+        current_path="/admin/networks",
         flash=flash,
     )
+
+
+@router.get("/peers")
+def legacy_peers_redirect():
+    return RedirectResponse(url="/admin/networks", status_code=303)
 
 
 @router.post("/clients/{client_uuid}/access-token", response_class=HTMLResponse)
@@ -1745,6 +1779,41 @@ async def create_client_identity_action(request: Request):
         body=body,
         current_path="/admin/peers",
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/networks/{network_name}/clients", response_class=HTMLResponse)
+async def create_network_client_identity_action(request: Request, network_name: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    if network_name not in fetch_network_names():
+        return RedirectResponse(url="/admin/networks?flash=Network+not+found.", status_code=303)
+    form = await request.form()
+    latitude_text = str(form.get("latitude", "")).strip()
+    longitude_text = str(form.get("longitude", "")).strip()
+    if bool(latitude_text) != bool(longitude_text):
+        return RedirectResponse(
+            url=f"/admin/networks/{quote_plus(network_name)}?flash=Latitude+and+longitude+must+be+provided+together.",
+            status_code=303,
+        )
+    client_uuid, access_token = create_client_identity(
+        str(form.get("note", "")).strip() or None,
+        network_name,
+        1,
+        float(latitude_text) if latitude_text else None,
+        float(longitude_text) if longitude_text else None,
+    )
+    body = f"""
+<section class="panel"><h2 class="section-title">Client identity created</h2>
+<p>Copy these values now. The token cannot be shown again.</p>
+<p class="dim">Client UUID</p><pre>{html.escape(client_uuid)}</pre>
+<p class="dim">Access token</p><pre>{html.escape(access_token)}</pre>
+<p>Run <code>set-server-auth-token</code>, then <code>activate-client</code>.</p>
+<p><a href="/admin/networks/{quote_plus(network_name)}">Return to {html.escape(network_name)}</a></p></section>
+"""
+    response = render_page(title="New client identity", body=body, current_path="/admin/networks")
     response.headers["Cache-Control"] = "no-store"
     return response
 
