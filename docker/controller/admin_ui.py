@@ -1561,6 +1561,14 @@ def peers_page(
         action_value = "false" if row["is_active"] else "true"
         token_action = ""
         if row["client_uuid"]:
+            network_options = "".join(
+                "<option value='{}'{}>{}</option>".format(
+                    html.escape(name),
+                    " selected" if name == row["network_name"] else "",
+                    html.escape(name),
+                )
+                for name in network_names
+            )
             token_label = "Rotate token" if row["has_access_token"] else "Issue token"
             token_action = (
                 f"<form class='inline' method='post' action='/admin/clients/{quote_plus(row['client_uuid'])}/access-token' "
@@ -1578,7 +1586,7 @@ def peers_page(
             )
             token_action += (
                 f"<form method='post' action='/admin/clients/{quote_plus(row['client_uuid'])}/provisioning'>"
-                f"<select name='network_name'>{''.join(f'<option value={html.escape(name)!r}{' selected' if name == row['network_name'] else ''}>{html.escape(name)}</option>' for name in network_names)}</select>"
+                f"<select name='network_name'>{network_options}</select>"
                 f"<input name='note' placeholder='Note' value='{html.escape(row['note'] or '')}'>"
                 f"<input name='latitude' type='number' step='any' placeholder='Latitude' value='{row['latitude'] if row['latitude'] is not None else ''}'>"
                 f"<input name='longitude' type='number' step='any' placeholder='Longitude' value='{row['longitude'] if row['longitude'] is not None else ''}'>"
