@@ -26,6 +26,7 @@ from core import (
     GIT_TAG,
     ADMIN_WRITE_ROLES,
     authenticate_admin_credentials,
+    create_client_identity,
     create_network_entry,
     current_server_version,
     delete_peer,
@@ -36,6 +37,7 @@ from core import (
     lookup_admin_identity,
     mark_admin_login,
     set_admin_user_active,
+    set_client_identity_active,
     set_peer_active_state,
     upsert_admin_user,
     update_network_endpoint,
@@ -781,7 +783,8 @@ def fetch_peer_rows(
                ll.longitude,
                ls.last_check_in AS last_activity_at,
                c.uuid::text,
-               c.access_token_hash IS NOT NULL
+               c.access_token_hash IS NOT NULL,
+               c.is_active
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN sensos.clients c ON c.id = p.client_id
@@ -819,6 +822,7 @@ def fetch_peer_rows(
             "longitude": row[12],
             "client_uuid": row[14],
             "has_access_token": row[15],
+            "client_is_active": row[16],
             "last_activity_at": row[13],
         }
         for row in rows
@@ -1562,6 +1566,14 @@ def peers_page(
                 f"<button class='secondary' type='submit'>{token_label}</button>"
                 "</form>"
             )
+            identity_action = "Revoke identity" if row["client_is_active"] else "Reactivate identity"
+            identity_active = "false" if row["client_is_active"] else "true"
+            token_action += (
+                f"<form class='inline' method='post' action='/admin/clients/{quote_plus(row['client_uuid'])}/active'>"
+                f"<input type='hidden' name='is_active' value='{identity_active}'>"
+                f"<button class='secondary' type='submit'>{identity_action}</button>"
+                "</form>"
+            )
         body_rows.append(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
@@ -1618,6 +1630,10 @@ def peers_page(
     body = f"""
 <section class="panel">
   <h2 class="section-title">Registered clients</h2>
+  <form method="post" action="/admin/clients" style="margin-bottom: 1rem;"
+        onsubmit="return confirm('Create a new client identity and one-time access token?');">
+    <button type="submit">Create client identity</button>
+  </form>
   {filter_form}
   <table>
     <thead>
@@ -1666,6 +1682,51 @@ def client_access_token_action(request: Request, client_uuid: str):
     )
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@router.post("/clients", response_class=HTMLResponse)
+def create_client_identity_action(request: Request):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    client_uuid, access_token = create_client_identity()
+    body = f"""
+<section class="panel">
+  <h2 class="section-title">Client identity created</h2>
+  <p>Copy these values now. The token is not stored in plaintext and cannot be shown again.</p>
+  <p class="dim">Client UUID</p>
+  <pre>{html.escape(client_uuid)}</pre>
+  <p class="dim">Access token</p>
+  <pre>{html.escape(access_token)}</pre>
+  <p>On the client, run <code>set-server-auth-token</code> before <code>config-network</code>.</p>
+  <p><a href="/admin/peers">Return to clients</a></p>
+</section>
+"""
+    response = render_page(
+        title="New client identity",
+        body=body,
+        current_path="/admin/peers",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/clients/{client_uuid}/active")
+async def client_identity_active_action(request: Request, client_uuid: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    form = await request.form()
+    is_active = str(form.get("is_active", "")).lower() == "true"
+    updated = set_client_identity_active(client_uuid, is_active)
+    message = (
+        f"{'Reactivated' if is_active else 'Revoked'} client identity '{client_uuid}'."
+        if updated
+        else f"Client identity '{client_uuid}' was not found."
+    )
+    return RedirectResponse(
+        url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+    )
 
 
 @router.post("/peers/{peer_uuid}/active")

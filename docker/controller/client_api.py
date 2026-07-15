@@ -10,7 +10,9 @@ from fastapi.responses import JSONResponse
 
 from core import (
     authenticate_client,
+    authenticate_client_enrollment,
     authenticate_peer,
+    authenticate_peer_enrollment,
     get_db,
     get_network_details,
     get_runtime_operator_ssh_key,
@@ -48,7 +50,7 @@ def healthz(request: Request):
 
 @router.get("/networks/{network_name}")
 def get_network_info(
-    network_name: str, credentials=Depends(authenticate_client)
+    network_name: str, credentials=Depends(authenticate_client_enrollment)
 ):
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -65,19 +67,20 @@ def get_network_info(
     if not result:
         return error_response(404, f"No network found with name '{network_name}'")
 
-    return {
+    response = {
         "name": result[0],
         "ip_range": result[1],
         "wg_public_ip": result[2],
         "wg_port": result[3],
         "wg_public_key": result[4],
     }
+    return response
 
 
 @router.post("/peers/enroll")
 def register_peer(
     request: RegisterPeerRequest,
-    credentials=Depends(authenticate_client),
+    identity=Depends(authenticate_client_enrollment),
 ):
     network_details = get_network_details(request.network_name)
     if not network_details:
@@ -104,21 +107,28 @@ def register_peer(
             409, f"No available IPs in subnet {request.subnet_offset}."
         )
 
-    _, peer_uuid, peer_api_password = insert_peer(network_id, wg_ip, note=request.note)
-    return {
+    _, peer_uuid, peer_api_password = insert_peer(
+        network_id,
+        wg_ip,
+        note=request.note,
+        client_id=identity["client_id"],
+    )
+    response = {
         "wg_ip": wg_ip,
         "wg_public_key": public_key,
         "wg_public_ip": wg_public_ip,
         "wg_port": wg_port,
         "peer_uuid": peer_uuid,
-        "peer_api_password": peer_api_password,
     }
+    if identity["auth_source"] == "legacy":
+        response["peer_api_password"] = peer_api_password
+    return response
 
 
 @router.post("/peer/wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
-    peer: dict = Depends(authenticate_peer),
+    peer: dict = Depends(authenticate_peer_enrollment),
 ):
     result = register_wireguard_key_in_db(peer["wg_ip"], request.wg_public_key)
     if result is None:

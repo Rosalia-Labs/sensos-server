@@ -315,6 +315,40 @@ def test_issue_client_access_token_stores_hash_and_returns_plaintext(monkeypatch
     assert "token_last_used_at = NULL" in fake_cur.execute.call_args.args[0]
 
 
+def test_create_client_identity_stores_hash_and_returns_plaintext(monkeypatch):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = ("client-uuid",)
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(core, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    monkeypatch.setattr(core.secrets, "token_urlsafe", lambda length: "plain-token")
+
+    client_uuid, token = core.create_client_identity("field sensor")
+
+    assert (client_uuid, token) == ("client-uuid", "plain-token")
+    params = fake_cur.execute.call_args.args[1]
+    assert params[1] == "field sensor"
+    assert params[0] != token
+    assert core.verify_password(token, params[0])
+
+
+@mock.patch("core.get_db")
+def test_authenticate_client_enrollment_accepts_server_token(mock_get_db):
+    token = "server-issued-token"
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (456, "client-uuid", core.password_hash(token), None)
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    credentials = HTTPBasicCredentials(username="client-uuid", password=token)
+    assert core.authenticate_client_enrollment(credentials) == {
+        "client_id": 456,
+        "client_uuid": "client-uuid",
+        "auth_source": "token",
+    }
+
+
 def test_issue_client_access_token_returns_none_for_unknown_or_inactive_client(monkeypatch):
     fake_cur = mock.MagicMock()
     fake_cur.fetchone.return_value = None
@@ -520,13 +554,33 @@ def test_authenticate_peer_accepts_per_peer_password(mock_get_db):
 
 
 @mock.patch("core.get_db")
+def test_authenticate_peer_accepts_single_durable_identity(mock_get_db):
+    token = "server-issued-token"
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.side_effect = [
+        None,
+        (123, "peer-123", "10.0.1.7", core.password_hash(token), None),
+    ]
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+
+    credentials = HTTPBasicCredentials(username="client-uuid", password=token)
+    assert core.authenticate_peer(credentials) == {
+        "peer_id": 123,
+        "peer_uuid": "peer-123",
+        "wg_ip": "10.0.1.7",
+        "client_uuid": "client-uuid",
+    }
+
+
+@mock.patch("core.get_db")
 def test_authenticate_peer_rejects_invalid_password(mock_get_db):
     fake_cur = mock.MagicMock()
-    fake_cur.fetchone.return_value = (
-        123,
-        "10.0.1.7",
-        core.hash_peer_api_password("peer-secret"),
-    )
+    fake_cur.fetchone.side_effect = [
+        (123, "10.0.1.7", core.hash_peer_api_password("peer-secret")),
+        None,
+    ]
     mock_conn = mock.MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = fake_cur
     mock_get_db.return_value.__enter__.return_value = mock_conn

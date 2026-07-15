@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from core import (
+    create_client_identity,
     authenticate_admin,
     create_network_entry,
     delete_admin_user,
@@ -19,6 +20,7 @@ from core import (
     list_admin_users,
     require_admin_owner,
     require_admin_write,
+    set_client_identity_active,
     set_admin_user_active,
     set_peer_active_state,
     update_network_endpoint,
@@ -43,6 +45,17 @@ def error_response(status_code: int, message: str):
     return JSONResponse(status_code=status_code, content={"error": message})
 
 
+@router.post("/clients")
+def create_client_identity_route(
+    credentials=Depends(require_admin_write),
+):
+    client_uuid, access_token = create_client_identity()
+    return JSONResponse(
+        content={"client_uuid": client_uuid, "access_token": access_token},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/clients/{client_uuid}/access-token")
 def issue_client_access_token_route(
     client_uuid: str,
@@ -55,6 +68,17 @@ def issue_client_access_token_route(
         content={"client_uuid": client_uuid, "access_token": access_token},
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.put("/clients/{client_uuid}/active")
+def set_client_identity_active_route(
+    client_uuid: str,
+    request: SetPeerActiveRequest,
+    credentials=Depends(require_admin_write),
+):
+    if not set_client_identity_active(client_uuid, request.is_active):
+        return error_response(404, f"Client identity '{client_uuid}' not found.")
+    return {"client_uuid": client_uuid, "is_active": request.is_active}
 
 
 @router.get("/users")

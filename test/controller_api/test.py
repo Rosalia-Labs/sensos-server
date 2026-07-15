@@ -34,7 +34,15 @@ def client():
     app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
         username="sensos", password="test"
     )
+    app.dependency_overrides[client_api.authenticate_client_enrollment] = lambda: {
+        "client_id": 456,
+        "client_uuid": "client-456",
+        "auth_source": "token",
+    }
     app.dependency_overrides[client_api.authenticate_peer] = (
+        lambda: {"peer_id": 123, "peer_uuid": "peer-123", "wg_ip": "10.0.1.7"}
+    )
+    app.dependency_overrides[client_api.authenticate_peer_enrollment] = (
         lambda: {"peer_id": 123, "peer_uuid": "peer-123", "wg_ip": "10.0.1.7"}
     )
     return TestClient(app)
@@ -299,6 +307,21 @@ def test_issue_client_access_token(monkeypatch, client):
     assert resp.headers["cache-control"] == "no-store"
 
 
+def test_create_client_identity(monkeypatch, client):
+    monkeypatch.setattr(
+        admin_api,
+        "create_client_identity",
+        lambda: ("client-uuid", "one-time-secret"),
+    )
+    resp = client.post("/api/v1/admin/clients")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "client_uuid": "client-uuid",
+        "access_token": "one-time-secret",
+    }
+    assert resp.headers["cache-control"] == "no-store"
+
+
 def test_issue_client_access_token_rejects_unknown_or_inactive_client(monkeypatch, client):
     monkeypatch.setattr(admin_api, "issue_client_access_token", lambda client_uuid: None)
 
@@ -365,7 +388,11 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
     monkeypatch.setattr(
         client_api,
         "insert_peer",
-        lambda network_id, wg_ip, note=None: (123, "peer-uuid", "peer-secret"),
+        lambda network_id, wg_ip, note=None, client_id=None: (
+            123,
+            "peer-uuid",
+            "peer-secret",
+        ),
     )
 
     captured = {}
@@ -381,7 +408,7 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
     assert captured["start_third_octet"] == 1
     assert resp.json()["wg_ip"] == "10.0.1.1"
     assert resp.json()["peer_uuid"] == "peer-uuid"
-    assert resp.json()["peer_api_password"] == "peer-secret"
+    assert "peer_api_password" not in resp.json()
 
 
 def test_register_wireguard_key_not_found(monkeypatch, client):
@@ -397,9 +424,11 @@ def test_get_network_info_accepts_client_auth(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.schema_ready = True
-    app.dependency_overrides[client_api.authenticate_client] = lambda: HTTPBasicCredentials(
-        username="client", password="client"
-    )
+    app.dependency_overrides[client_api.authenticate_client_enrollment] = lambda: {
+        "client_id": 456,
+        "client_uuid": "client-456",
+        "auth_source": "token",
+    }
     app.dependency_overrides[admin_api.authenticate_admin] = lambda: (_ for _ in ()).throw(
         AssertionError("admin auth should not be required")
     )

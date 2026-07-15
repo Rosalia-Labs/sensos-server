@@ -236,6 +236,16 @@ Healthy result:
 
 ### Client VM enrollment
 
+Before enrolling, open `http://127.0.0.1:18765/admin/peers` on the macOS host,
+click **Create client identity**, and copy the client UUID and one-time token.
+Store them inside the client guest:
+
+```bash
+set-server-auth-token
+```
+
+The client does not need `CLIENT_API_PASSWORD` for this workflow.
+
 Inside a separate client guest:
 
 ```bash

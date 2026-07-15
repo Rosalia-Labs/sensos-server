@@ -246,6 +246,49 @@ def authenticate_client(credentials: HTTPBasicCredentials = Depends(security)):
     return authenticate_named_client(credentials, username="sensos")
 
 
+def authenticate_client_enrollment(
+    credentials: HTTPBasicCredentials = Depends(security),
+):
+    """Accept a durable client identity, with shared-password legacy fallback."""
+    if credentials.username == "sensos":
+        authenticate_named_client(credentials, username="sensos")
+        return {"client_id": None, "client_uuid": None, "auth_source": "legacy"}
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, uuid::text, access_token_hash, previous_access_token_hash
+                FROM sensos.clients
+                WHERE uuid = %s
+                  AND is_active = TRUE;
+                """,
+                (credentials.username,),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    used_current_token = bool(row[2]) and verify_password(credentials.password, row[2])
+    used_previous_token = bool(row[3]) and verify_password(credentials.password, row[3])
+    if not used_current_token and not used_previous_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if used_current_token and row[3]:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE sensos.clients
+                    SET previous_access_token_hash = NULL,
+                        token_last_used_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (row[0],),
+                )
+    return {"client_id": row[0], "client_uuid": row[1], "auth_source": "token"}
+
+
 def authenticate_named_client(
     credentials: HTTPBasicCredentials,
     username: str,
@@ -673,6 +716,15 @@ def migrate_0_20_0_durable_client_identities(cur):
     )
 
 
+def migrate_0_21_0_safe_client_token_rotation(cur):
+    cur.execute(
+        """
+        ALTER TABLE sensos.clients
+        ADD COLUMN IF NOT EXISTS previous_access_token_hash TEXT;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -754,6 +806,11 @@ SCHEMA_MIGRATIONS = [
         name="add durable client identities",
         apply=migrate_0_20_0_durable_client_identities,
     ),
+    SchemaMigration(
+        version=parse_version_key("0.21.0"),
+        name="add safe client token rotation overlap",
+        apply=migrate_0_21_0_safe_client_token_rotation,
+    ),
 ]
 
 
@@ -819,6 +876,23 @@ def verify_peer_api_password(password: str, encoded_hash: str) -> bool:
     return verify_password(password, encoded_hash)
 
 
+def create_client_identity(note: str | None = None) -> tuple[str, str]:
+    access_token = secrets.token_urlsafe(32)
+    access_token_hash = password_hash(access_token)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sensos.clients (access_token_hash, note)
+                VALUES (%s, %s)
+                RETURNING uuid::text;
+                """,
+                (access_token_hash, note),
+            )
+            client_uuid = cur.fetchone()[0]
+    return client_uuid, access_token
+
+
 def issue_client_access_token(client_uuid: str) -> str | None:
     access_token = secrets.token_urlsafe(32)
     access_token_hash = password_hash(access_token)
@@ -827,7 +901,8 @@ def issue_client_access_token(client_uuid: str) -> str | None:
             cur.execute(
                 """
                 UPDATE sensos.clients
-                SET access_token_hash = %s,
+                SET previous_access_token_hash = access_token_hash,
+                    access_token_hash = %s,
                     updated_at = NOW(),
                     token_last_used_at = NULL
                 WHERE uuid = %s
@@ -841,7 +916,30 @@ def issue_client_access_token(client_uuid: str) -> str | None:
     return access_token
 
 
+def set_client_identity_active(client_uuid: str, is_active: bool) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.clients
+                SET is_active = %s,
+                    updated_at = NOW()
+                WHERE uuid = %s
+                RETURNING uuid::text;
+                """,
+                (is_active, client_uuid),
+            )
+            return cur.fetchone() is not None
+
+
 def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
+    peer = authenticate_legacy_peer(credentials)
+    if peer is not None:
+        return peer
+    return authenticate_durable_client_peer(credentials, require_wireguard_key=True)
+
+
+def authenticate_legacy_peer(credentials: HTTPBasicCredentials) -> dict | None:
     try:
         peer_uuid = str(credentials.username)
     except Exception:
@@ -859,11 +957,73 @@ def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
             )
             row = cur.fetchone()
 
-    if row is None or not row[2]:
+    if row is not None and row[2] and verify_peer_api_password(credentials.password, row[2]):
+        return {"peer_id": row[0], "peer_uuid": peer_uuid, "wg_ip": row[1]}
+    return None
+
+
+def authenticate_peer_enrollment(credentials: HTTPBasicCredentials = Depends(security)):
+    """Authenticate key registration, including a new peer not active on WireGuard yet."""
+    peer = authenticate_legacy_peer(credentials)
+    if peer is not None:
+        return peer
+    return authenticate_durable_client_peer(credentials, require_wireguard_key=False)
+
+
+def authenticate_durable_client_peer(
+    credentials: HTTPBasicCredentials,
+    require_wireguard_key: bool,
+):
+    key_join = (
+        "JOIN sensos.wireguard_keys k ON k.peer_id = p.id AND k.is_active = TRUE"
+        if require_wireguard_key
+        else ""
+    )
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT p.id, p.uuid::text, p.wg_ip::text,
+                       c.access_token_hash, c.previous_access_token_hash
+                FROM sensos.clients c
+                JOIN sensos.wireguard_peers p ON p.client_id = c.id
+                {key_join}
+                WHERE c.uuid = %s
+                  AND c.is_active = TRUE
+                  AND p.is_active = TRUE
+                ORDER BY p.registered_at DESC, p.id DESC
+                LIMIT 1;
+                """,
+                (credentials.username,),
+            )
+            row = cur.fetchone()
+    if row is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if not verify_peer_api_password(credentials.password, row[2]):
+    used_current_token = bool(row[3]) and verify_password(credentials.password, row[3])
+    used_previous_token = bool(row[4]) and verify_password(credentials.password, row[4])
+    if not used_current_token and not used_previous_token:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"peer_id": row[0], "peer_uuid": peer_uuid, "wg_ip": row[1]}
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.clients
+                SET token_last_used_at = NOW(),
+                    updated_at = NOW(),
+                    previous_access_token_hash = CASE
+                        WHEN %s THEN NULL
+                        ELSE previous_access_token_hash
+                    END
+                WHERE uuid = %s;
+                """,
+                (used_current_token, credentials.username),
+            )
+    return {
+        "peer_id": row[0],
+        "peer_uuid": row[1],
+        "wg_ip": row[2],
+        "client_uuid": credentials.username,
+    }
 
 
 def get_network_details(network_name: str):
@@ -954,7 +1114,10 @@ def allocate_network_ip_range(cur: Cursor, name: str) -> ipaddress.IPv4Network:
 
 
 def insert_peer(
-    network_id: int, wg_ip: str, note: Optional[str] = None
+    network_id: int,
+    wg_ip: str,
+    note: Optional[str] = None,
+    client_id: int | None = None,
 ) -> Tuple[int, str, str]:
     peer_api_password = secrets.token_urlsafe(32)
     password_hash = hash_peer_api_password(peer_api_password)
@@ -963,11 +1126,11 @@ def insert_peer(
             cur.execute(
                 """
                 INSERT INTO sensos.wireguard_peers
-                    (network_id, wg_ip, note, api_password_hash)
-                VALUES (%s, %s, %s, %s)
+                    (network_id, wg_ip, note, api_password_hash, client_id)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, uuid;
                 """,
-                (network_id, wg_ip, note, password_hash),
+                (network_id, wg_ip, note, password_hash, client_id),
             )
             peer_id, peer_uuid = cur.fetchone()
             return peer_id, peer_uuid, peer_api_password
@@ -1491,6 +1654,7 @@ def create_clients_table(cur):
             id SERIAL PRIMARY KEY,
             uuid UUID NOT NULL DEFAULT gen_random_uuid(),
             access_token_hash TEXT,
+            previous_access_token_hash TEXT,
             note TEXT,
             location public.geography(Point, 4326),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
