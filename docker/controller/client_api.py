@@ -14,6 +14,7 @@ from core import (
     authenticate_peer,
     authenticate_peer_enrollment,
     get_db,
+    get_client_provisioning,
     get_network_details,
     get_runtime_operator_ssh_key,
     insert_peer,
@@ -46,6 +47,16 @@ def healthz(request: Request):
     if getattr(request.app.state, "schema_ready", False):
         return {"status": "ok"}
     return JSONResponse(status_code=503, content={"status": "starting"})
+
+
+@router.get("/provisioning")
+def client_provisioning(identity=Depends(authenticate_client_enrollment)):
+    if identity["auth_source"] != "token":
+        return error_response(400, "Server-issued client identity required.")
+    assignment = get_client_provisioning(identity["client_id"])
+    if assignment is None or not assignment["network_name"]:
+        return error_response(409, "Client provisioning assignment is incomplete.")
+    return assignment
 
 
 @router.get("/networks/{network_name}")
@@ -82,25 +93,36 @@ def register_peer(
     request: RegisterPeerRequest,
     identity=Depends(authenticate_client_enrollment),
 ):
-    network_details = get_network_details(request.network_name)
+    network_name = request.network_name
+    subnet_offset = request.subnet_offset
+    note = request.note
+    if identity["auth_source"] == "token":
+        assignment = get_client_provisioning(identity["client_id"])
+        if assignment is None or not assignment["network_name"]:
+            return error_response(409, "Client provisioning assignment is incomplete.")
+        network_name = assignment["network_name"]
+        subnet_offset = assignment["subnet_offset"]
+        note = assignment["note"]
+
+    network_details = get_network_details(network_name)
     if not network_details:
-        return error_response(404, f"Network '{request.network_name}' not found.")
+        return error_response(404, f"Network '{network_name}' not found.")
 
     network_id, subnet, public_key, wg_public_ip, wg_port = network_details
     if not public_key:
         return error_response(
-            409, f"Network '{request.network_name}' exists but is not ready yet."
+            409, f"Network '{network_name}' exists but is not ready yet."
         )
 
     network = ipaddress.ip_network(subnet, strict=False)
-    if request.subnet_offset < 0 or request.subnet_offset >= network.num_addresses // 256:
+    if subnet_offset < 0 or subnet_offset >= network.num_addresses // 256:
         return error_response(
             400,
-            f"Invalid subnet_offset {request.subnet_offset}. Must be between 0 and {network.num_addresses // 256 - 1}.",
+            f"Invalid subnet_offset {subnet_offset}. Must be between 0 and {network.num_addresses // 256 - 1}.",
         )
 
     wg_ip = search_for_next_available_ip(
-        subnet, network_id, start_third_octet=request.subnet_offset
+        subnet, network_id, start_third_octet=subnet_offset
     )
     if not wg_ip:
         return error_response(
@@ -110,7 +132,7 @@ def register_peer(
     _, peer_uuid, peer_api_password = insert_peer(
         network_id,
         wg_ip,
-        note=request.note,
+        note=note,
         client_id=identity["client_id"],
     )
     response = {

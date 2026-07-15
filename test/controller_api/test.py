@@ -35,9 +35,9 @@ def client():
         username="sensos", password="test"
     )
     app.dependency_overrides[client_api.authenticate_client_enrollment] = lambda: {
-        "client_id": 456,
-        "client_uuid": "client-456",
-        "auth_source": "token",
+        "client_id": None,
+        "client_uuid": None,
+        "auth_source": "legacy",
     }
     app.dependency_overrides[client_api.authenticate_peer] = (
         lambda: {"peer_id": 123, "peer_uuid": "peer-123", "wg_ip": "10.0.1.7"}
@@ -311,9 +311,12 @@ def test_create_client_identity(monkeypatch, client):
     monkeypatch.setattr(
         admin_api,
         "create_client_identity",
-        lambda: ("client-uuid", "one-time-secret"),
+        lambda *args: ("client-uuid", "one-time-secret"),
     )
-    resp = client.post("/api/v1/admin/clients")
+    resp = client.post(
+        "/api/v1/admin/clients",
+        json={"network_name": "testing", "note": "field unit"},
+    )
     assert resp.status_code == 200
     assert resp.json() == {
         "client_uuid": "client-uuid",
@@ -408,7 +411,7 @@ def test_register_peer_defaults_to_first_client_subnet(monkeypatch, client):
     assert captured["start_third_octet"] == 1
     assert resp.json()["wg_ip"] == "10.0.1.1"
     assert resp.json()["peer_uuid"] == "peer-uuid"
-    assert "peer_api_password" not in resp.json()
+    assert resp.json()["peer_api_password"] == "peer-secret"
 
 
 def test_register_wireguard_key_not_found(monkeypatch, client):

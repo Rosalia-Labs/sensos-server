@@ -725,6 +725,16 @@ def migrate_0_21_0_safe_client_token_rotation(cur):
     )
 
 
+def migrate_0_22_0_server_owned_client_provisioning(cur):
+    cur.execute(
+        """
+        ALTER TABLE sensos.clients
+        ADD COLUMN IF NOT EXISTS network_id INTEGER REFERENCES sensos.networks(id),
+        ADD COLUMN IF NOT EXISTS subnet_offset INTEGER NOT NULL DEFAULT 1;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -811,6 +821,11 @@ SCHEMA_MIGRATIONS = [
         name="add safe client token rotation overlap",
         apply=migrate_0_21_0_safe_client_token_rotation,
     ),
+    SchemaMigration(
+        version=parse_version_key("0.22.0"),
+        name="add server-owned client provisioning assignments",
+        apply=migrate_0_22_0_server_owned_client_provisioning,
+    ),
 ]
 
 
@@ -876,21 +891,76 @@ def verify_peer_api_password(password: str, encoded_hash: str) -> bool:
     return verify_password(password, encoded_hash)
 
 
-def create_client_identity(note: str | None = None) -> tuple[str, str]:
+def create_client_identity(
+    note: str | None = None,
+    network_name: str | None = None,
+    subnet_offset: int = 1,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> tuple[str, str]:
     access_token = secrets.token_urlsafe(32)
     access_token_hash = password_hash(access_token)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO sensos.clients (access_token_hash, note)
-                VALUES (%s, %s)
+                INSERT INTO sensos.clients (
+                    access_token_hash, note, network_id, subnet_offset, location
+                )
+                VALUES (
+                    %s, %s,
+                    (SELECT id FROM sensos.networks WHERE name = %s),
+                    %s,
+                    CASE WHEN %s IS NULL THEN NULL
+                         ELSE public.ST_SetSRID(public.ST_MakePoint(%s, %s), 4326)::public.geography
+                    END
+                )
                 RETURNING uuid::text;
                 """,
-                (access_token_hash, note),
+                (access_token_hash, note, network_name, subnet_offset, latitude, longitude, latitude),
             )
             client_uuid = cur.fetchone()[0]
     return client_uuid, access_token
+
+
+def get_client_provisioning(client_id: int) -> dict | None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT n.name, c.subnet_offset, c.note,
+                       public.ST_Y(c.location::public.geometry),
+                       public.ST_X(c.location::public.geometry)
+                FROM sensos.clients c
+                LEFT JOIN sensos.networks n ON n.id = c.network_id
+                WHERE c.id = %s AND c.is_active = TRUE;
+                """,
+                (client_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {"network_name": row[0], "subnet_offset": row[1], "note": row[2], "latitude": row[3], "longitude": row[4]}
+
+
+def update_client_provisioning(client_uuid: str, assignment) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.clients c
+                SET network_id = n.id, subnet_offset = %s, note = %s,
+                    location = CASE WHEN %s IS NULL THEN NULL
+                      ELSE public.ST_SetSRID(public.ST_MakePoint(%s, %s), 4326)::public.geography END,
+                    updated_at = NOW()
+                FROM sensos.networks n
+                WHERE c.uuid = %s AND n.name = %s
+                RETURNING c.uuid::text;
+                """,
+                (assignment.subnet_offset, assignment.note, assignment.latitude,
+                 assignment.longitude, assignment.latitude, client_uuid, assignment.network_name),
+            )
+            return cur.fetchone() is not None
 
 
 def issue_client_access_token(client_uuid: str) -> str | None:
@@ -1655,6 +1725,8 @@ def create_clients_table(cur):
             uuid UUID NOT NULL DEFAULT gen_random_uuid(),
             access_token_hash TEXT,
             previous_access_token_hash TEXT,
+            network_id INTEGER REFERENCES sensos.networks(id),
+            subnet_offset INTEGER NOT NULL DEFAULT 1,
             note TEXT,
             location public.geography(Point, 4326),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,

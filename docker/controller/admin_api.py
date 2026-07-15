@@ -24,11 +24,13 @@ from core import (
     set_admin_user_active,
     set_peer_active_state,
     update_network_endpoint,
+    update_client_provisioning,
     upsert_admin_user,
     wait_for_network_ready,
 )
 from models import (
     CreateNetworkRequest,
+    ClientProvisioningRequest,
     DeleteNetworkRequest,
     DeletePeerRequest,
     SetAdminUserActiveRequest,
@@ -47,13 +49,28 @@ def error_response(status_code: int, message: str):
 
 @router.post("/clients")
 def create_client_identity_route(
+    request: ClientProvisioningRequest,
     credentials=Depends(require_admin_write),
 ):
-    client_uuid, access_token = create_client_identity()
+    client_uuid, access_token = create_client_identity(
+        request.note, request.network_name, request.subnet_offset,
+        request.latitude, request.longitude,
+    )
     return JSONResponse(
         content={"client_uuid": client_uuid, "access_token": access_token},
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.put("/clients/{client_uuid}/provisioning")
+def update_client_provisioning_route(
+    client_uuid: str,
+    request: ClientProvisioningRequest,
+    credentials=Depends(require_admin_write),
+):
+    if not update_client_provisioning(client_uuid, request):
+        return error_response(404, "Client identity or network not found.")
+    return {"client_uuid": client_uuid, **request.model_dump()}
 
 
 @router.post("/clients/{client_uuid}/access-token")

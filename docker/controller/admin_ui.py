@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import time
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
@@ -41,6 +42,7 @@ from core import (
     set_peer_active_state,
     upsert_admin_user,
     update_network_endpoint,
+    update_client_provisioning,
     wait_for_network_ready,
 )
 
@@ -1574,6 +1576,14 @@ def peers_page(
                 f"<button class='secondary' type='submit'>{identity_action}</button>"
                 "</form>"
             )
+            token_action += (
+                f"<form method='post' action='/admin/clients/{quote_plus(row['client_uuid'])}/provisioning'>"
+                f"<select name='network_name'>{''.join(f'<option value={html.escape(name)!r}{' selected' if name == row['network_name'] else ''}>{html.escape(name)}</option>' for name in network_names)}</select>"
+                f"<input name='note' placeholder='Note' value='{html.escape(row['note'] or '')}'>"
+                f"<input name='latitude' type='number' step='any' placeholder='Latitude' value='{row['latitude'] if row['latitude'] is not None else ''}'>"
+                f"<input name='longitude' type='number' step='any' placeholder='Longitude' value='{row['longitude'] if row['longitude'] is not None else ''}'>"
+                "<button class='secondary' type='submit'>Update assignment</button></form>"
+            )
         body_rows.append(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
@@ -1632,6 +1642,12 @@ def peers_page(
   <h2 class="section-title">Registered clients</h2>
   <form method="post" action="/admin/clients" style="margin-bottom: 1rem;"
         onsubmit="return confirm('Create a new client identity and one-time access token?');">
+    <label>Network<select name="network_name" required>
+      {''.join(f"<option value='{html.escape(name)}'>{html.escape(name)}</option>" for name in network_names)}
+    </select></label>
+    <label>Note<input name="note"></label>
+    <label>Latitude<input name="latitude" type="number" step="any"></label>
+    <label>Longitude<input name="longitude" type="number" step="any"></label>
     <button type="submit">Create client identity</button>
   </form>
   {filter_form}
@@ -1685,11 +1701,25 @@ def client_access_token_action(request: Request, client_uuid: str):
 
 
 @router.post("/clients", response_class=HTMLResponse)
-def create_client_identity_action(request: Request):
+async def create_client_identity_action(request: Request):
     redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
     if redirect:
         return redirect
-    client_uuid, access_token = create_client_identity()
+    form = await request.form()
+    latitude_text = str(form.get("latitude", "")).strip()
+    longitude_text = str(form.get("longitude", "")).strip()
+    if bool(latitude_text) != bool(longitude_text):
+        return RedirectResponse(
+            url="/admin/peers?flash=Latitude+and+longitude+must+be+provided+together.",
+            status_code=303,
+        )
+    client_uuid, access_token = create_client_identity(
+        str(form.get("note", "")).strip() or None,
+        str(form.get("network_name", "")).strip(),
+        1,
+        float(latitude_text) if latitude_text else None,
+        float(longitude_text) if longitude_text else None,
+    )
     body = f"""
 <section class="panel">
   <h2 class="section-title">Client identity created</h2>
@@ -1698,7 +1728,7 @@ def create_client_identity_action(request: Request):
   <pre>{html.escape(client_uuid)}</pre>
   <p class="dim">Access token</p>
   <pre>{html.escape(access_token)}</pre>
-  <p>On the client, run <code>set-server-auth-token</code> before <code>config-network</code>.</p>
+  <p>On the client, run <code>set-server-auth-token</code>, then <code>activate-client</code>.</p>
   <p><a href="/admin/peers">Return to clients</a></p>
 </section>
 """
@@ -1727,6 +1757,29 @@ async def client_identity_active_action(request: Request, client_uuid: str):
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
     )
+
+
+@router.post("/clients/{client_uuid}/provisioning")
+async def client_provisioning_action(request: Request, client_uuid: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    form = await request.form()
+    lat = str(form.get("latitude", "")).strip()
+    lon = str(form.get("longitude", "")).strip()
+    if bool(lat) != bool(lon):
+        message = "Latitude and longitude must be provided together."
+    else:
+        assignment = SimpleNamespace(
+            network_name=str(form.get("network_name", "")).strip(),
+            subnet_offset=1,
+            note=str(form.get("note", "")).strip() or None,
+            latitude=float(lat) if lat else None,
+            longitude=float(lon) if lon else None,
+        )
+        updated = update_client_provisioning(client_uuid, assignment)
+        message = "Updated client assignment." if updated else "Client identity or network not found."
+    return RedirectResponse(url=f"/admin/peers?flash={quote_plus(message)}", status_code=303)
 
 
 @router.post("/peers/{peer_uuid}/active")

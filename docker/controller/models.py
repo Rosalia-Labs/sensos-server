@@ -15,6 +15,20 @@ class RegisterPeerRequest(BaseModel):
     note: Optional[str] = None
 
 
+class ClientProvisioningRequest(BaseModel):
+    network_name: str
+    subnet_offset: int = Field(default=1, ge=1, le=255)
+    note: Optional[str] = None
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def require_complete_location(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("latitude and longitude must be provided together")
+        return self
+
+
 class RegisterWireguardKeyRequest(BaseModel):
     wg_public_key: str
 
