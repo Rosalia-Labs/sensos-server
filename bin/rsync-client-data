@@ -11,15 +11,16 @@ set -euo pipefail
 
 usage() {
   cat <<EOF >&2
-Usage: $(basename "$0") <ip-or-token> [--destination DIR] [rsync-options...]
+Usage: $(basename "$0") --client <ip-or-token> [--destination DIR] [rsync-options...]
 
 Rsync /sensos/data/ from a client to a local directory (the current directory
-by default). All arguments except --destination are passed unchanged to rsync.
+by default). All arguments except --client and --destination are passed
+unchanged to rsync.
 
 Examples:
-  $(basename "$0") testing_1_15 -av
-  $(basename "$0") testing_1_15 --destination ./incoming -av --remove-source-files
-  $(basename "$0") 10.23.1.15 --destination /srv/sensos-data -avn --delete
+  $(basename "$0") --client testing_1_15 -av
+  $(basename "$0") -av --client testing_1_15 --destination ./incoming --remove-source-files
+  $(basename "$0") --destination /srv/sensos-data -avn --delete --client 10.23.1.15
 EOF
 }
 
@@ -81,13 +82,19 @@ main() {
   [[ $# -ge 1 ]] || { usage; exit 2; }
   require_cmd docker; require_cmd rsync; require_cmd od; require_cmd awk
 
-  local target="$1"; shift
-  local ip
-  if is_ip "$target"; then ip="$target"; else ip="$(build_ip_from_token "$target")"; fi
-
-  local rsync_args=() destination="."
+  local rsync_args=() destination="." target=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --client)
+        [[ $# -ge 2 ]] || { echo "Error: --client requires an IP or token" >&2; usage; exit 2; }
+        target="$2"
+        shift 2
+        ;;
+      --client=*)
+        target="${1#*=}"
+        [[ -n "$target" ]] || { echo "Error: --client requires an IP or token" >&2; usage; exit 2; }
+        shift
+        ;;
       --destination)
         [[ $# -ge 2 ]] || { echo "Error: --destination requires a directory" >&2; usage; exit 2; }
         destination="$2"
@@ -104,6 +111,10 @@ main() {
         ;;
     esac
   done
+
+  [[ -n "$target" ]] || { echo "Error: --client is required" >&2; usage; exit 2; }
+  local ip
+  if is_ip "$target"; then ip="$target"; else ip="$(build_ip_from_token "$target")"; fi
 
   require_container_running "$OPS_CONTAINER"
 

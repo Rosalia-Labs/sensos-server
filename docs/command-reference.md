@@ -504,15 +504,16 @@ Behavior:
 
 Copies the contents of `/sensos/data/` from a remote client through the ops
 container. The local destination defaults to the current directory; put a
-different destination in `--destination DIR`. All other arguments pass
-directly to `rsync`.
+different destination in `--destination DIR`. Select the client with
+`--client IP-OR-TOKEN`; both wrapper options can occur anywhere. All other
+arguments pass directly to `rsync`.
 
 Typical use:
 
 ```sh
-./bin/rsync-client-data testing_1_15 -av
-./bin/rsync-client-data testing_1_15 --destination ./incoming -av --remove-source-files
-./bin/rsync-client-data testing_1_15 --destination /srv/sensos-data -avn --delete
+./bin/rsync-client-data --client testing_1_15 -av
+./bin/rsync-client-data -av --client testing_1_15 --destination ./incoming --remove-source-files
+./bin/rsync-client-data --destination /srv/sensos-data -avn --delete --client testing_1_15
 ```
 
 Both the operator machine and remote client must have `rsync` installed.
