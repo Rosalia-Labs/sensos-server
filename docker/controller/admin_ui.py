@@ -37,6 +37,7 @@ from core import (
     set_admin_user_active,
     set_peer_active_state,
     set_peer_deployed_at,
+    set_peer_note,
     upsert_admin_user,
     update_network_endpoint,
     wait_for_network_ready,
@@ -305,10 +306,11 @@ def render_page(
     form.inline {{ display: inline-flex; gap: 0.45rem; align-items: center; flex-wrap: wrap; margin: 0; }}
     form.block {{ display: grid; gap: 0.8rem; }}
     label {{ display: grid; gap: 0.35rem; font-weight: 600; }}
-    input, button, select {{
+    input, button, select, textarea {{
       font: inherit; border-radius: 12px; border: 1px solid var(--border);
       padding: 0.72rem 0.85rem; background: rgba(255,255,255,0.82); color: var(--ink);
     }}
+    textarea {{ resize: vertical; }}
     button {{
       cursor: pointer; background: var(--ink); color: #fff; border-color: var(--ink);
     }}
@@ -1550,13 +1552,6 @@ def peers_page(
     network_names = fetch_network_names()
     body_rows = []
     for row in rows:
-        action_label = "Deactivate" if row["is_active"] else "Activate"
-        action_value = "false" if row["is_active"] else "true"
-        deployed_value = (
-            row["deployed_at"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
-            if row["deployed_at"] is not None
-            else ""
-        )
         deployment_state = (
             f"<div><span class='badge ok'>deployed</span></div><div class='dim'>{html.escape(format_timestamp(row['deployed_at']))}</div>"
             if row["deployed_at"] is not None
@@ -1564,7 +1559,7 @@ def peers_page(
         )
         body_rows.append(
             "<tr>"
-            f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
+            f"<td><div><a class='mono' href='/admin/peers/{quote_plus(row['peer_uuid'])}'>{html.escape(row['wg_ip'])}</a></div>"
             f"<div class='dim'>{html.escape((row['note'] or '').strip() or '—')}</div></td>"
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
@@ -1575,24 +1570,7 @@ def peers_page(
             f"<div>{html.escape(row['status_message'] or '—')}</div>"
             f"<div class='dim mono'>{html.escape(format_peer_location(row))}</div>"
             "</td>"
-            "<td>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/active'>"
-            f"<input type='hidden' name='is_active' value='{action_value}'>"
-            f"<button class='secondary' type='submit'>{action_label}</button>"
-            "</form>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/deployment'>"
-            f"<input type='datetime-local' name='deployed_at' value='{html.escape(deployed_value)}' aria-label='Deployment time in UTC'>"
-            "<button class='secondary' type='submit'>Save deploy time (UTC)</button>"
-            "</form>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/deployment'>"
-            "<input type='hidden' name='deployed_at' value=''>"
-            "<button class='secondary' type='submit'>Clear deploy time</button>"
-            "</form>"
-            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/delete' "
-            "onsubmit=\"return confirm('Delete this peer and all related state?');\">"
-            "<button class='danger' type='submit'>Delete</button>"
-            "</form>"
-            "</td>"
+            f"<td><a href='/admin/peers/{quote_plus(row['peer_uuid'])}'>Configure</a></td>"
             "</tr>"
         )
     filter_form = f"""
@@ -1645,6 +1623,113 @@ def peers_page(
     )
 
 
+@router.get("/peers/{peer_uuid}", response_class=HTMLResponse)
+def peer_config_page(request: Request, peer_uuid: str, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    row = next(
+        (row for row in fetch_peer_rows() if row["peer_uuid"] == peer_uuid), None
+    )
+    if row is None:
+        return RedirectResponse(
+            url="/admin/peers?flash=Client+was+not+found.", status_code=303
+        )
+
+    action_label = "Deactivate" if row["is_active"] else "Activate"
+    action_value = "false" if row["is_active"] else "true"
+    deployed_value = (
+        row["deployed_at"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+        if row["deployed_at"] is not None
+        else ""
+    )
+    peer_path = f"/admin/peers/{quote_plus(row['peer_uuid'])}"
+    deployment_state = (
+        badge_for_status("deployed")
+        if row["deployed_at"] is not None
+        else "<span class='badge warn'>not deployed</span>"
+    )
+    body = f"""
+<p><a href="/admin/peers">← Back to clients</a></p>
+<div class="split">
+  <section class="panel">
+    <h2 class="section-title">Client details</h2>
+    <table>
+      <tbody>
+        <tr><th>Client</th><td><span class="mono">{html.escape(row['wg_ip'])}</span></td></tr>
+        <tr><th>Note</th><td>{html.escape((row['note'] or '').strip() or '—')}</td></tr>
+        <tr><th>Network</th><td>{html.escape(row['network_name'])}</td></tr>
+        <tr><th>Assigned hostname</th><td>{html.escape(row['peer_hostname'] or 'Unknown')}</td></tr>
+        <tr><th>State</th><td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td></tr>
+        <tr><th>Deployment</th><td>{deployment_state} <span class="dim">{html.escape(format_timestamp(row['deployed_at']))}</span></td></tr>
+        <tr><th>Last check-in</th><td>{html.escape(summarize_age(row['last_check_in']))}<div class="dim">{html.escape(format_timestamp(row['last_check_in']))}</div></td></tr>
+        <tr><th>Status</th><td>{html.escape(row['status_message'] or '—')}<div class="dim mono">{html.escape(format_peer_location(row))}</div></td></tr>
+        <tr><th>Version</th><td>{html.escape(row['version'] or '—')}</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2 class="section-title">Configuration</h2>
+    <div class="stack">
+      <form class="block" method="post" action="{peer_path}/active">
+        <input type="hidden" name="is_active" value="{action_value}">
+        <button class="secondary" type="submit">{action_label} client</button>
+      </form>
+      <form class="block" method="post" action="{peer_path}/note">
+        <label>Client note
+          <textarea name="note" rows="4" placeholder="Add a label or description for this client">{html.escape(row['note'] or '')}</textarea>
+        </label>
+        <button type="submit">Save note</button>
+        <span class="help">Leave this blank to remove the note.</span>
+      </form>
+      <form class="block" method="post" action="{peer_path}/deployment">
+        <label>Deployment time (UTC)
+          <input type="datetime-local" name="deployed_at" value="{html.escape(deployed_value)}">
+        </label>
+        <button type="submit">Save deployment time</button>
+      </form>
+      <form class="block" method="post" action="{peer_path}/deployment">
+        <input type="hidden" name="deployed_at" value="">
+        <button class="secondary" type="submit">Clear deployment time</button>
+      </form>
+      <form class="block" method="post" action="{peer_path}/delete"
+            onsubmit="return confirm('Delete this client and all related state?');">
+        <button class="danger" type="submit">Delete client</button>
+      </form>
+    </div>
+  </section>
+</div>
+"""
+    return render_page(
+        title=f"Client {row['wg_ip']}",
+        body=body,
+        current_path="/admin/peers",
+        flash=flash,
+    )
+
+
+@router.post("/peers/{peer_uuid}/note")
+async def peer_note_action(request: Request, peer_uuid: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    form = await request.form()
+    note = str(form.get("note", "")).strip() or None
+    ok = set_peer_note(peer_uuid, note)
+    message = (
+        "Client note saved."
+        if ok and note is not None
+        else "Client note cleared."
+        if ok
+        else f"Peer '{peer_uuid}' was not found."
+    )
+    return RedirectResponse(
+        url=f"/admin/peers/{quote_plus(peer_uuid)}?flash={quote_plus(message)}",
+        status_code=303,
+    )
+
+
 @router.post("/peers/{peer_uuid}/active")
 async def peer_active_action(request: Request, peer_uuid: str):
     redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
@@ -1667,7 +1752,8 @@ async def peer_active_action(request: Request, peer_uuid: str):
         else f"Peer '{peer_uuid}' was not found."
     )
     return RedirectResponse(
-        url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+        url=f"/admin/peers/{quote_plus(peer_uuid)}?flash={quote_plus(message)}",
+        status_code=303,
     )
 
 
@@ -1698,7 +1784,8 @@ async def peer_deployment_action(request: Request, peer_uuid: str):
     except ValueError:
         message = "Invalid deployment time. Enter a valid UTC date and time."
     return RedirectResponse(
-        url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+        url=f"/admin/peers/{quote_plus(peer_uuid)}?flash={quote_plus(message)}",
+        status_code=303,
     )
 
 

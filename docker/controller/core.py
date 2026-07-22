@@ -1074,6 +1074,25 @@ def set_peer_deployed_at(peer_uuid: str, deployed_at: datetime | None) -> bool:
             return True
 
 
+def set_peer_note(peer_uuid: str, note: str | None) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.wireguard_peers
+                SET note = %s
+                WHERE uuid = %s
+                RETURNING id;
+                """,
+                (note, peer_uuid),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
 def delete_peer(wg_ip: str) -> bool:
     with get_db() as conn:
         with conn.cursor() as cur:
