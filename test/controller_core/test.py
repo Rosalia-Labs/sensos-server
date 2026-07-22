@@ -162,6 +162,24 @@ def test_delete_peer_success_relies_on_fk_cascade(mock_get_db):
 
 
 @mock.patch("core.get_db")
+def test_set_peer_deployed_at_updates_single_server_side_cutoff(mock_get_db):
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (42,)
+    mock_conn = mock.MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = fake_cur
+    mock_get_db.return_value.__enter__.return_value = mock_conn
+    deployed_at = datetime(2026, 7, 22, 18, 0, tzinfo=timezone.utc)
+
+    assert core.set_peer_deployed_at("peer-uuid", deployed_at) is True
+    fake_cur.execute.assert_called_once_with(
+        mock.ANY,
+        (deployed_at, "peer-uuid"),
+    )
+    assert "SET deployed_at = %s" in fake_cur.execute.call_args.args[0]
+    mock_conn.commit.assert_called_once()
+
+
+@mock.patch("core.get_db")
 def test_delete_network_not_found(mock_get_db):
     fake_cur = mock.MagicMock()
     fake_cur.fetchone.return_value = None
@@ -271,6 +289,22 @@ def test_fast_public_site_map_migration_excludes_telemetry_summaries():
     assert "host(d.wireguard_ip)" not in executed
     assert "host(r.wireguard_ip)" not in executed
     assert "DROP VIEW IF EXISTS sensos.public_sites" in executed
+
+
+def test_deployment_cutoff_migration_filters_public_data_by_observation_time():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = []
+
+    core.migrate_0_21_0_peer_deployment_cutoffs(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "ADD COLUMN IF NOT EXISTS deployed_at TIMESTAMPTZ" in executed
+    assert "p.deployed_at" in executed
+    assert "WHERE p.deployed_at IS NULL" in executed
+    assert "d.clip_start_time >= p.deployed_at" in executed
+    assert "r.recorded_at >= p.deployed_at" in executed
+    assert "d.server_received_at >= p.deployed_at" not in executed
+    assert "r.server_received_at >= p.deployed_at" not in executed
 
 
 def test_create_client_status_table_reconciles_legacy_schema():

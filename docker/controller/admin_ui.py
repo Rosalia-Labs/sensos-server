@@ -36,6 +36,7 @@ from core import (
     mark_admin_login,
     set_admin_user_active,
     set_peer_active_state,
+    set_peer_deployed_at,
     upsert_admin_user,
     update_network_endpoint,
     wait_for_network_ready,
@@ -778,7 +779,8 @@ def fetch_peer_rows(
                ll.recorded_at,
                ll.latitude,
                ll.longitude,
-               ls.last_check_in AS last_activity_at
+               ls.last_check_in AS last_activity_at,
+               p.deployed_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
@@ -814,6 +816,7 @@ def fetch_peer_rows(
             "latitude": row[11],
             "longitude": row[12],
             "last_activity_at": row[13],
+            "deployed_at": row[14],
         }
         for row in rows
     ]
@@ -1306,6 +1309,7 @@ def overview_page(request: Request, flash: str | None = None):
     recent_status_rows = fetch_recent_client_status_rows(limit=8)
     active_peer_count = sum(1 for row in all_peers if row["is_active"])
     reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
+    undeployed_clients = sum(1 for row in all_peers if row["deployed_at"] is None)
     latest_check_in = max(
         (row["last_check_in"] for row in all_peers if row["last_check_in"] is not None),
         default=None,
@@ -1315,6 +1319,7 @@ def overview_page(request: Request, flash: str | None = None):
   {stat_card("Networks", str(overview["network_count"]), "Defined client network ranges.")}
   {stat_card("Peers", str(len(all_peers)), f'{active_peer_count} currently active.')}
   {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
+  {stat_card("Not deployed", str(undeployed_clients), "Clients whose public observations are still marked as test data.")}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
 </div>
 <div class="split compact overview-split">
@@ -1547,6 +1552,16 @@ def peers_page(
     for row in rows:
         action_label = "Deactivate" if row["is_active"] else "Activate"
         action_value = "false" if row["is_active"] else "true"
+        deployed_value = (
+            row["deployed_at"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+            if row["deployed_at"] is not None
+            else ""
+        )
+        deployment_state = (
+            f"<div><span class='badge ok'>deployed</span></div><div class='dim'>{html.escape(format_timestamp(row['deployed_at']))}</div>"
+            if row["deployed_at"] is not None
+            else "<div><span class='badge warn'>not deployed</span></div><div class='dim'>Public observations are test data</div>"
+        )
         body_rows.append(
             "<tr>"
             f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div>"
@@ -1554,6 +1569,7 @@ def peers_page(
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['peer_hostname'] or 'Unknown')}</td>"
             f"<td>{badge_for_status('active' if row['is_active'] else 'inactive')}</td>"
+            f"<td>{deployment_state}</td>"
             f"<td><div>{html.escape(summarize_age(row['last_check_in']))}</div><div class='dim'>{html.escape(format_timestamp(row['last_check_in']))}</div></td>"
             "<td>"
             f"<div>{html.escape(row['status_message'] or '—')}</div>"
@@ -1563,6 +1579,14 @@ def peers_page(
             f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/active'>"
             f"<input type='hidden' name='is_active' value='{action_value}'>"
             f"<button class='secondary' type='submit'>{action_label}</button>"
+            "</form>"
+            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/deployment'>"
+            f"<input type='datetime-local' name='deployed_at' value='{html.escape(deployed_value)}' aria-label='Deployment time in UTC'>"
+            "<button class='secondary' type='submit'>Save deploy time (UTC)</button>"
+            "</form>"
+            f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/deployment'>"
+            "<input type='hidden' name='deployed_at' value=''>"
+            "<button class='secondary' type='submit'>Clear deploy time</button>"
             "</form>"
             f"<form class='inline' method='post' action='/admin/peers/{quote_plus(row['peer_uuid'])}/delete' "
             "onsubmit=\"return confirm('Delete this peer and all related state?');\">"
@@ -1605,10 +1629,10 @@ def peers_page(
   {filter_form}
   <table>
     <thead>
-      <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>State</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
+      <tr><th>Client</th><th>Network</th><th>Assigned hostname</th><th>State</th><th>Deployment</th><th>Last check-in</th><th>Status</th><th>Actions</th></tr>
     </thead>
     <tbody>
-      {''.join(body_rows) or '<tr><td colspan="7" class="dim">No clients registered.</td></tr>'}
+      {''.join(body_rows) or '<tr><td colspan="8" class="dim">No clients registered.</td></tr>'}
     </tbody>
   </table>
 </section>
@@ -1642,6 +1666,37 @@ async def peer_active_action(request: Request, peer_uuid: str):
         if ok
         else f"Peer '{peer_uuid}' was not found."
     )
+    return RedirectResponse(
+        url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
+    )
+
+
+@router.post("/peers/{peer_uuid}/deployment")
+async def peer_deployment_action(request: Request, peer_uuid: str):
+    redirect = require_ui_role(request, ADMIN_WRITE_ROLES)
+    if redirect:
+        return redirect
+    form = await request.form()
+    raw_value = str(form.get("deployed_at", "")).strip()
+    try:
+        deployed_at = None
+        if raw_value:
+            deployed_at = datetime.fromisoformat(raw_value)
+            if deployed_at.tzinfo is None:
+                deployed_at = deployed_at.replace(tzinfo=timezone.utc)
+            else:
+                deployed_at = deployed_at.astimezone(timezone.utc)
+        ok = set_peer_deployed_at(peer_uuid, deployed_at)
+        if not ok:
+            message = f"Peer '{peer_uuid}' was not found."
+        elif deployed_at is None:
+            message = f"Cleared deployment time for peer '{peer_uuid}'."
+        else:
+            message = f"Deployment time saved as {deployed_at.isoformat()}."
+            if deployed_at > datetime.now(timezone.utc):
+                message += " Warning: this time is in the future."
+    except ValueError:
+        message = "Invalid deployment time. Enter a valid UTC date and time."
     return RedirectResponse(
         url=f"/admin/peers?flash={quote_plus(message)}", status_code=303
     )

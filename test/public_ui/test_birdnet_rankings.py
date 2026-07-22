@@ -93,6 +93,7 @@ class SiteMapCursor(FakeCursor):
                 "biosense-1-2",
                 "0.19.0",
                 "ok",
+                None,
             )
         ]
 
@@ -110,6 +111,7 @@ def test_site_map_uses_telemetry_free_view(monkeypatch):
     assert "latest_i2c_upload_at" not in query
     assert "birdnet_detection_count" not in sites[0]
     assert sites[0]["last_check_in"] == "2026-04-07T12:00:00Z"
+    assert sites[0]["is_deployed"] is False
 
 
 def test_passive_birdnet_views_use_score_by_likelihood_label():

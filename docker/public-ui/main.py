@@ -1384,7 +1384,8 @@ def fetch_sites() -> list[dict]:
                        last_check_in,
                        hostname,
                        version,
-                       status_message
+                       status_message,
+                       deployed_at
                 FROM sensos.public_site_map
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY site_label, wg_ip;
@@ -1408,6 +1409,8 @@ def fetch_sites() -> list[dict]:
             "hostname": row[11],
             "client_version": row[12],
             "status_message": row[13],
+            "deployed_at": format_rfc3339_utc(row[14]),
+            "is_deployed": row[14] is not None,
             "public_url": f"/sites/{row[0]}",
         }
         for row in rows
@@ -1453,7 +1456,8 @@ def fetch_site_detail(
                        last_check_in,
                        hostname,
                        version,
-                       status_message
+                       status_message,
+                       deployed_at
                 FROM sensos.public_site_map
                 WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
@@ -1709,6 +1713,8 @@ def fetch_site_detail(
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
+        "deployed_at": format_rfc3339_utc(row[14]),
+        "is_deployed": row[14] is not None,
         "public_url": site_detail_url(
             peer_uuid, normalized_evidence_range, normalized_label_mode
         ),
@@ -1842,7 +1848,8 @@ def fetch_site_status(site_id: str) -> dict:
                        last_check_in,
                        hostname,
                        version,
-                       status_message
+                       status_message,
+                       deployed_at
                 FROM sensos.public_site_map
                 WHERE peer_uuid = %s OR wg_ip = %s;
                 """,
@@ -1868,6 +1875,8 @@ def fetch_site_status(site_id: str) -> dict:
         "hostname": row[11],
         "client_version": row[12],
         "status_message": row[13],
+        "deployed_at": format_rfc3339_utc(row[14]),
+        "is_deployed": row[14] is not None,
         "public_url": f"/sites/{row[0]}",
         "status_url": f"/sites/{row[0]}/status",
         "synoptic_url": f"/sites/{row[0]}/synoptic",
@@ -1884,6 +1893,11 @@ def render_site_status_html(site: dict) -> str:
         ("Network", site["network_name"], False),
         ("Client version", site.get("client_version") or "unknown", False),
         ("Client active", "yes" if site.get("is_active") else "no", False),
+        (
+            "Deployment",
+            render_local_time(site.get("deployed_at"), "not yet deployed"),
+            bool(site.get("deployed_at")),
+        ),
         ("Status message", site.get("status_message") or "none", False),
         ("Coordinates", f"{site['latitude']:.6f}, {site['longitude']:.6f}", False),
         ("Registered at", render_local_time(site.get("registered_at"), "unknown"), True),
@@ -4314,6 +4328,7 @@ def render_index_html() -> str:
           <div class="site-popup-meta">
             <div><span class="mono">${{escapeHtml(site.wg_ip || "")}}</span></div>
             <div>Reported hostname: ${{escapeHtml(site.hostname || "unknown")}}</div>
+            <div>${{site.is_deployed ? "Deployed" : "Not yet deployed · test data"}}</div>
             <div>Last check-in: ${{escapeHtml(formatRelativeTime(site.last_check_in))}}</div>
           </div>
           <div class="site-popup-actions">

@@ -97,6 +97,11 @@ Reference:
 Use the server endpoint details from step 7 on client devices with
 `config-network` in `sensos-client`.
 
+After field deployment, open `/admin/peers` and set the client's UTC deployment
+time. Until that is set, the public dashboard shows the client and its
+observations as test data. Once set, observations recorded before the cutoff
+remain stored but are excluded from public field-data views.
+
 Reference:
 
 - [sensos-client getting started](https://github.com/Rosalia-Labs/sensos-client/blob/main/docs/getting-started.md)

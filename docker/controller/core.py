@@ -596,6 +596,17 @@ def migrate_0_19_0_fast_public_site_map(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_21_0_peer_deployment_cutoffs(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_wireguard_peers_table(cur)
+    create_public_site_map_view(cur)
+    create_public_site_birdnet_recent_view(cur)
+    create_public_site_birdnet_detections_view(cur)
+    create_public_site_i2c_recent_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -671,6 +682,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.19.0"),
         name="add telemetry-free public site map view",
         apply=migrate_0_19_0_fast_public_site_map,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.21.0"),
+        name="add per-peer deployment cutoffs to public data views",
+        apply=migrate_0_21_0_peer_deployment_cutoffs,
     ),
 ]
 
@@ -1031,6 +1047,25 @@ def set_peer_active_state(wg_ip: str, is_active: bool) -> bool:
                 RETURNING id;
                 """,
                 (is_active, wg_ip),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            conn.commit()
+            return True
+
+
+def set_peer_deployed_at(peer_uuid: str, deployed_at: datetime | None) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.wireguard_peers
+                SET deployed_at = %s
+                WHERE uuid = %s
+                RETURNING id;
+                """,
+                (deployed_at, peer_uuid),
             )
             row = cur.fetchone()
             if row is None:
@@ -1405,6 +1440,12 @@ def create_wireguard_peers_table(cur):
         """
         ALTER TABLE sensos.wireguard_peers
         ADD COLUMN IF NOT EXISTS api_password_hash TEXT;
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE sensos.wireguard_peers
+        ADD COLUMN IF NOT EXISTS deployed_at TIMESTAMPTZ;
         """
     )
 
@@ -1893,7 +1934,8 @@ def create_public_site_map_view(cur):
                ls.last_check_in,
                ls.hostname,
                ls.version,
-               ls.status_message
+               ls.status_message,
+               p.deployed_at
         FROM sensos.wireguard_peers p
         JOIN sensos.networks n ON n.id = p.network_id
         LEFT JOIN latest_status ls ON ls.peer_id = p.id
@@ -1923,7 +1965,9 @@ def create_public_site_birdnet_recent_view(cur):
                d.weighted_score,
                d.weighted_likely_score
         FROM sensos.birdnet_detections d
-        ;
+        JOIN sensos.wireguard_peers p ON p.id = d.peer_id
+        WHERE p.deployed_at IS NULL
+           OR d.clip_start_time >= p.deployed_at;
         """
     )
 
@@ -1951,7 +1995,10 @@ def create_public_site_birdnet_detections_view(cur):
                d.weighted_label,
                d.weighted_score,
                d.weighted_likely_score
-        FROM sensos.birdnet_detections d;
+        FROM sensos.birdnet_detections d
+        JOIN sensos.wireguard_peers p ON p.id = d.peer_id
+        WHERE p.deployed_at IS NULL
+           OR d.clip_start_time >= p.deployed_at;
         """
     )
 
@@ -1970,7 +2017,10 @@ def create_public_site_i2c_recent_view(cur):
                r.reading_key,
                r.reading_value,
                r.server_received_at
-        FROM sensos.i2c_readings r;
+        FROM sensos.i2c_readings r
+        JOIN sensos.wireguard_peers p ON p.id = r.peer_id
+        WHERE p.deployed_at IS NULL
+           OR r.recorded_at >= p.deployed_at;
         """
     )
 

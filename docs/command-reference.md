@@ -556,6 +556,8 @@ Behavior:
 - shows recent accepted BirdNET upload batches
 - summarizes total uploaded batches and processed-file records stored on the server
 - helps confirm that client-side BirdNET uploads are arriving without needing direct database inspection
+- shows clients without a deployment time prominently in the overview and client list
+- lets operators set, correct, or clear one UTC deployment timestamp per client from `/admin/peers`
 - lets owners create named admin users with `owner`, `operator`, or `viewer` roles
 
 ## Public Dashboard
@@ -568,4 +570,6 @@ Behavior:
 
 - serves a standalone public map-first dashboard
 - reads only curated public SQL views through a dedicated read-only database role
+- shows undeployed clients and their observations with a visible test-data status, which is useful during commissioning
+- after a deployment timestamp is set, excludes BirdNET and I2C observations recorded before it; raw uploaded records remain stored
 - stays separate from the admin/controller process even though it shares the same repo and compose stack
