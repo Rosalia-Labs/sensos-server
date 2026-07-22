@@ -500,6 +500,23 @@ Behavior:
 - runs SSH from the dedicated `sensos-ops` container rather than from `sensos-controller`
 - uses lower-overhead SSH defaults suitable for metered links where supported by the bundled SSH client
 
+### `bin/rsync-client-data`
+
+Copies the contents of `/sensos/data/` from a remote client through the ops
+container. The local destination defaults to the current directory; put a
+different destination in `--destination DIR`. All other arguments pass
+directly to `rsync`.
+
+Typical use:
+
+```sh
+./bin/rsync-client-data testing_1_15 -av
+./bin/rsync-client-data testing_1_15 --destination ./incoming -av --remove-source-files
+./bin/rsync-client-data testing_1_15 --destination /srv/sensos-data -avn --delete
+```
+
+Both the operator machine and remote client must have `rsync` installed.
+
 ### `bin/listen-client-audio`
 
 Streams temporary live audio from a client and plays it on the operator
