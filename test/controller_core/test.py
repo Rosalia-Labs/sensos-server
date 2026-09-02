@@ -344,6 +344,31 @@ def test_client_events_migration_creates_table():
     assert "CREATE TABLE IF NOT EXISTS sensos.client_events" in executed
 
 
+def test_birdnet_detections_table_defines_label_indexes():
+    fake_cur = mock.MagicMock()
+
+    core.create_birdnet_detections_table(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "idx_birdnet_detections_wg_ip_weighted_label" in executed
+    assert (
+        "ON sensos.birdnet_detections (wireguard_ip, weighted_label, clip_start_time DESC)"
+        in executed
+    )
+    assert "WHERE weighted_label IS NOT NULL" in executed
+    assert "idx_birdnet_detections_wg_ip_label" in executed
+
+
+def test_birdnet_label_index_migration_reuses_table_definition():
+    fake_cur = mock.MagicMock()
+
+    core.migrate_0_23_0_birdnet_label_indexes(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "idx_birdnet_detections_wg_ip_weighted_label" in executed
+    assert "idx_birdnet_detections_wg_ip_label" in executed
+
+
 def test_create_networks_table_reconciles_legacy_wg_public_ip_type():
     fake_cur = mock.MagicMock()
 
