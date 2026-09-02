@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import html
+import ipaddress
 import math
 import re
 from contextlib import asynccontextmanager
@@ -14,6 +15,16 @@ from urllib.parse import quote, urlencode
 import psycopg
 
 from fastapi import FastAPI, HTTPException, Request
+
+
+def as_inet(value):
+    """Adapt a text IP (as the map views expose it) to an object psycopg sends
+    as PostgreSQL inet, so ``WHERE wireguard_ip = %s`` can use the inet indexes
+    instead of forcing a per-row cast / sequential scan."""
+    try:
+        return ipaddress.ip_address(str(value))
+    except ValueError:
+        return value
 from fastapi.responses import HTMLResponse, JSONResponse
 
 POSTGRES_USER = "sensos_public"
@@ -1508,7 +1519,8 @@ def fetch_site_detail(
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Site not found.")
-            lookup_wg_ip = row[1]
+            # Compare against the raw inet column so the wireguard_ip indexes are used.
+            lookup_wg_ip = as_inet(row[1])
             cur.execute(
                 """
                 SELECT max(processed_at)
@@ -2097,7 +2109,7 @@ def fetch_site_synoptic(
 ) -> dict:
     normalized_range = normalize_synoptic_range(range_key)
     site = fetch_site_detail(site_id, normalized_range, label_mode)
-    lookup_wg_ip = site["wg_ip"]
+    lookup_wg_ip = as_inet(site["wg_ip"])
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -2247,8 +2259,9 @@ def fetch_site_birdnet_rankings(
                 f"{BIRDNET_RANKING_STATISTICS[normalized_statistic]['label']} of "
                 f"{BIRDNET_RANKING_VARIABLES[normalized_variable]['label'].lower()}"
             )
+            ranking_wg_ip = as_inet(site["wg_ip"])
             ranking_where = "WHERE wg_ip = %s"
-            ranking_params: tuple = (site["wg_ip"],)
+            ranking_params: tuple = (ranking_wg_ip,)
             if normalized_label_mode == "weighted":
                 ranking_where += " AND weighted_label IS NOT NULL AND weighted_score IS NOT NULL"
             if range_cutoff is not None:
@@ -2258,7 +2271,7 @@ def fetch_site_birdnet_rankings(
                     FROM sensos.public_site_birdnet_detections
                     WHERE wg_ip = %s;
                     """,
-                    (site["wg_ip"],),
+                    (ranking_wg_ip,),
                 )
                 latest_birdnet_at = cur.fetchone()[0]
                 anchored_cutoff = window_cutoff_from_latest(
@@ -2266,7 +2279,7 @@ def fetch_site_birdnet_rankings(
                 )
                 if anchored_cutoff is not None:
                     ranking_where += " AND processed_at >= %s"
-                    ranking_params = (site["wg_ip"], anchored_cutoff)
+                    ranking_params = (ranking_wg_ip, anchored_cutoff)
             cur.execute(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
@@ -2350,6 +2363,7 @@ def fetch_site_birdnet_species(
             selected_score_expr = label_sql["score"]
             selected_likely_expr = label_sql["likely"]
             volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
+            wg_ip = as_inet(site["wg_ip"])
             if range_seconds is None:
                 cur.execute(
                     f"""
@@ -2373,7 +2387,7 @@ def fetch_site_birdnet_species(
                       AND {selected_score_expr} IS NOT NULL
                     ORDER BY processed_at ASC, channel_index, start_sec;
                     """,
-                    (site["wg_ip"], label),
+                    (wg_ip, label),
                 )
             else:
                 selected_label_expr_d = f"d.{selected_label_expr}"
@@ -2412,8 +2426,8 @@ def fetch_site_birdnet_species(
                     ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
                     """,
                     (
-                        site["wg_ip"],
-                        site["wg_ip"],
+                        wg_ip,
+                        wg_ip,
                         label,
                         range_seconds,
                     ),
