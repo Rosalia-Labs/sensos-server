@@ -304,3 +304,43 @@ def test_birdnet_species_weighted_range_anchors_on_site_before_label(monkeypatch
         86400,
     )
     assert "label_mode=weighted" in site["birdnet_species_url"]
+
+
+def test_rank_birdnet_label_aggregates_slices_by_metric():
+    public_ui = load_public_ui_module()
+
+    # (label, count, evidence_weight, avg_score, best_score, avg_occ, best_occ, latest)
+    now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+    rows = [
+        ("Cardinal", 50, 5.0, 0.60, 0.70, 0.40, 0.55, now),
+        ("Wren", 10, 9.0, 0.80, 0.95, 0.90, 0.99, now),
+        ("Jay", 30, 1.0, 0.50, 0.55, 0.10, 0.20, now),
+    ]
+
+    evidence, labels, scores, occupancy = public_ui.rank_birdnet_label_aggregates(rows)
+
+    assert [r[0] for r in evidence] == ["Wren", "Cardinal", "Jay"]  # by evidence_weight
+    assert [r[0] for r in labels] == ["Cardinal", "Jay", "Wren"]    # by detection_count
+    assert [r[0] for r in scores] == ["Wren", "Cardinal", "Jay"]    # by best_score
+    assert [r[0] for r in occupancy] == ["Wren", "Cardinal", "Jay"] # by best_occupancy
+
+    # Column shapes match the four original per-query SELECT lists.
+    assert evidence[0] == ("Wren", 10, 9.0, 0.80, 0.95, now)
+    assert labels[0] == ("Cardinal", 50, 0.70, now)
+    assert scores[0] == ("Wren", 10, 0.80, 0.95)
+    assert occupancy[0] == ("Wren", 10, 0.90, 0.99)
+
+
+def test_rank_birdnet_label_aggregates_drops_null_occupancy_and_limits():
+    public_ui = load_public_ui_module()
+
+    now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+    rows = [(f"Bird {i:02d}", i, None, 0.5, 0.5, None, None, now) for i in range(20)]
+    rows.append(("With occ", 1, 1.0, 0.9, 0.9, 0.9, 0.9, now))
+
+    evidence, labels, scores, occupancy = public_ui.rank_birdnet_label_aggregates(rows)
+
+    assert len(evidence) == 8
+    assert len(labels) == 10
+    assert len(scores) == 10
+    assert occupancy == [("With occ", 1, 0.9, 0.9)]  # null best_occ rows excluded

@@ -615,6 +615,12 @@ def migrate_0_22_0_client_events(cur):
     create_client_events_table(cur)
 
 
+def migrate_0_23_0_birdnet_label_indexes(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_birdnet_detections_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -700,6 +706,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.22.0"),
         name="add client events log",
         apply=migrate_0_22_0_client_events,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.23.0"),
+        name="add birdnet detection label indexes for dashboard queries",
+        apply=migrate_0_23_0_birdnet_label_indexes,
     ),
 ]
 
@@ -1895,6 +1906,23 @@ def create_birdnet_detections_table(cur):
             clip_start_time,
             clip_end_time
         );
+        """
+    )
+    # Public dashboard queries filter a site's detections by species label
+    # (weighted_label for the passive/weighted views, label for raw mode).
+    # Without these, the species time series and the top-species aggregations
+    # scan the whole site history and filter row by row.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_wg_ip_weighted_label
+        ON sensos.birdnet_detections (wireguard_ip, weighted_label, clip_start_time DESC)
+        WHERE weighted_label IS NOT NULL;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_wg_ip_label
+        ON sensos.birdnet_detections (wireguard_ip, label, clip_start_time DESC);
         """
     )
 

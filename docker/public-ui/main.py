@@ -414,6 +414,48 @@ def passive_birdnet_label_sql() -> dict[str, str]:
     return birdnet_label_sql("weighted")
 
 
+def rank_birdnet_label_aggregates(rows):
+    """Turn one per-label aggregate result set into the four top-N slices the
+    site detail page needs. Each aggregate row is
+    (label, detection_count, evidence_weight, average_score, best_score,
+     average_occupancy_score, best_occupancy_score, latest_processed_at).
+    Replaces four near-identical GROUP BY queries against the same filtered set.
+    """
+
+    def num(value) -> float:
+        return float(value) if value is not None else 0.0
+
+    evidence = [
+        (r[0], r[1], r[2], r[3], r[4], r[7])
+        for r in sorted(
+            rows,
+            key=lambda r: (-num(r[2]), -num(r[4]), -r[1], r[0] or ""),
+        )[:8]
+    ]
+    labels = [
+        (r[0], r[1], r[4], r[7])
+        for r in sorted(
+            rows,
+            key=lambda r: (-r[1], -num(r[4]), r[0] or ""),
+        )[:10]
+    ]
+    scores = [
+        (r[0], r[1], r[3], r[4])
+        for r in sorted(
+            rows,
+            key=lambda r: (-num(r[4]), -num(r[3]), -r[1], r[0] or ""),
+        )[:10]
+    ]
+    occupancy = [
+        (r[0], r[1], r[5], r[6])
+        for r in sorted(
+            (r for r in rows if r[6] is not None),
+            key=lambda r: (-num(r[6]), -num(r[5]), -r[1], r[0] or ""),
+        )[:10]
+    ]
+    return evidence, labels, scores, occupancy
+
+
 def window_cutoff_from_latest(
     latest_timestamp: datetime | None,
     window: timedelta | None,
@@ -1512,6 +1554,9 @@ def fetch_site_detail(
             )
             i2c_summary = cur.fetchone()
 
+            # One aggregation over the site's filtered detections instead of four
+            # near-identical GROUP BY scans; the top-N slices differ only in
+            # ordering, and a site rarely has more than a few dozen labels.
             cur.execute(
                 f"""
                 SELECT {selected_label_expr} AS selected_label,
@@ -1519,71 +1564,22 @@ def fetch_site_detail(
                        sum({selected_evidence_expr}) AS evidence_weight,
                        avg({selected_score_expr}) AS average_score,
                        max({selected_score_expr}) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                {birdnet_where}
-                GROUP BY selected_label
-                ORDER BY evidence_weight DESC,
-                         best_score DESC,
-                         detection_count DESC,
-                         selected_label ASC
-                LIMIT 8;
-                """,
-                birdnet_params,
-            )
-            top_birdnet_evidence = cur.fetchall()
-
-            cur.execute(
-                f"""
-                SELECT {selected_label_expr} AS selected_label,
-                       count(*)::integer AS detection_count,
-                       max({selected_score_expr}) AS best_score,
-                       max(processed_at) AS latest_processed_at
-                FROM sensos.public_site_birdnet_detections
-                {birdnet_where}
-                GROUP BY selected_label
-                ORDER BY detection_count DESC, best_score DESC, selected_label ASC
-                LIMIT 10;
-                """,
-                birdnet_params,
-            )
-            top_birdnet_labels = cur.fetchall()
-
-            cur.execute(
-                f"""
-                SELECT {selected_label_expr} AS selected_label,
-                       count(*)::integer AS detection_count,
-                       avg({selected_score_expr}) AS average_score,
-                       max({selected_score_expr}) AS best_score
-                FROM sensos.public_site_birdnet_detections
-                {birdnet_where}
-                GROUP BY selected_label
-                ORDER BY best_score DESC, average_score DESC, detection_count DESC, selected_label ASC
-                LIMIT 10;
-                """,
-                birdnet_params,
-            )
-            top_birdnet_scores = cur.fetchall()
-
-            cur.execute(
-                f"""
-                SELECT {selected_label_expr} AS selected_label,
-                       count(*)::integer AS detection_count,
                        avg({selected_likely_expr}) AS average_occupancy_score,
-                       max({selected_likely_expr}) AS best_occupancy_score
+                       max({selected_likely_expr}) AS best_occupancy_score,
+                       max(processed_at) AS latest_processed_at
                 FROM sensos.public_site_birdnet_detections
                 {birdnet_where}
-                  AND {selected_likely_expr} IS NOT NULL
-                GROUP BY selected_label
-                ORDER BY best_occupancy_score DESC,
-                         average_occupancy_score DESC,
-                         detection_count DESC,
-                         selected_label ASC
-                LIMIT 10;
+                GROUP BY selected_label;
                 """,
                 birdnet_params,
             )
-            top_birdnet_occupancy = cur.fetchall()
+            label_aggregates = cur.fetchall()
+            (
+                top_birdnet_evidence,
+                top_birdnet_labels,
+                top_birdnet_scores,
+                top_birdnet_occupancy,
+            ) = rank_birdnet_label_aggregates(label_aggregates)
 
             volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             cur.execute(
