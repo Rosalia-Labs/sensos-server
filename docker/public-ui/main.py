@@ -479,20 +479,28 @@ def window_cutoff_from_latest(
 
 
 def latest_birdnet_processed_at(cur, wg_ip) -> datetime | None:
-    """Newest detection time for a site.
+    """Newest BirdNET detection time for a site (relative-window anchor).
 
-    Queries the base table directly, not public_site_birdnet_detections: the
-    view's ``deployed_at IS NULL OR clip_start_time >= deployed_at`` filter
-    stops the planner from answering max() with a backward index scan, so
-    through the view this becomes a full scan of the site's history. The
-    anchor is only a relative-window reference, so pre-deployment rows here
-    are harmless.
+    Uses sensos.public_site_birdnet_latest, which has no join and no
+    deployed_at filter, so ``... WHERE wg_ip = X`` resolves to a plain
+    max(clip_start_time) that the planner answers from
+    idx_birdnet_detections_wg_ip_clip_time. Going through
+    public_site_birdnet_detections instead forces a full scan of the site's
+    history because of that view's deployed_at OR-filter.
+
+    Returns None (no window -> all-time) if the view is not present yet, e.g.
+    on a public-ui container that restarted before the controller applied
+    migration 0.24.0.
     """
-    cur.execute(
-        "SELECT max(clip_start_time) FROM sensos.birdnet_detections WHERE wireguard_ip = %s;",
-        (wg_ip,),
-    )
-    return cur.fetchone()[0]
+    try:
+        cur.execute(
+            "SELECT latest_at FROM sensos.public_site_birdnet_latest WHERE wg_ip = %s;",
+            (wg_ip,),
+        )
+    except (psycopg.errors.UndefinedTable, psycopg.errors.InsufficientPrivilege):
+        return None
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 def downsample_points(points: list[dict], limit: int) -> list[dict]:

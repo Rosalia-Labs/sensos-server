@@ -621,6 +621,13 @@ def migrate_0_23_0_birdnet_label_indexes(cur):
     create_birdnet_detections_table(cur)
 
 
+def migrate_0_24_0_birdnet_latest_view(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_public_site_birdnet_latest_view(cur)
+    ensure_public_dashboard_role(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -711,6 +718,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.23.0"),
         name="add birdnet detection label indexes for dashboard queries",
         apply=migrate_0_23_0_birdnet_label_indexes,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.24.0"),
+        name="add public_site_birdnet_latest view for the window anchor",
+        apply=migrate_0_24_0_birdnet_latest_view,
     ),
 ]
 
@@ -2101,6 +2113,27 @@ def create_public_site_birdnet_detections_view(cur):
     )
 
 
+def create_public_site_birdnet_latest_view(cur):
+    """One row per site: the newest BirdNET detection time.
+
+    Deliberately omits the deployed_at cutoff that public_site_birdnet_detections
+    carries: this is only a relative-window reference for the dashboard, and the
+    plain ``max(clip_start_time) WHERE wireguard_ip = X`` shape lets the planner
+    answer it from idx_birdnet_detections_wg_ip_clip_time instead of scanning the
+    whole site history.
+    """
+    cur.execute("DROP VIEW IF EXISTS sensos.public_site_birdnet_latest;")
+    cur.execute(
+        """
+        CREATE OR REPLACE VIEW sensos.public_site_birdnet_latest AS
+        SELECT wireguard_ip AS wg_ip,
+               max(clip_start_time) AS latest_at
+        FROM sensos.birdnet_detections
+        GROUP BY wireguard_ip;
+        """
+    )
+
+
 def create_public_site_i2c_recent_view(cur):
     cur.execute("DROP VIEW IF EXISTS sensos.public_site_i2c_recent;")
     cur.execute(
@@ -2163,6 +2196,7 @@ def ensure_public_dashboard_role(cur):
                 "public_site_map",
                 "public_site_birdnet_recent",
                 "public_site_birdnet_detections",
+                "public_site_birdnet_latest",
                 "public_site_i2c_recent",
             ],
         ),

@@ -369,6 +369,31 @@ def test_birdnet_label_index_migration_reuses_table_definition():
     assert "idx_birdnet_detections_wg_ip_label" in executed
 
 
+def test_public_site_birdnet_latest_view_is_join_free_max():
+    fake_cur = mock.MagicMock()
+
+    core.create_public_site_birdnet_latest_view(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "CREATE OR REPLACE VIEW sensos.public_site_birdnet_latest" in executed
+    assert "max(clip_start_time) AS latest_at" in executed
+    assert "GROUP BY wireguard_ip" in executed
+    assert "JOIN" not in executed
+    assert "deployed_at" not in executed
+
+
+def test_birdnet_latest_view_migration_grants_public_role():
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchone.return_value = (1,)
+    fake_cur.fetchall.return_value = [("public_site_birdnet_latest",)]
+
+    core.migrate_0_24_0_birdnet_latest_view(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "CREATE OR REPLACE VIEW sensos.public_site_birdnet_latest" in executed
+    assert "GRANT SELECT ON sensos.public_site_birdnet_latest TO sensos_public" in executed
+
+
 def test_create_networks_table_reconciles_legacy_wg_public_ip_type():
     fake_cur = mock.MagicMock()
 
