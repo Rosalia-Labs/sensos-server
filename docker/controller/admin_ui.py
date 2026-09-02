@@ -217,6 +217,7 @@ def render_page(
         ("/admin/networks", "Networks"),
         ("/admin/peers", "Clients"),
         ("/admin/checkins", "Check-ins"),
+        ("/admin/events", "Events"),
         ("/admin/wireguard", "WireGuard"),
         ("/admin/sensors", "Sensors"),
         ("/admin/birdnet", "BirdNET"),
@@ -903,6 +904,107 @@ def fetch_network_names() -> list[str]:
             return [row[0] for row in cur.fetchall()]
 
 
+EVENT_SEVERITIES = ("info", "notice", "warning")
+
+
+def fetch_client_event_type_options() -> list[str]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT event_type FROM sensos.client_events ORDER BY event_type;"
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
+def fetch_warning_event_count(days: int = 7) -> int:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM sensos.client_events
+                WHERE severity = 'warning'
+                  AND occurred_at >= NOW() - make_interval(days => %s);
+                """,
+                (days,),
+            )
+            return int(cur.fetchone()[0])
+
+
+def fetch_recent_client_events_rows(
+    limit: int = 200,
+    *,
+    severity: str | None = None,
+    event_type: str | None = None,
+    peer_uuid: str | None = None,
+) -> list[dict]:
+    fetch_limit = max(1, min(limit, 1000))
+    clauses = []
+    params: list = []
+    if severity in EVENT_SEVERITIES:
+        clauses.append("e.severity = %s")
+        params.append(severity)
+    if event_type:
+        clauses.append("e.event_type = %s")
+        params.append(event_type)
+    if peer_uuid:
+        clauses.append("p.uuid::text = %s")
+        params.append(peer_uuid)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(fetch_limit)
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT e.id,
+                       e.occurred_at,
+                       e.server_received_at,
+                       p.uuid::text,
+                       p.wg_ip::text,
+                       n.name,
+                       p.note,
+                       e.hostname,
+                       e.client_version,
+                       e.event_type,
+                       e.severity,
+                       e.details
+                FROM sensos.client_events e
+                JOIN sensos.wireguard_peers p ON p.id = e.peer_id
+                JOIN sensos.networks n ON n.id = p.network_id
+                {where_sql}
+                ORDER BY e.occurred_at DESC, e.id DESC
+                LIMIT %s;
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": row[0],
+            "occurred_at": row[1],
+            "server_received_at": row[2],
+            "peer_uuid": row[3],
+            "wg_ip": row[4],
+            "network_name": row[5],
+            "note": row[6],
+            "hostname": row[7],
+            "client_version": row[8],
+            "event_type": row[9],
+            "severity": row[10],
+            "details": row[11] if isinstance(row[11], dict) else {},
+        }
+        for row in rows
+        if not is_infra_wg_ip(row[4])
+    ]
+
+
+def format_event_details(details: dict) -> str:
+    if not details:
+        return "—"
+    return ", ".join(f"{key}={details[key]}" for key in sorted(details))
+
+
 def fetch_runtime_rows() -> list[dict]:
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1309,6 +1411,7 @@ def overview_page(request: Request, flash: str | None = None):
     all_peers = fetch_peer_rows(sort_by="checkin", direction="desc")
     peers = [row for row in all_peers if row["last_check_in"] is not None][:8]
     recent_status_rows = fetch_recent_client_status_rows(limit=8)
+    warning_events_7d = fetch_warning_event_count(days=7)
     active_peer_count = sum(1 for row in all_peers if row["is_active"])
     reporting_clients = sum(1 for row in all_peers if row["last_check_in"] is not None)
     undeployed_clients = sum(1 for row in all_peers if row["deployed_at"] is None)
@@ -1323,6 +1426,11 @@ def overview_page(request: Request, flash: str | None = None):
   {stat_card("Reporting clients", str(reporting_clients), f'Last check-in {summarize_age(latest_check_in)}.')}
   {stat_card("Not deployed", str(undeployed_clients), "Clients whose public observations are still marked as test data.")}
   {stat_card("Runtime rows", str(overview["runtime_count"]), f'{overview["ready_components"]} ready, {overview["error_components"]} with errors.')}
+  <section class="panel">
+    <div class="stat-value">{warning_events_7d}</div>
+    <div class="stat-label">Warnings (7d)</div>
+    <div class="help"><a href="/admin/events?severity=warning">Warning-severity client events</a> in the last 7 days.</div>
+  </section>
 </div>
 <div class="split compact overview-split">
   <section class="panel">
@@ -1700,6 +1808,7 @@ def peer_config_page(request: Request, peer_uuid: str, flash: str | None = None)
     </div>
   </section>
 </div>
+{_peer_events_panel(row['peer_uuid'])}
 """
     return render_page(
         title=f"Client {row['wg_ip']}",
@@ -1707,6 +1816,30 @@ def peer_config_page(request: Request, peer_uuid: str, flash: str | None = None)
         current_path="/admin/peers",
         flash=flash,
     )
+
+
+def _peer_events_panel(peer_uuid: str) -> str:
+    rows = fetch_recent_client_events_rows(limit=25, peer_uuid=peer_uuid)
+    body_rows = "".join(
+        "<tr>"
+        f"<td><div>{html.escape(summarize_age(row['occurred_at']))}</div>"
+        f"<div class='dim'>{html.escape(format_timestamp(row['occurred_at']))}</div></td>"
+        f"<td class='mono'>{html.escape(row['event_type'])}</td>"
+        f"<td>{badge_for_status(row['severity'])}</td>"
+        f"<td class='mono'>{html.escape(format_event_details(row['details']))}</td>"
+        "</tr>"
+        for row in rows
+    ) or '<tr><td colspan="4" class="dim">No events reported by this client yet.</td></tr>'
+    return f"""
+<section class="panel">
+  <h2 class="section-title">Recent events</h2>
+  <table>
+    <thead><tr><th>When</th><th>Type</th><th>Severity</th><th>Details</th></tr></thead>
+    <tbody>{body_rows}</tbody>
+  </table>
+  <p class="help"><a href="/admin/events">All client events →</a></p>
+</section>
+"""
 
 
 @router.post("/peers/{peer_uuid}/note")
@@ -2045,6 +2178,78 @@ def checkins_page(request: Request, flash: str | None = None):
         title="Check-ins",
         body=body,
         current_path="/admin/checkins",
+        flash=flash,
+    )
+
+
+@router.get("/events", response_class=HTMLResponse)
+def events_page(
+    request: Request,
+    severity: str | None = None,
+    event_type: str | None = None,
+    flash: str | None = None,
+):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    severity = severity if severity in EVENT_SEVERITIES else None
+    type_options = fetch_client_event_type_options()
+    if event_type not in type_options:
+        event_type = None
+
+    rows = fetch_recent_client_events_rows(
+        limit=300, severity=severity, event_type=event_type
+    )
+
+    severity_opts = "".join(
+        f'<option value="{s}"{" selected" if severity == s else ""}>{s}</option>'
+        for s in EVENT_SEVERITIES
+    )
+    type_opts = "".join(
+        f'<option value="{html.escape(t)}"{" selected" if event_type == t else ""}>{html.escape(t)}</option>'
+        for t in type_options
+    )
+
+    body = f"""
+<section class="panel">
+  <h2 class="section-title">Client events</h2>
+  <form method="get" action="/admin/events" class="block" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end">
+    <label>Severity
+      <select name="severity"><option value="">any</option>{severity_opts}</select>
+    </label>
+    <label>Type
+      <select name="event_type"><option value="">any</option>{type_opts}</select>
+    </label>
+    <button type="submit">Filter</button>
+    <a href="/admin/events">Clear</a>
+  </form>
+  <table>
+    <thead>
+      <tr><th>When</th><th>Client</th><th>Network</th><th>Type</th><th>Severity</th><th>Details</th><th>Version</th></tr>
+    </thead>
+    <tbody>
+      {''.join(
+          "<tr>"
+          f"<td><div>{html.escape(summarize_age(row['occurred_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['occurred_at']))}</div></td>"
+          f"<td><a class='mono' href=\"/admin/peers/{quote_plus(row['peer_uuid'])}\">{html.escape(row['wg_ip'])}</a>"
+          f"<div class='dim'>{html.escape((row['note'] or '').strip() or row['hostname'] or '—')}</div></td>"
+          f"<td>{html.escape(row['network_name'])}</td>"
+          f"<td class='mono'>{html.escape(row['event_type'])}</td>"
+          f"<td>{badge_for_status(row['severity'])}</td>"
+          f"<td class='mono'>{html.escape(format_event_details(row['details']))}</td>"
+          f"<td>{html.escape(row['client_version'] or '—')}</td>"
+          "</tr>"
+          for row in rows
+      ) or '<tr><td colspan="7" class="dim">No client events match this filter.</td></tr>'}
+    </tbody>
+  </table>
+</section>
+"""
+    return render_page(
+        title="Events",
+        body=body,
+        current_path="/admin/events",
         flash=flash,
     )
 
