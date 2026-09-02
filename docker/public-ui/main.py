@@ -478,6 +478,23 @@ def window_cutoff_from_latest(
     return latest_timestamp.astimezone(timezone.utc) - window
 
 
+def latest_birdnet_processed_at(cur, wg_ip) -> datetime | None:
+    """Newest detection time for a site.
+
+    Queries the base table directly, not public_site_birdnet_detections: the
+    view's ``deployed_at IS NULL OR clip_start_time >= deployed_at`` filter
+    stops the planner from answering max() with a backward index scan, so
+    through the view this becomes a full scan of the site's history. The
+    anchor is only a relative-window reference, so pre-deployment rows here
+    are harmless.
+    """
+    cur.execute(
+        "SELECT max(clip_start_time) FROM sensos.birdnet_detections WHERE wireguard_ip = %s;",
+        (wg_ip,),
+    )
+    return cur.fetchone()[0]
+
+
 def downsample_points(points: list[dict], limit: int) -> list[dict]:
     if len(points) <= limit:
         return points
@@ -1521,15 +1538,7 @@ def fetch_site_detail(
                 raise HTTPException(status_code=404, detail="Site not found.")
             # Compare against the raw inet column so the wireguard_ip indexes are used.
             lookup_wg_ip = as_inet(row[1])
-            cur.execute(
-                """
-                SELECT max(processed_at)
-                FROM sensos.public_site_birdnet_detections
-                WHERE wg_ip = %s;
-                """,
-                (lookup_wg_ip,),
-            )
-            latest_birdnet_at = cur.fetchone()[0]
+            latest_birdnet_at = latest_birdnet_processed_at(cur, lookup_wg_ip)
             anchored_evidence_cutoff = window_cutoff_from_latest(
                 latest_birdnet_at,
                 evidence_window,
@@ -2265,15 +2274,7 @@ def fetch_site_birdnet_rankings(
             if normalized_label_mode == "weighted":
                 ranking_where += " AND weighted_label IS NOT NULL AND weighted_score IS NOT NULL"
             if range_cutoff is not None:
-                cur.execute(
-                    """
-                    SELECT max(processed_at)
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s;
-                    """,
-                    (ranking_wg_ip,),
-                )
-                latest_birdnet_at = cur.fetchone()[0]
+                latest_birdnet_at = latest_birdnet_processed_at(cur, ranking_wg_ip)
                 anchored_cutoff = window_cutoff_from_latest(
                     latest_birdnet_at, range_cutoff
                 )
@@ -2364,74 +2365,44 @@ def fetch_site_birdnet_species(
             selected_likely_expr = label_sql["likely"]
             volume_expr = "volume" if has_window_volume else "NULL::double precision AS volume"
             wg_ip = as_inet(site["wg_ip"])
-            if range_seconds is None:
-                cur.execute(
-                    f"""
-                    SELECT processed_at,
-                           {selected_score_expr} AS selected_score,
-                           {selected_likely_expr} AS selected_likely_score,
-                           top_label,
-                           top_score,
-                           top_likely_score,
-                           weighted_label,
-                           weighted_score,
-                           weighted_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           {volume_expr}
-                    FROM sensos.public_site_birdnet_detections
-                    WHERE wg_ip = %s
-                      AND {selected_label_expr} = %s
-                      AND {selected_score_expr} IS NOT NULL
-                    ORDER BY processed_at ASC, channel_index, start_sec;
-                    """,
-                    (wg_ip, label),
+
+            species_where = (
+                "WHERE wg_ip = %s"
+                f" AND {selected_label_expr} = %s"
+                f" AND {selected_score_expr} IS NOT NULL"
+            )
+            species_params: tuple = (wg_ip, label)
+            if range_seconds is not None:
+                latest_at = latest_birdnet_processed_at(cur, wg_ip)
+                cutoff = window_cutoff_from_latest(
+                    latest_at, timedelta(seconds=range_seconds)
                 )
-            else:
-                selected_label_expr_d = f"d.{selected_label_expr}"
-                selected_score_expr_d = f"d.{selected_score_expr}"
-                selected_likely_expr_d = f"d.{selected_likely_expr}"
-                cur.execute(
-                    f"""
-                    WITH anchor AS (
-                        SELECT max(processed_at) AS latest_at
-                        FROM sensos.public_site_birdnet_detections
-                        WHERE wg_ip = %s
-                    )
-                    SELECT d.processed_at,
-                           {selected_score_expr_d} AS selected_score,
-                           {selected_likely_expr_d} AS selected_likely_score,
-                           top_label,
-                           top_score,
-                           top_likely_score,
-                           weighted_label,
-                           weighted_score,
-                           weighted_likely_score,
-                           start_sec,
-                           end_sec,
-                           source_path,
-                           channel_index,
-                           {volume_expr}
-                    FROM sensos.public_site_birdnet_detections d
-                    CROSS JOIN anchor a
-                    WHERE d.wg_ip = %s
-                      AND {selected_label_expr_d} = %s
-                      AND {selected_score_expr_d} IS NOT NULL
-                      AND a.latest_at IS NOT NULL
-                      AND d.processed_at >= (
-                          a.latest_at - make_interval(secs => %s)
-                      )
-                    ORDER BY d.processed_at ASC, d.channel_index, d.start_sec;
-                    """,
-                    (
-                        wg_ip,
-                        wg_ip,
-                        label,
-                        range_seconds,
-                    ),
-                )
+                if cutoff is not None:
+                    species_where += " AND processed_at >= %s"
+                    species_params = (wg_ip, label, cutoff)
+
+            cur.execute(
+                f"""
+                SELECT processed_at,
+                       {selected_score_expr} AS selected_score,
+                       {selected_likely_expr} AS selected_likely_score,
+                       top_label,
+                       top_score,
+                       top_likely_score,
+                       weighted_label,
+                       weighted_score,
+                       weighted_likely_score,
+                       start_sec,
+                       end_sec,
+                       source_path,
+                       channel_index,
+                       {volume_expr}
+                FROM sensos.public_site_birdnet_detections
+                {species_where}
+                ORDER BY processed_at ASC, channel_index, start_sec;
+                """,
+                species_params,
+            )
             rows = cur.fetchall()
     score_points = []
     volume_dbfs_points = []
