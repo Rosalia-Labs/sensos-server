@@ -2232,7 +2232,7 @@ def events_page(
       {''.join(
           "<tr>"
           f"<td><div>{html.escape(summarize_age(row['occurred_at']))}</div><div class='dim'>{html.escape(format_timestamp(row['occurred_at']))}</div></td>"
-          f"<td><a class='mono' href=\"/admin/peers/{quote_plus(row['peer_uuid'])}\">{html.escape(row['wg_ip'])}</a>"
+          f"<td><a class='mono' href='/admin/peers/{quote_plus(row['peer_uuid'])}'>{html.escape(row['wg_ip'])}</a>"
           f"<div class='dim'>{html.escape((row['note'] or '').strip() or row['hostname'] or '—')}</div></td>"
           f"<td>{html.escape(row['network_name'])}</td>"
           f"<td class='mono'>{html.escape(row['event_type'])}</td>"
