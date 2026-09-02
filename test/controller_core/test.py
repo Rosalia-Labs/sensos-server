@@ -321,6 +321,29 @@ def test_create_client_status_table_reconciles_legacy_schema():
     assert "CREATE INDEX IF NOT EXISTS idx_client_status_peer_id_last_check_in" in executed
 
 
+def test_create_client_events_table_defines_log_schema():
+    fake_cur = mock.MagicMock()
+
+    core.create_client_events_table(fake_cur)
+
+    executed = "\n".join(call.args[0] for call in fake_cur.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS sensos.client_events" in executed
+    assert "peer_id INTEGER NOT NULL REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE" in executed
+    assert "client_event_id UUID NOT NULL" in executed
+    assert "details JSONB NOT NULL DEFAULT '{}'::jsonb" in executed
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_client_events_dedupe" in executed
+    assert "idx_client_events_peer_occurred" in executed
+
+
+def test_client_events_migration_creates_table():
+    fake_cur = mock.MagicMock()
+
+    core.migrate_0_22_0_client_events(fake_cur)
+
+    executed = "\n".join(str(call.args[0]) for call in fake_cur.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS sensos.client_events" in executed
+
+
 def test_create_networks_table_reconciles_legacy_wg_public_ip_type():
     fake_cur = mock.MagicMock()
 
