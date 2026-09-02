@@ -588,6 +588,69 @@ def test_i2c_readings_upload_returns_receipt(monkeypatch, client):
     }
 
 
+def test_client_events_upload_uses_authenticated_peer(monkeypatch, client):
+    fake_conn = mock.MagicMock()
+    monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
+    seen = {}
+    monkeypatch.setattr(
+        client_api,
+        "store_client_events_upload",
+        lambda conn, upload, peer_id: seen.update(peer_id=peer_id, count=len(upload.events))
+        or {
+            "status": "ok",
+            "accepted_count": len(upload.events),
+            "server_received_at": "2026-04-07T12:00:00Z",
+        },
+    )
+
+    resp = client.post(
+        "/api/v1/client/peer/events",
+        json={
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "sent_at": "2026-04-07T11:59:00Z",
+            "events": [
+                {
+                    "id": "6f1b2c3d-4e5f-4a1b-8c2d-3e4f5a6b7c8d",
+                    "occurred_at": "2026-04-07T11:58:00Z",
+                    "event_type": "boot",
+                    "severity": "notice",
+                    "details": {"kernel": "6.6.0", "boot_id": "abc"},
+                },
+                {
+                    "id": "7f1b2c3d-4e5f-4a1b-8c2d-3e4f5a6b7c8d",
+                    "occurred_at": "2026-04-07T11:58:30Z",
+                    "event_type": "network_config",
+                    "details": {"network": "sensos"},
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["accepted_count"] == 2
+    assert seen == {"peer_id": 123, "count": 2}
+
+
+def test_client_events_upload_rejects_bad_event_type(client):
+    resp = client.post(
+        "/api/v1/client/peer/events",
+        json={
+            "hostname": "sensor-node",
+            "client_version": "1.2.3",
+            "sent_at": "2026-04-07T11:59:00Z",
+            "events": [
+                {
+                    "id": "6f1b2c3d-4e5f-4a1b-8c2d-3e4f5a6b7c8d",
+                    "occurred_at": "2026-04-07T11:58:00Z",
+                    "event_type": "Not A Type",
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 422
+
+
 def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
     fake_conn = mock.MagicMock()
     monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))

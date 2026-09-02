@@ -3,6 +3,7 @@
 
 import base64
 import ipaddress
+import json
 import logging
 import os
 import psycopg
@@ -334,6 +335,7 @@ def create_initial_schema(cur):
     create_runtime_wireguard_status_table(cur)
     create_runtime_operator_keys_table(cur)
     create_i2c_readings_table(cur)
+    create_client_events_table(cur)
 
 
 def migrate_0_6_0_schema_updates(cur):
@@ -607,6 +609,12 @@ def migrate_0_21_0_peer_deployment_cutoffs(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_22_0_client_events(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_client_events_table(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -687,6 +695,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.21.0"),
         name="add per-peer deployment cutoffs to public data views",
         apply=migrate_0_21_0_peer_deployment_cutoffs,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.22.0"),
+        name="add client events log",
+        apply=migrate_0_22_0_client_events,
     ),
 ]
 
@@ -1783,6 +1796,44 @@ def create_i2c_readings_table(cur):
     )
 
 
+def create_client_events_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.client_events (
+            id BIGSERIAL PRIMARY KEY,
+            peer_id INTEGER NOT NULL REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            sent_at TIMESTAMPTZ NOT NULL,
+            server_received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            client_event_id UUID NOT NULL,
+            occurred_at TIMESTAMPTZ NOT NULL,
+            event_type TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            details JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_events_peer_occurred
+        ON sensos.client_events (peer_id, occurred_at DESC, id DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_events_type_occurred
+        ON sensos.client_events (event_type, occurred_at DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_client_events_dedupe
+        ON sensos.client_events (peer_id, client_event_id);
+        """
+    )
+
+
 def create_birdnet_detections_table(cur):
     cur.execute(
         """
@@ -2152,6 +2203,50 @@ def store_i2c_readings_upload(conn, upload, wireguard_ip: str) -> dict:
         "status": "ok",
         "receipt_id": receipt_id,
         "accepted_count": len(upload.readings),
+        "server_received_at": format_rfc3339_utc(received_at),
+    }
+
+
+def store_client_events_upload(conn, upload, peer_id: int) -> dict:
+    received_at = datetime.now(timezone.utc)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO sensos.client_events (
+                    peer_id,
+                    hostname,
+                    client_version,
+                    sent_at,
+                    server_received_at,
+                    client_event_id,
+                    occurred_at,
+                    event_type,
+                    severity,
+                    details
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (peer_id, client_event_id) DO NOTHING;
+                """,
+                [
+                    (
+                        peer_id,
+                        upload.hostname,
+                        upload.client_version,
+                        upload.sent_at,
+                        received_at,
+                        event.id,
+                        event.occurred_at,
+                        event.event_type,
+                        event.severity,
+                        json.dumps(event.details),
+                    )
+                    for event in upload.events
+                ],
+            )
+
+    return {
+        "status": "ok",
+        "accepted_count": len(upload.events),
         "server_received_at": format_rfc3339_utc(received_at),
     }
 

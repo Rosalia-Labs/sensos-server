@@ -18,10 +18,12 @@ from core import (
     register_wireguard_key_in_db,
     search_for_next_available_ip,
     store_birdnet_results_upload,
+    store_client_events_upload,
     store_i2c_readings_upload,
 )
 from models import (
     BirdNETResultsUploadRequest,
+    ClientEventsUploadRequest,
     ClientStatusRequest,
     HardwareProfile,
     I2CReadingsUploadRequest,
@@ -272,6 +274,22 @@ def upload_i2c_readings(
         return error_response(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Failed to store I2C readings upload.",
+        )
+
+
+@router.post("/peer/events")
+def upload_client_events(
+    upload: ClientEventsUploadRequest,
+    peer: dict = Depends(authenticate_peer),
+):
+    try:
+        with get_db() as conn:
+            return store_client_events_upload(conn, upload, peer["peer_id"])
+    except Exception:
+        logger.error("client events upload failed", exc_info=True)
+        return error_response(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to store client events upload.",
         )
 
 

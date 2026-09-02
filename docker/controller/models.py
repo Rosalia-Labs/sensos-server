@@ -143,6 +143,38 @@ class I2CReadingsUploadRequest(BaseModel):
         return _validate_utc_timestamp(value)
 
 
+class ClientEventEntry(BaseModel):
+    id: str  # client-generated UUID, idempotency key
+    occurred_at: datetime
+    event_type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_.-]+$")
+    severity: Literal["info", "notice", "warning"] = "info"
+    details: dict = Field(default_factory=dict)
+
+    @field_validator("id")
+    @classmethod
+    def validate_event_id(cls, value: str) -> str:
+        from uuid import UUID
+
+        return str(UUID(str(value)))
+
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_occurred_at(cls, value: datetime) -> datetime:
+        return _validate_utc_timestamp(value)
+
+
+class ClientEventsUploadRequest(BaseModel):
+    hostname: str
+    client_version: str
+    sent_at: datetime
+    events: list[ClientEventEntry] = Field(min_length=1, max_length=500)
+
+    @field_validator("sent_at")
+    @classmethod
+    def validate_timestamps(cls, value: datetime) -> datetime:
+        return _validate_utc_timestamp(value)
+
+
 class BirdNETDetectionUploadEntry(BaseModel):
     source_path: str
     channel_index: int = Field(ge=0)
