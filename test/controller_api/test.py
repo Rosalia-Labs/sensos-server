@@ -651,6 +651,53 @@ def test_client_events_upload_rejects_bad_event_type(client):
     assert resp.status_code == 422
 
 
+def test_format_event_details_renders_sorted_pairs():
+    import admin_ui
+
+    assert admin_ui.format_event_details({}) == "—"
+    assert admin_ui.format_event_details({"b": "2", "a": "1"}) == "a=1, b=2"
+
+
+def test_fetch_recent_client_events_rows_applies_filters(monkeypatch):
+    import admin_ui
+
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = []
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(
+        admin_ui, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn, __exit__=lambda *a: False)
+    )
+
+    admin_ui.fetch_recent_client_events_rows(
+        limit=50, severity="warning", event_type="service_failure", peer_uuid="peer-123"
+    )
+
+    sql, params = fake_cur.execute.call_args.args
+    assert "e.severity = %s" in sql
+    assert "e.event_type = %s" in sql
+    assert "p.uuid::text = %s" in sql
+    assert params == ("warning", "service_failure", "peer-123", 50)
+
+
+def test_fetch_recent_client_events_rows_without_filters(monkeypatch):
+    import admin_ui
+
+    fake_cur = mock.MagicMock()
+    fake_cur.fetchall.return_value = []
+    fake_conn = mock.MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+    monkeypatch.setattr(
+        admin_ui, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn, __exit__=lambda *a: False)
+    )
+
+    admin_ui.fetch_recent_client_events_rows(limit=5000)
+
+    sql, params = fake_cur.execute.call_args.args
+    assert "WHERE" not in sql
+    assert params == (1000,)  # clamped
+
+
 def test_birdnet_results_upload_returns_receipt(monkeypatch, client):
     fake_conn = mock.MagicMock()
     monkeypatch.setattr(client_api, "get_db", lambda: mock.MagicMock(__enter__=lambda _: fake_conn))
