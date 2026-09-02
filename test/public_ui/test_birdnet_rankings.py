@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 import importlib.util
+import ipaddress
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -264,7 +265,10 @@ def test_birdnet_species_page_uses_raw_or_weighted_label(monkeypatch):
     species_sql = cursor.executed[-1]
     assert "top_label = %s" in species_sql
     assert "weighted_label = %s" not in species_sql
-    assert cursor.params[-1] == ("10.0.1.7", "White-winged Dove (Zenaida asiatica)")
+    assert cursor.params[-1] == (
+        ipaddress.ip_address("10.0.1.7"),
+        "White-winged Dove (Zenaida asiatica)",
+    )
     assert "label_mode=raw" in site["birdnet_species_url"]
 
 
@@ -294,15 +298,23 @@ def test_birdnet_species_weighted_range_anchors_on_site_before_label(monkeypatch
         label_mode="weighted",
     )
 
+    # The window anchor comes from a site-only max() on the base table (not the
+    # species-filtered view), so the range is relative to the site's latest
+    # detection, and it does not scan the whole history through the view.
+    anchor_sql = cursor.executed[-2]
+    assert "max(clip_start_time)" in anchor_sql
+    assert "FROM sensos.birdnet_detections" in anchor_sql
+    assert "weighted_label" not in anchor_sql
+
     species_sql = cursor.executed[-1]
-    assert "d.weighted_label = %s" in species_sql
-    assert "d.weighted_score IS NOT NULL" in species_sql
-    assert cursor.params[-1] == (
-        "10.0.1.7",
-        "10.0.1.7",
-        "White-winged Dove (Zenaida asiatica)",
-        86400,
-    )
+    assert "weighted_label = %s" in species_sql
+    assert "weighted_score IS NOT NULL" in species_sql
+    assert "processed_at >= %s" in species_sql
+    wg, species_label, cutoff = cursor.params[-1]
+    assert wg == ipaddress.ip_address("10.0.1.7")
+    assert species_label == "White-winged Dove (Zenaida asiatica)"
+    # anchor datetime (FakeCursor.fetchone) minus the 1-day window
+    assert cutoff == datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc)
     assert "label_mode=weighted" in site["birdnet_species_url"]
 
 
