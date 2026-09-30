@@ -570,6 +570,12 @@ Behavior:
 
 - serves a standalone public map-first dashboard
 - reads only curated public SQL views through a dedicated read-only database role
-- shows undeployed clients and their observations with a visible test-data status, which is useful during commissioning
+- shows only active, deployed clients on the `biosense` network (`sensos.public_site_map`'s
+  `WHERE is_active AND deployed_at IS NOT NULL AND network = 'biosense'`); bench/test
+  devices and other networks never appear here -- use the admin dashboard for
+  commissioning visibility instead
 - after a deployment timestamp is set, excludes BirdNET and I2C observations recorded before it; raw uploaded records remain stored
 - stays separate from the admin/controller process even though it shares the same repo and compose stack
+- optionally fronted by a `sensos-reverse-proxy` (Caddy) service publishing standard
+  ports 80/443, with automatic HTTPS once `--public-domain` is set via
+  `bin/configure-server` -- see `docs/networking.md`

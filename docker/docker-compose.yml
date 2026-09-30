@@ -173,6 +173,25 @@ services:
     networks:
       - sensos_network
 
+  sensos-reverse-proxy:
+    image: caddy:2-alpine
+    container_name: sensos-reverse-proxy
+    restart: always
+    depends_on:
+      sensos-public-ui:
+        condition: service_healthy
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-:80}
+    volumes:
+      - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - sensos_caddy_data:/data
+      - sensos_caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - sensos_network
+
 volumes:
   sensos_database:
     name: sensos_database
@@ -182,6 +201,10 @@ volumes:
     name: sensos_api_proxy_state
   sensos_ops_state:
     name: sensos_ops_state
+  sensos_caddy_data:
+    name: sensos_caddy_data
+  sensos_caddy_config:
+    name: sensos_caddy_config
 
 networks:
   sensos_network:

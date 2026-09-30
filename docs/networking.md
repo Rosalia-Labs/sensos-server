@@ -10,10 +10,11 @@ The important distinction is:
 
 ## High-Level Model
 
-The server has two relevant externally reachable surfaces:
+The server has three relevant externally reachable surfaces:
 
 1. the HTTP API on the configured API port
 2. one or more WireGuard UDP ports on the Docker host
+3. the public dashboard, optionally fronted by a reverse proxy on ports 80/443
 
 The client uses them differently at different stages:
 
@@ -133,6 +134,43 @@ matching `ufw` rule is:
 ```sh
 sudo ufw allow 8765/tcp
 ```
+
+## Public Dashboard Reverse Proxy
+
+`sensos-public-ui` itself is published only on `127.0.0.1` (`PUBLIC_UI_BIND`,
+`PUBLIC_UI_PORT` in `docker/.env`) -- it is never directly internet-reachable.
+An optional `sensos-reverse-proxy` service (Caddy) sits in front of it,
+publishing the standard ports `80` and `443` on all interfaces, and reaches
+`sensos-public-ui` over the internal Docker network by container name/port
+rather than through that loopback-bound host port.
+
+Set with:
+
+```sh
+./bin/configure-server --public-domain dashboard.example.org
+```
+
+Behavior:
+
+- with `PUBLIC_DOMAIN` set to a real, publicly resolvable hostname, Caddy
+  automatically obtains and renews a Let's Encrypt certificate for it and
+  redirects `:80` to `:443`
+- left unset, the proxy falls back to plain HTTP on `:80` on any interface --
+  useful for standing the proxy up before a domain is pointed at the host
+- `sensos-public-ui` already filters to active, deployed peers on the
+  `biosense` network only (see `sensos.public_site_map`); the proxy does not
+  need its own access control, it only changes how the same filtered view is
+  reached
+
+Operational note:
+
+- prefer standard ports (`80`/`443`) for anything meant to be genuinely
+  public -- some hosting providers flag or quarantine hosts that expose
+  non-standard ports directly to the internet
+- Docker inserts its own iptables rules ahead of `ufw`/`firewalld`, so a
+  published port without an explicit host IP (e.g. `"80:80"`) is reachable
+  regardless of host firewall rules; only an explicit `127.0.0.1:` prefix in
+  `docker-compose.yml` actually restricts a port to loopback
 
 ## Creating A Network
 

@@ -1,0 +1,22 @@
+# Public-facing entry point for the read-only public dashboard.
+#
+# PUBLIC_DOMAIN drives both the listen address and TLS: a real hostname here
+# (e.g. dashboard.example.org) makes Caddy automatically obtain and renew a
+# Let's Encrypt certificate and redirect :80 -> :443. Left unset, it falls
+# back to ":80" (docker-compose.yml default) and serves plain HTTP on any
+# interface -- useful for standing this up before a domain is pointed here.
+#
+# sensos-public-ui is reached over the internal Docker network by container
+# name/port, never through its own host-published (127.0.0.1-only) port.
+{$PUBLIC_DOMAIN}
+
+encode gzip
+
+header {
+	X-Content-Type-Options nosniff
+	X-Frame-Options DENY
+	Referrer-Policy strict-origin-when-cross-origin
+	-Server
+}
+
+reverse_proxy sensos-public-ui:8780

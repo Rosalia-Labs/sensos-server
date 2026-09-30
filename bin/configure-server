@@ -16,6 +16,7 @@ DEFAULT_ADMIN_API_PASSWORD="sensos-admin"
 DEFAULT_CLIENT_API_PASSWORD="sensos-client"
 DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
 DEFAULT_UI_THEME=""
+DEFAULT_PUBLIC_DOMAIN=""
 
 read_existing_env() {
     local key="$1"
@@ -45,6 +46,7 @@ Options:
   --client-api-password PWD Set client API password (default: $DEFAULT_CLIENT_API_PASSWORD)
   --public-db-password PWD Set read-only public dashboard DB password (default: $DEFAULT_PUBLIC_DB_PASSWORD)
   --ui-theme THEME         Optional UI theme override: default | vscode-dark (omitted: built-in default)
+  --public-domain DOMAIN   Hostname for the public dashboard reverse proxy; enables automatic HTTPS (omitted: plain HTTP on port 80, no domain yet)
   -h, --help               Show this help message
 EOF
     exit 0
@@ -85,6 +87,10 @@ while [[ $# -gt 0 ]]; do
         UI_THEME="$2"
         shift 2
         ;;
+    --public-domain)
+        PUBLIC_DOMAIN="$2"
+        shift 2
+        ;;
     -h | --help)
         print_help
         ;;
@@ -107,6 +113,7 @@ EXISTING_ADMIN_API_PASSWORD="$(read_existing_env ADMIN_API_PASSWORD)"
 EXISTING_CLIENT_API_PASSWORD="$(read_existing_env CLIENT_API_PASSWORD)"
 EXISTING_PUBLIC_DB_PASSWORD="$(read_existing_env PUBLIC_DB_PASSWORD)"
 EXISTING_UI_THEME="$(read_existing_env SENSOS_UI_THEME)"
+EXISTING_PUBLIC_DOMAIN="$(read_existing_env PUBLIC_DOMAIN)"
 
 # Set defaults if variables not provided
 API_PORT=${API_PORT:-${EXISTING_API_PORT:-$DEFAULT_API_PORT}}
@@ -118,6 +125,7 @@ ADMIN_API_PASSWORD=${ADMIN_API_PASSWORD:-${EXISTING_ADMIN_API_PASSWORD:-$DEFAULT
 CLIENT_API_PASSWORD=${CLIENT_API_PASSWORD:-${EXISTING_CLIENT_API_PASSWORD:-$DEFAULT_CLIENT_API_PASSWORD}}
 PUBLIC_DB_PASSWORD=${PUBLIC_DB_PASSWORD:-${EXISTING_PUBLIC_DB_PASSWORD:-$DEFAULT_PUBLIC_DB_PASSWORD}}
 UI_THEME=${UI_THEME:-${EXISTING_UI_THEME:-$DEFAULT_UI_THEME}}
+PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-${EXISTING_PUBLIC_DOMAIN:-$DEFAULT_PUBLIC_DOMAIN}}
 
 if [[ "${QEMU_TESTING:-0}" == "1" ]]; then
     API_BIND=0.0.0.0
@@ -165,6 +173,10 @@ EOF
 
 if [[ -n "${UI_THEME}" ]]; then
     echo "SENSOS_UI_THEME=${UI_THEME}" >> .env
+fi
+
+if [[ -n "${PUBLIC_DOMAIN}" ]]; then
+    echo "PUBLIC_DOMAIN=${PUBLIC_DOMAIN}" >> .env
 fi
 
 chmod 600 .env
