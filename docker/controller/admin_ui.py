@@ -829,7 +829,13 @@ def fetch_peer_rows(
     sorters = {
         "network": lambda row: ((row["network_name"] or "").lower(), row["wg_ip"]),
         "host": lambda row: ((row["peer_hostname"] or "").lower(), row["wg_ip"]),
+        # Active peers before inactive, deployed before not-deployed, then
+        # most recent check-in first within each group -- so a long-inactive
+        # peer's stale-but-recent-relative-to-other-stale-peers check-in
+        # can't outrank an active, currently-deployed one.
         "checkin": lambda row: (
+            row["is_active"],
+            row["deployed_at"] is not None,
             row["last_check_in"] or datetime.min.replace(tzinfo=timezone.utc),
             row["wg_ip"],
         ),
@@ -1041,6 +1047,12 @@ def fetch_runtime_rows() -> list[dict]:
                     "public_key": peer.get("public_key", "—"),
                     "allowed_ips": peer.get("allowed ips", "—"),
                     "endpoint": peer.get("endpoint", "—"),
+                    # Raw "N units ago" text from `wg show`, kept alongside
+                    # the normalized display string below -- age/bucket
+                    # computation needs this relative form; normalize_handshake
+                    # converts it to an absolute timestamp, which
+                    # parse_handshake_age_seconds can no longer parse.
+                    "last_contact_raw": peer.get("latest handshake", "—"),
                     "last_contact": normalize_handshake(
                         peer.get("latest handshake", "—")
                     ),
@@ -1068,7 +1080,7 @@ def fetch_wireguard_peer_health_rows() -> list[dict]:
                 continue
             peer_meta = peer_by_ip.get(allowed_ip, {})
             last_handshake = peer.get("last_contact", "—")
-            age_seconds = parse_handshake_age_seconds(peer.get("last_contact", ""))
+            age_seconds = parse_handshake_age_seconds(peer.get("last_contact_raw", ""))
             bucket = handshake_bucket(last_handshake, age_seconds)
             health_rows.append(
                 {
@@ -1108,9 +1120,12 @@ def fetch_wireguard_peer_health_rows() -> list[dict]:
         elif prev is not None and curr is not None and curr < prev:
             deduped[row["wg_ip"]] = row
     rows = list(deduped.values())
+    # Most recent handshake first; peers with no known age (never handshaked,
+    # or unparseable) sort last, not first -- there's no "recency" to rank
+    # them by.
     rows.sort(
         key=lambda row: (
-            0 if row["handshake_age_seconds"] is None else 1,
+            1 if row["handshake_age_seconds"] is None else 0,
             row["handshake_age_seconds"] if row["handshake_age_seconds"] is not None else 10**12,
         )
     )
