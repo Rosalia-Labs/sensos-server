@@ -60,6 +60,10 @@ RUNTIME_ROLE_OPS = "ops"
 PUBLIC_WG_PORT_START = 51281
 PUBLIC_WG_PORT_END = 51289
 PUBLIC_DB_ROLE = "sensos_public"
+# The public dashboard shows only deployed, active devices on this one
+# network -- bench/test devices (other networks, or biosense peers not yet
+# deployed) never appear on it, regardless of what's registered server-side.
+PUBLIC_NETWORK_NAME = "biosense"
 ADMIN_ROLE_OWNER = "owner"
 ADMIN_ROLE_OPERATOR = "operator"
 ADMIN_ROLE_VIEWER = "viewer"
@@ -628,6 +632,12 @@ def migrate_0_24_0_birdnet_latest_view(cur):
     ensure_public_dashboard_role(cur)
 
 
+def migrate_0_25_0_public_site_map_deployed_filter(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    create_public_site_map_view(cur)
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -723,6 +733,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.24.0"),
         name="add public_site_birdnet_latest view for the window anchor",
         apply=migrate_0_24_0_birdnet_latest_view,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.25.0"),
+        name="restrict public_site_map to active, deployed biosense peers",
+        apply=migrate_0_25_0_public_site_map_deployed_filter,
     ),
 ]
 
@@ -2008,49 +2023,62 @@ def create_public_sites_view(cur):
 
 
 def create_public_site_map_view(cur):
-    """Create the lightweight map view without scanning telemetry history."""
+    """Create the lightweight map view without scanning telemetry history.
+
+    Every public-ui lookup resolves through this one view (either directly,
+    like the map itself, or via fetch_site_detail() as the first step of
+    every /sites/{id}/... drill-down page, which 404s if the row isn't
+    here) -- so filtering here is the single chokepoint that keeps
+    bench/test devices and other networks off the public site entirely,
+    without needing the same filter repeated in every other public_site_*
+    view."""
     cur.execute(
-        """
-        CREATE OR REPLACE VIEW sensos.public_site_map AS
-        WITH latest_status AS (
-            SELECT DISTINCT ON (peer_id)
-                peer_id,
-                last_check_in,
-                hostname,
-                version,
-                status_message
-            FROM sensos.client_status
-            ORDER BY peer_id, last_check_in DESC
-        ),
-        latest_location AS (
-            SELECT DISTINCT ON (peer_id)
-                peer_id,
-                recorded_at,
-                public.ST_Y(location::public.geometry)::float AS latitude,
-                public.ST_X(location::public.geometry)::float AS longitude
-            FROM sensos.peer_locations
-            ORDER BY peer_id, recorded_at DESC
-        )
-        SELECT p.uuid::text AS peer_uuid,
-               host(p.wg_ip)::text AS wg_ip,
-               n.name AS network_name,
-               p.note,
-               coalesce(nullif(p.note, ''), host(p.wg_ip)::text) AS site_label,
-               p.is_active,
-               p.registered_at,
-               ll.recorded_at AS location_recorded_at,
-               ll.latitude,
-               ll.longitude,
-               ls.last_check_in,
-               ls.hostname,
-               ls.version,
-               ls.status_message,
-               p.deployed_at
-        FROM sensos.wireguard_peers p
-        JOIN sensos.networks n ON n.id = p.network_id
-        LEFT JOIN latest_status ls ON ls.peer_id = p.id
-        LEFT JOIN latest_location ll ON ll.peer_id = p.id;
-        """
+        sql.SQL(
+            """
+            CREATE OR REPLACE VIEW sensos.public_site_map AS
+            WITH latest_status AS (
+                SELECT DISTINCT ON (peer_id)
+                    peer_id,
+                    last_check_in,
+                    hostname,
+                    version,
+                    status_message
+                FROM sensos.client_status
+                ORDER BY peer_id, last_check_in DESC
+            ),
+            latest_location AS (
+                SELECT DISTINCT ON (peer_id)
+                    peer_id,
+                    recorded_at,
+                    public.ST_Y(location::public.geometry)::float AS latitude,
+                    public.ST_X(location::public.geometry)::float AS longitude
+                FROM sensos.peer_locations
+                ORDER BY peer_id, recorded_at DESC
+            )
+            SELECT p.uuid::text AS peer_uuid,
+                   host(p.wg_ip)::text AS wg_ip,
+                   n.name AS network_name,
+                   p.note,
+                   coalesce(nullif(p.note, ''), host(p.wg_ip)::text) AS site_label,
+                   p.is_active,
+                   p.registered_at,
+                   ll.recorded_at AS location_recorded_at,
+                   ll.latitude,
+                   ll.longitude,
+                   ls.last_check_in,
+                   ls.hostname,
+                   ls.version,
+                   ls.status_message,
+                   p.deployed_at
+            FROM sensos.wireguard_peers p
+            JOIN sensos.networks n ON n.id = p.network_id
+            LEFT JOIN latest_status ls ON ls.peer_id = p.id
+            LEFT JOIN latest_location ll ON ll.peer_id = p.id
+            WHERE p.is_active
+              AND p.deployed_at IS NOT NULL
+              AND n.name = {network_name};
+            """
+        ).format(network_name=sql.Literal(PUBLIC_NETWORK_NAME))
     )
 
 
