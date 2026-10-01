@@ -144,11 +144,21 @@ publishing the standard ports `80` and `443` on all interfaces, and reaches
 `sensos-public-ui` over the internal Docker network by container name/port
 rather than through that loopback-bound host port.
 
+This is the one service in the stack that binds ports to all interfaces, so
+it is opt-in and **disabled by default** -- pulling latest and restarting
+does not expose it on its own.
+
 Set with:
 
 ```sh
-./bin/configure-server --public-domain dashboard.example.org
+./bin/configure-server --enable-public-proxy --public-domain dashboard.example.org
+./bin/configure-server --disable-public-proxy   # back to disabled (default)
 ```
+
+`--enable-public-proxy`/`--disable-public-proxy` write `COMPOSE_PROFILES` in
+`docker/.env`; Compose reads it natively, so `sensos-reverse-proxy` only
+starts when that profile is present. Re-running `configure-server` without
+either flag preserves whatever was last set.
 
 Behavior:
 

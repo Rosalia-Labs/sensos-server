@@ -17,6 +17,7 @@ DEFAULT_CLIENT_API_PASSWORD="sensos-client"
 DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
 DEFAULT_UI_THEME=""
 DEFAULT_PUBLIC_DOMAIN=""
+DEFAULT_PUBLIC_PROXY_ENABLED=false
 
 read_existing_env() {
     local key="$1"
@@ -47,6 +48,8 @@ Options:
   --public-db-password PWD Set read-only public dashboard DB password (default: $DEFAULT_PUBLIC_DB_PASSWORD)
   --ui-theme THEME         Optional UI theme override: default | vscode-dark (omitted: built-in default)
   --public-domain DOMAIN   Hostname for the public dashboard reverse proxy; enables automatic HTTPS (omitted: plain HTTP on port 80, no domain yet)
+  --enable-public-proxy    Expose the public dashboard on ports 80/443 via the reverse proxy (default: disabled)
+  --disable-public-proxy   Keep the public dashboard off ports 80/443 (default)
   -h, --help               Show this help message
 EOF
     exit 0
@@ -91,6 +94,14 @@ while [[ $# -gt 0 ]]; do
         PUBLIC_DOMAIN="$2"
         shift 2
         ;;
+    --enable-public-proxy)
+        PUBLIC_PROXY_ENABLED=true
+        shift
+        ;;
+    --disable-public-proxy)
+        PUBLIC_PROXY_ENABLED=false
+        shift
+        ;;
     -h | --help)
         print_help
         ;;
@@ -114,6 +125,12 @@ EXISTING_CLIENT_API_PASSWORD="$(read_existing_env CLIENT_API_PASSWORD)"
 EXISTING_PUBLIC_DB_PASSWORD="$(read_existing_env PUBLIC_DB_PASSWORD)"
 EXISTING_UI_THEME="$(read_existing_env SENSOS_UI_THEME)"
 EXISTING_PUBLIC_DOMAIN="$(read_existing_env PUBLIC_DOMAIN)"
+EXISTING_COMPOSE_PROFILES="$(read_existing_env COMPOSE_PROFILES)"
+if [[ ",${EXISTING_COMPOSE_PROFILES}," == *,public-proxy,* ]]; then
+    EXISTING_PUBLIC_PROXY_ENABLED=true
+else
+    EXISTING_PUBLIC_PROXY_ENABLED=false
+fi
 
 # Set defaults if variables not provided
 API_PORT=${API_PORT:-${EXISTING_API_PORT:-$DEFAULT_API_PORT}}
@@ -126,6 +143,7 @@ CLIENT_API_PASSWORD=${CLIENT_API_PASSWORD:-${EXISTING_CLIENT_API_PASSWORD:-$DEFA
 PUBLIC_DB_PASSWORD=${PUBLIC_DB_PASSWORD:-${EXISTING_PUBLIC_DB_PASSWORD:-$DEFAULT_PUBLIC_DB_PASSWORD}}
 UI_THEME=${UI_THEME:-${EXISTING_UI_THEME:-$DEFAULT_UI_THEME}}
 PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-${EXISTING_PUBLIC_DOMAIN:-$DEFAULT_PUBLIC_DOMAIN}}
+PUBLIC_PROXY_ENABLED=${PUBLIC_PROXY_ENABLED:-${EXISTING_PUBLIC_PROXY_ENABLED:-$DEFAULT_PUBLIC_PROXY_ENABLED}}
 
 if [[ "${QEMU_TESTING:-0}" == "1" ]]; then
     API_BIND=0.0.0.0
@@ -177,6 +195,13 @@ fi
 
 if [[ -n "${PUBLIC_DOMAIN}" ]]; then
     echo "PUBLIC_DOMAIN=${PUBLIC_DOMAIN}" >> .env
+fi
+
+if [[ "${PUBLIC_PROXY_ENABLED}" == "true" ]]; then
+    echo "COMPOSE_PROFILES=public-proxy" >> .env
+    echo "⚠️  Public dashboard reverse proxy ENABLED: ports 80/443 will be exposed on all interfaces."
+else
+    echo "ℹ️  Public dashboard reverse proxy disabled (default). Use --enable-public-proxy to expose ports 80/443."
 fi
 
 chmod 600 .env

@@ -217,7 +217,18 @@ def client_status(
                 ),
             )
             conn.commit()
-    return {"message": "Client status updated successfully"}
+
+            cur.execute(
+                "SELECT auto_upgrade_enabled FROM sensos.networks WHERE id = %s;",
+                (peer["network_id"],),
+            )
+            row = cur.fetchone()
+            auto_upgrade_enabled = bool(row[0]) if row else False
+
+    return {
+        "message": "Client status updated successfully",
+        "auto_upgrade_enabled": auto_upgrade_enabled,
+    }
 
 
 @router.put("/peer/hardware-profile")

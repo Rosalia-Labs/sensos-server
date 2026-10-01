@@ -638,6 +638,17 @@ def migrate_0_25_0_public_site_map_deployed_filter(cur):
     create_public_site_map_view(cur)
 
 
+def migrate_0_26_0_network_auto_upgrade(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    cur.execute(
+        """
+        ALTER TABLE sensos.networks
+        ADD COLUMN IF NOT EXISTS auto_upgrade_enabled BOOLEAN NOT NULL DEFAULT false;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -739,6 +750,11 @@ SCHEMA_MIGRATIONS = [
         name="restrict public_site_map to active, deployed biosense peers",
         apply=migrate_0_25_0_public_site_map_deployed_filter,
     ),
+    SchemaMigration(
+        version=parse_version_key("0.26.0"),
+        name="add per-network auto-upgrade rollout gate",
+        apply=migrate_0_26_0_network_auto_upgrade,
+    ),
 ]
 
 
@@ -814,7 +830,7 @@ def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, wg_ip::text, api_password_hash
+                SELECT id, wg_ip::text, api_password_hash, network_id
                 FROM sensos.wireguard_peers
                 WHERE uuid = %s;
                 """,
@@ -826,7 +842,12 @@ def authenticate_peer(credentials: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not verify_peer_api_password(credentials.password, row[2]):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"peer_id": row[0], "peer_uuid": peer_uuid, "wg_ip": row[1]}
+    return {
+        "peer_id": row[0],
+        "peer_uuid": peer_uuid,
+        "wg_ip": row[1],
+        "network_id": row[3],
+    }
 
 
 def get_network_details(network_name: str):
@@ -1054,6 +1075,32 @@ def update_network_endpoint(
         "wg_public_ip": updated[3],
         "wg_port": updated[4],
         "wg_public_key": updated[5],
+    }
+
+
+def update_network_auto_upgrade(cur: Cursor, name: str, enabled: bool) -> dict:
+    """Per-network rollout gate: a client only self-triggers ./upgrade from
+    its daily check-in once its own network has this set. Deliberately a
+    plain boolean, not a pinned target version -- ./upgrade is already a
+    no-op when its git HEAD doesn't move, so the gate only needs to answer
+    "is this network allowed to pull now", not "pull exactly what"."""
+    cur.execute(
+        """
+        UPDATE sensos.networks
+        SET auto_upgrade_enabled = %s
+        WHERE name = %s
+        RETURNING id, name, auto_upgrade_enabled;
+        """,
+        (enabled, name),
+    )
+    updated = cur.fetchone()
+    if not updated:
+        raise RuntimeError(f"network '{name}' does not exist")
+
+    return {
+        "id": updated[0],
+        "name": updated[1],
+        "auto_upgrade_enabled": updated[2],
     }
 
 

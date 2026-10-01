@@ -20,6 +20,7 @@ from core import (
     require_admin_write,
     set_admin_user_active,
     set_peer_active_state,
+    update_network_auto_upgrade,
     update_network_endpoint,
     upsert_admin_user,
     wait_for_network_ready,
@@ -31,6 +32,7 @@ from models import (
     SetAdminUserActiveRequest,
     SetPeerActiveRequest,
     UpsertAdminUserRequest,
+    UpdateNetworkAutoUpgradeRequest,
     UpdateNetworkEndpointRequest,
 )
 
@@ -167,6 +169,25 @@ def create_network(request: CreateNetworkRequest, credentials=Depends(require_ad
                 "wg_public_ip": ready[3],
                 "wg_port": ready[4],
             }
+        return result
+    except RuntimeError as exc:
+        return error_response(status.HTTP_409_CONFLICT, str(exc))
+    except Exception as exc:
+        return error_response(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
+
+
+@router.put("/networks/{network_name}/auto-upgrade")
+def update_network_auto_upgrade_route(
+    network_name: str,
+    request: UpdateNetworkAutoUpgradeRequest,
+    credentials=Depends(require_admin_write),
+):
+    try:
+        with get_db() as conn:
+            result = update_network_auto_upgrade(
+                conn.cursor(), network_name, request.enabled
+            )
+            conn.commit()
         return result
     except RuntimeError as exc:
         return error_response(status.HTTP_409_CONFLICT, str(exc))

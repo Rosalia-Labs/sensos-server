@@ -43,6 +43,10 @@ class UpdateNetworkEndpointRequest(BaseModel):
     wg_port: int = Field(ge=1, le=65535)
 
 
+class UpdateNetworkAutoUpgradeRequest(BaseModel):
+    enabled: bool
+
+
 class UpsertAdminUserRequest(BaseModel):
     username: str
     role: Literal["owner", "operator", "viewer"]
