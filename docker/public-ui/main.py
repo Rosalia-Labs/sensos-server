@@ -79,7 +79,7 @@ BIRDNET_RANKING_WEIGHTING = {
 
 BIRDNET_LABEL_MODES = {
     "weighted": {"label": "Score x likelihood label"},
-    "raw": {"label": "Raw score label"},
+    "raw": {"label": "BirdNET score"},
 }
 
 
@@ -334,13 +334,13 @@ def normalize_birdnet_ranking_statistic(value: str | None) -> str:
 
 
 def normalize_birdnet_ranking_weight(value: str | None) -> str:
-    candidate = (value or "yes").strip().lower()
-    return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "yes"
+    candidate = (value or "no").strip().lower()
+    return candidate if candidate in BIRDNET_RANKING_WEIGHTING else "no"
 
 
 def normalize_birdnet_label_mode(value: str | None) -> str:
-    candidate = (value or "weighted").strip().lower()
-    return candidate if candidate in BIRDNET_LABEL_MODES else "weighted"
+    candidate = (value or "raw").strip().lower()
+    return candidate if candidate in BIRDNET_LABEL_MODES else "raw"
 
 
 def build_url(path: str, **params: str | None) -> str:
@@ -422,7 +422,7 @@ def birdnet_label_sql(
 
 def passive_birdnet_label_sql() -> dict[str, str]:
     """Use the score-by-likelihood winner for views without a label selector."""
-    return birdnet_label_sql("weighted")
+    return birdnet_label_sql("raw")
 
 
 def rank_birdnet_label_aggregates(rows):
