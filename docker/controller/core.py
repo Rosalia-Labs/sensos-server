@@ -2477,20 +2477,58 @@ def _utcnow_text() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _chown_like_audio_root(*paths: str) -> None:
+    """This container runs as root, so anything it writes into the
+    bind-mounted BIRDNET_AUDIO_ROOT would otherwise land root:root on the
+    host -- even though the directory itself is already owned by whichever
+    unprivileged host account manages this data (BIRDNET_AUDIO_ROOT is
+    created outside the container, by start-server, as that account).
+    Matches new files/directories to that existing ownership instead of
+    hardcoding a uid/gid, so it's correct on any deployment. Best-effort:
+    a chown failure shouldn't block the data itself from being stored."""
+    try:
+        root_stat = os.stat(BIRDNET_AUDIO_ROOT)
+    except OSError as exc:
+        logger.warning("could not stat %s to match ownership: %s", BIRDNET_AUDIO_ROOT, exc)
+        return
+    for path in paths:
+        try:
+            os.chown(path, root_stat.st_uid, root_stat.st_gid)
+        except OSError as exc:
+            logger.warning("could not chown %s to match %s: %s", path, BIRDNET_AUDIO_ROOT, exc)
+
+
+def _sqlite_sidecar_paths(db_path: str) -> list[str]:
+    """WAL mode creates -wal/-shm files alongside the main db file; both need
+    the same ownership treatment, and only exist once something's been
+    written, so this is resolved fresh each time rather than assumed."""
+    return [p for p in (f"{db_path}-wal", f"{db_path}-shm") if os.path.exists(p)]
+
+
 def upsert_client_manifest_entry(
     peer_id: int,
     peer_uuid: str,
     wg_ip: str,
     network_name: Optional[str],
     hostname: Optional[str],
+    deployed_at: Optional[datetime],
 ) -> None:
     """Root-level manifest: what does the numbered directory <peer_id> mean?
     Lives next to the per-client directories (not inside Postgres), so it
     survives independently of the database -- same filesystem, same backup,
-    same ZFS snapshot as the audio itself."""
+    same ZFS snapshot as the audio itself.
+
+    deployed_at is a single current-state fact (when this client's present
+    deployment period started), so it's reasonable to keep here. Location is
+    deliberately NOT here: a client can be physically relocated, and
+    peer_locations is a history for exactly that reason -- a single location
+    field on this table would silently go stale or misrepresent older clips
+    the moment a device moves. Location belongs with each clip instead, as of
+    that clip's own recording time (see append_clip_manifest_entry)."""
     db_path = os.path.join(BIRDNET_AUDIO_ROOT, "clients.db")
     os.makedirs(BIRDNET_AUDIO_ROOT, exist_ok=True)
     now = _utcnow_text()
+    deployed_at_text = deployed_at.isoformat() if deployed_at else None
     manifest_conn = _manifest_db_connect(db_path)
     try:
         manifest_conn.execute(
@@ -2501,6 +2539,7 @@ def upsert_client_manifest_entry(
                 wg_ip TEXT,
                 network_name TEXT,
                 hostname TEXT,
+                deployed_at TEXT,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL
             );
@@ -2508,29 +2547,41 @@ def upsert_client_manifest_entry(
         )
         manifest_conn.execute(
             """
-            INSERT INTO clients (peer_id, peer_uuid, wg_ip, network_name, hostname, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO clients (peer_id, peer_uuid, wg_ip, network_name, hostname, deployed_at, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (peer_id) DO UPDATE SET
                 peer_uuid = excluded.peer_uuid,
                 wg_ip = excluded.wg_ip,
                 network_name = excluded.network_name,
                 hostname = COALESCE(excluded.hostname, clients.hostname),
+                deployed_at = excluded.deployed_at,
                 last_seen_at = excluded.last_seen_at;
             """,
-            (peer_id, peer_uuid, wg_ip, network_name, hostname, now, now),
+            (peer_id, peer_uuid, wg_ip, network_name, hostname, deployed_at_text, now, now),
         )
         manifest_conn.commit()
     finally:
         manifest_conn.close()
+    _chown_like_audio_root(db_path, *_sqlite_sidecar_paths(db_path))
 
 
 def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
     """Per-client manifest, living inside that client's own clip directory:
     ties every clip filename (just a detection id) back to its label, score,
-    and timing, independently of Postgres. Mirrors the client's own local
-    birdnet.db in spirit -- metadata that stays with the files it describes."""
-    db_path = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id), "manifest.db")
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    timing, and location, independently of Postgres. Mirrors the client's own
+    local birdnet.db in spirit -- metadata that stays with the files it
+    describes.
+
+    latitude/longitude are the client's location as of THIS clip's own
+    clip_start_time (see the as-of query in store_birdnet_audio_clip), not
+    wherever the client happens to be now -- a client can relocate, and a
+    clip always belongs to where it was actually recorded."""
+    peer_dir = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id))
+    db_path = os.path.join(peer_dir, "manifest.db")
+    peer_dir_existed = os.path.isdir(peer_dir)
+    os.makedirs(peer_dir, exist_ok=True)
+    if not peer_dir_existed:
+        _chown_like_audio_root(peer_dir)
     manifest_conn = _manifest_db_connect(db_path)
     try:
         manifest_conn.execute(
@@ -2548,6 +2599,8 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
                 channel_index INTEGER NOT NULL,
                 clip_start_time TEXT NOT NULL,
                 clip_end_time TEXT NOT NULL,
+                latitude REAL,
+                longitude REAL,
                 uploaded_at TEXT NOT NULL
             );
             """
@@ -2557,10 +2610,13 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
             INSERT INTO clips (
                 detection_id, clip_filename, label, score, likely_score,
                 weighted_label, weighted_score, weighted_likely_score, volume,
-                channel_index, clip_start_time, clip_end_time, uploaded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                channel_index, clip_start_time, clip_end_time,
+                latitude, longitude, uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (detection_id) DO UPDATE SET
                 clip_filename = excluded.clip_filename,
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
                 uploaded_at = excluded.uploaded_at;
             """,
             (
@@ -2576,12 +2632,15 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
                 clip["channel_index"],
                 clip["clip_start_time"],
                 clip["clip_end_time"],
+                clip.get("latitude"),
+                clip.get("longitude"),
                 _utcnow_text(),
             ),
         )
         manifest_conn.commit()
     finally:
         manifest_conn.close()
+    _chown_like_audio_root(db_path, *_sqlite_sidecar_paths(db_path))
 
 
 def store_birdnet_audio_clip(
@@ -2633,12 +2692,16 @@ def store_birdnet_audio_clip(
         ) = row
 
         peer_dir = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id))
+        peer_dir_existed = os.path.isdir(peer_dir)
         os.makedirs(peer_dir, exist_ok=True)
+        if not peer_dir_existed:
+            _chown_like_audio_root(peer_dir)
         clip_filename = f"{detection_id}.flac"
         relative_path = f"{peer_id}/{clip_filename}"
         absolute_path = os.path.join(BIRDNET_AUDIO_ROOT, relative_path)
         with open(absolute_path, "wb") as f:
             f.write(audio_bytes)
+        _chown_like_audio_root(absolute_path)
 
         cur.execute(
             "UPDATE sensos.birdnet_detections SET clip_path = %s WHERE id = %s;",
@@ -2647,7 +2710,7 @@ def store_birdnet_audio_clip(
 
         cur.execute(
             """
-            SELECT n.name,
+            SELECT n.name, p.deployed_at,
                    (SELECT hostname FROM sensos.client_status
                     WHERE peer_id = %s ORDER BY last_check_in DESC LIMIT 1)
             FROM sensos.wireguard_peers p
@@ -2657,11 +2720,31 @@ def store_birdnet_audio_clip(
             (peer_id, peer_id),
         )
         identity_row = cur.fetchone()
-        network_name, hostname = identity_row if identity_row else (None, None)
+        network_name, deployed_at, hostname = (
+            identity_row if identity_row else (None, None, None)
+        )
+
+        # Location as of THIS clip's own recording time, not wherever the
+        # client is now -- it can relocate, and a clip belongs to where it
+        # was actually recorded. Latest location at or before clip_start_time.
+        cur.execute(
+            """
+            SELECT ST_Y(location::geometry), ST_X(location::geometry)
+            FROM sensos.peer_locations
+            WHERE peer_id = %s AND recorded_at <= %s
+            ORDER BY recorded_at DESC
+            LIMIT 1;
+            """,
+            (peer_id, clip_start_time),
+        )
+        location_row = cur.fetchone()
+        latitude, longitude = location_row if location_row else (None, None)
 
         conn.commit()
 
-    upsert_client_manifest_entry(peer_id, peer_uuid, wg_ip, network_name, hostname)
+    upsert_client_manifest_entry(
+        peer_id, peer_uuid, wg_ip, network_name, hostname, deployed_at
+    )
     append_clip_manifest_entry(
         peer_id,
         {
@@ -2677,6 +2760,8 @@ def store_birdnet_audio_clip(
             "channel_index": channel_index,
             "clip_start_time": clip_start_time.isoformat(),
             "clip_end_time": clip_end_time.isoformat(),
+            "latitude": latitude,
+            "longitude": longitude,
         },
     )
 

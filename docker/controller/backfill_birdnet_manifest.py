@@ -52,7 +52,7 @@ def backfill() -> tuple[int, int]:
                         SELECT d.label, d.score, d.likely_score, d.weighted_label,
                                d.weighted_score, d.weighted_likely_score, d.volume,
                                d.channel_index, d.clip_start_time, d.clip_end_time,
-                               p.uuid::text, p.wg_ip::text, n.name,
+                               p.uuid::text, p.wg_ip::text, n.name, p.deployed_at,
                                (SELECT hostname FROM sensos.client_status
                                 WHERE peer_id = p.id ORDER BY last_check_in DESC LIMIT 1)
                         FROM sensos.birdnet_detections d
@@ -86,10 +86,30 @@ def backfill() -> tuple[int, int]:
                 peer_uuid,
                 wg_ip,
                 network_name,
+                deployed_at,
                 hostname,
             ) = row
 
-            upsert_client_manifest_entry(peer_id, peer_uuid, wg_ip, network_name, hostname)
+            # Same as-of-clip-time logic as the live upload path: location
+            # when THIS clip was recorded, not wherever the client is now.
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT ST_Y(location::geometry), ST_X(location::geometry)
+                        FROM sensos.peer_locations
+                        WHERE peer_id = %s AND recorded_at <= %s
+                        ORDER BY recorded_at DESC
+                        LIMIT 1;
+                        """,
+                        (peer_id, clip_start_time),
+                    )
+                    location_row = cur.fetchone()
+            latitude, longitude = location_row if location_row else (None, None)
+
+            upsert_client_manifest_entry(
+                peer_id, peer_uuid, wg_ip, network_name, hostname, deployed_at
+            )
             append_clip_manifest_entry(
                 peer_id,
                 {
@@ -105,6 +125,8 @@ def backfill() -> tuple[int, int]:
                     "channel_index": channel_index,
                     "clip_start_time": clip_start_time.isoformat(),
                     "clip_end_time": clip_end_time.isoformat(),
+                    "latitude": latitude,
+                    "longitude": longitude,
                 },
             )
             manifested += 1
