@@ -178,6 +178,13 @@ GIT_DIRTY="${GIT_DIRTY:-false}"
 export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
 export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 
+# sensos_birdnet_audio is a bind-mount-backed volume (see docker-compose.yml),
+# so unlike a plain named volume, Docker will not create its host directory
+# for us -- it must exist before `compose up` or the mount fails outright.
+BIRDNET_AUDIO_DATA_DIR="${BIRDNET_AUDIO_DATA_DIR:-/var/lib/sensos-birdnet-audio}"
+mkdir -p "${BIRDNET_AUDIO_DATA_DIR}"
+export BIRDNET_AUDIO_DATA_DIR
+
 # If containers are already running, handle --restart or exit
 if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
     if [ "$RESTART" = true ]; then

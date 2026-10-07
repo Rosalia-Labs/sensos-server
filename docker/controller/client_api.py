@@ -5,7 +5,9 @@ import json
 import logging
 import ipaddress
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from core import (
@@ -17,6 +19,7 @@ from core import (
     insert_peer,
     register_wireguard_key_in_db,
     search_for_next_available_ip,
+    store_birdnet_audio_clip,
     store_birdnet_results_upload,
     store_client_events_upload,
     store_i2c_readings_upload,
@@ -268,6 +271,58 @@ def upload_birdnet_results(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Failed to store BirdNET results upload.",
         )
+
+
+MAX_BIRDNET_AUDIO_BYTES = 20 * 1024 * 1024
+
+
+def _parse_clip_timestamp(value: str, field_name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid {field_name}: {value}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+@router.put("/peer/birdnet/audio")
+async def upload_birdnet_audio(
+    channel_index: int = Form(...),
+    clip_start_time: str = Form(...),
+    clip_end_time: str = Form(...),
+    file: UploadFile = File(...),
+    peer: dict = Depends(authenticate_peer),
+):
+    audio_bytes = await file.read()
+    if len(audio_bytes) > MAX_BIRDNET_AUDIO_BYTES:
+        return error_response(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Audio clip too large."
+        )
+
+    start_dt = _parse_clip_timestamp(clip_start_time, "clip_start_time")
+    end_dt = _parse_clip_timestamp(clip_end_time, "clip_end_time")
+
+    try:
+        with get_db() as conn:
+            result = store_birdnet_audio_clip(
+                conn, peer["peer_id"], channel_index, start_dt, end_dt, audio_bytes
+            )
+    except LookupError:
+        return error_response(
+            404,
+            "No matching BirdNET detection found for this clip; "
+            "upload results for it first.",
+        )
+    except Exception:
+        logger.error("birdnet audio upload failed", exc_info=True)
+        return error_response(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to store BirdNET audio clip.",
+        )
+    return {"status": "ok", **result}
 
 
 @router.post("/peer/i2c-readings")

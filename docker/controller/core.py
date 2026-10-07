@@ -2458,3 +2458,51 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
         "accepted_count": len(upload.detections),
         "server_received_at": format_rfc3339_utc(received_at),
     }
+
+
+BIRDNET_AUDIO_ROOT = os.environ.get(
+    "BIRDNET_AUDIO_ROOT", "/var/lib/sensos-birdnet-audio"
+)
+
+
+def store_birdnet_audio_clip(
+    conn,
+    peer_id: int,
+    channel_index: int,
+    clip_start_time: datetime,
+    clip_end_time: datetime,
+    audio_bytes: bytes,
+) -> dict:
+    """Attaches an audio clip to its already-uploaded detection row, matched
+    by the same (peer_id, channel_index, clip_start_time, clip_end_time) key
+    the results upload dedupes on -- the client always uploads results first,
+    so that row is expected to already exist. Raises LookupError if it
+    doesn't (client's cue to retry once the results upload lands)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM sensos.birdnet_detections
+            WHERE peer_id = %s AND channel_index = %s
+              AND clip_start_time = %s AND clip_end_time = %s;
+            """,
+            (peer_id, channel_index, clip_start_time, clip_end_time),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError("no matching BirdNET detection for this clip")
+        detection_id = row[0]
+
+        peer_dir = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id))
+        os.makedirs(peer_dir, exist_ok=True)
+        relative_path = f"{peer_id}/{detection_id}.flac"
+        absolute_path = os.path.join(BIRDNET_AUDIO_ROOT, relative_path)
+        with open(absolute_path, "wb") as f:
+            f.write(audio_bytes)
+
+        cur.execute(
+            "UPDATE sensos.birdnet_detections SET clip_path = %s WHERE id = %s;",
+            (relative_path, detection_id),
+        )
+        conn.commit()
+
+    return {"detection_id": detection_id, "clip_path": relative_path}
