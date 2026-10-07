@@ -211,10 +211,15 @@ volumes:
       type: none
       o: bind
       # Host path for BirdNET audio clips, e.g. a ZFS array mountpoint.
-      # Set BIRDNET_AUDIO_DATA_DIR in docker/.env to move it; bin/start-server
-      # creates this directory before bringing the stack up, since a bind
-      # mount (unlike a plain named volume) requires it to already exist.
-      device: ${BIRDNET_AUDIO_DATA_DIR:-/var/lib/sensos-birdnet-audio}
+      # Set with `configure-server --birdnet-audio-dir DIR` (writes
+      # BIRDNET_AUDIO_DATA_DIR to docker/.env); bin/start-server creates this
+      # directory before bringing the stack up, since a bind mount (unlike a
+      # plain named volume) requires it to already exist, and must be owned
+      # by whichever unprivileged account runs this repo's tooling -- never
+      # default this to a root-owned path like /var/lib/. The fallback below
+      # only matters if compose is invoked without going through
+      # start-server; it's relative to this file's directory (docker/).
+      device: ${BIRDNET_AUDIO_DATA_DIR:-../local/birdnet-audio}
   sensos_database:
     name: sensos_database
   sensos_wireguard_state:

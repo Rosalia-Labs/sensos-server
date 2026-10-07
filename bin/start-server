@@ -181,7 +181,7 @@ export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 # sensos_birdnet_audio is a bind-mount-backed volume (see docker-compose.yml),
 # so unlike a plain named volume, Docker will not create its host directory
 # for us -- it must exist before `compose up` or the mount fails outright.
-BIRDNET_AUDIO_DATA_DIR="${BIRDNET_AUDIO_DATA_DIR:-/var/lib/sensos-birdnet-audio}"
+BIRDNET_AUDIO_DATA_DIR="${BIRDNET_AUDIO_DATA_DIR:-${REPO_ROOT}/local/birdnet-audio}"
 mkdir -p "${BIRDNET_AUDIO_DATA_DIR}"
 export BIRDNET_AUDIO_DATA_DIR
 

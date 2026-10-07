@@ -4,7 +4,8 @@
 
 set -euo pipefail
 
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK_DIR="${REPO_ROOT}/docker"
 
 # Define default values
 DEFAULT_API_PORT=8765
@@ -18,7 +19,7 @@ DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
 DEFAULT_UI_THEME=""
 DEFAULT_PUBLIC_DOMAIN=""
 DEFAULT_PUBLIC_PROXY_ENABLED=false
-DEFAULT_BIRDNET_AUDIO_DATA_DIR="/var/lib/sensos-birdnet-audio"
+DEFAULT_BIRDNET_AUDIO_DATA_DIR="${REPO_ROOT}/local/birdnet-audio"
 
 read_existing_env() {
     local key="$1"
