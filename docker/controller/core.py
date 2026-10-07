@@ -10,6 +10,7 @@ import psycopg
 import re
 import secrets
 import socket
+import sqlite3
 import time
 from hashlib import sha256
 
@@ -2465,9 +2466,129 @@ BIRDNET_AUDIO_ROOT = os.environ.get(
 )
 
 
+def _manifest_db_connect(db_path: str) -> sqlite3.Connection:
+    manifest_conn = sqlite3.connect(db_path, timeout=30)
+    manifest_conn.execute("PRAGMA journal_mode=WAL")
+    manifest_conn.execute("PRAGMA synchronous=NORMAL")
+    return manifest_conn
+
+
+def _utcnow_text() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def upsert_client_manifest_entry(
+    peer_id: int,
+    peer_uuid: str,
+    wg_ip: str,
+    network_name: Optional[str],
+    hostname: Optional[str],
+) -> None:
+    """Root-level manifest: what does the numbered directory <peer_id> mean?
+    Lives next to the per-client directories (not inside Postgres), so it
+    survives independently of the database -- same filesystem, same backup,
+    same ZFS snapshot as the audio itself."""
+    db_path = os.path.join(BIRDNET_AUDIO_ROOT, "clients.db")
+    os.makedirs(BIRDNET_AUDIO_ROOT, exist_ok=True)
+    now = _utcnow_text()
+    manifest_conn = _manifest_db_connect(db_path)
+    try:
+        manifest_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clients (
+                peer_id INTEGER PRIMARY KEY,
+                peer_uuid TEXT NOT NULL,
+                wg_ip TEXT,
+                network_name TEXT,
+                hostname TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+            """
+        )
+        manifest_conn.execute(
+            """
+            INSERT INTO clients (peer_id, peer_uuid, wg_ip, network_name, hostname, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (peer_id) DO UPDATE SET
+                peer_uuid = excluded.peer_uuid,
+                wg_ip = excluded.wg_ip,
+                network_name = excluded.network_name,
+                hostname = COALESCE(excluded.hostname, clients.hostname),
+                last_seen_at = excluded.last_seen_at;
+            """,
+            (peer_id, peer_uuid, wg_ip, network_name, hostname, now, now),
+        )
+        manifest_conn.commit()
+    finally:
+        manifest_conn.close()
+
+
+def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
+    """Per-client manifest, living inside that client's own clip directory:
+    ties every clip filename (just a detection id) back to its label, score,
+    and timing, independently of Postgres. Mirrors the client's own local
+    birdnet.db in spirit -- metadata that stays with the files it describes."""
+    db_path = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id), "manifest.db")
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    manifest_conn = _manifest_db_connect(db_path)
+    try:
+        manifest_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clips (
+                detection_id INTEGER PRIMARY KEY,
+                clip_filename TEXT NOT NULL,
+                label TEXT NOT NULL,
+                score REAL NOT NULL,
+                likely_score REAL,
+                weighted_label TEXT,
+                weighted_score REAL,
+                weighted_likely_score REAL,
+                volume REAL,
+                channel_index INTEGER NOT NULL,
+                clip_start_time TEXT NOT NULL,
+                clip_end_time TEXT NOT NULL,
+                uploaded_at TEXT NOT NULL
+            );
+            """
+        )
+        manifest_conn.execute(
+            """
+            INSERT INTO clips (
+                detection_id, clip_filename, label, score, likely_score,
+                weighted_label, weighted_score, weighted_likely_score, volume,
+                channel_index, clip_start_time, clip_end_time, uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (detection_id) DO UPDATE SET
+                clip_filename = excluded.clip_filename,
+                uploaded_at = excluded.uploaded_at;
+            """,
+            (
+                clip["detection_id"],
+                clip["clip_filename"],
+                clip["label"],
+                clip["score"],
+                clip["likely_score"],
+                clip["weighted_label"],
+                clip["weighted_score"],
+                clip["weighted_likely_score"],
+                clip["volume"],
+                clip["channel_index"],
+                clip["clip_start_time"],
+                clip["clip_end_time"],
+                _utcnow_text(),
+            ),
+        )
+        manifest_conn.commit()
+    finally:
+        manifest_conn.close()
+
+
 def store_birdnet_audio_clip(
     conn,
     peer_id: int,
+    peer_uuid: str,
+    wg_ip: str,
     channel_index: int,
     clip_start_time: datetime,
     clip_end_time: datetime,
@@ -2477,11 +2598,21 @@ def store_birdnet_audio_clip(
     by the same (peer_id, channel_index, clip_start_time, clip_end_time) key
     the results upload dedupes on -- the client always uploads results first,
     so that row is expected to already exist. Raises LookupError if it
-    doesn't (client's cue to retry once the results upload lands)."""
+    doesn't (client's cue to retry once the results upload lands).
+
+    Alongside the clip itself, maintains a two-level SQLite manifest on the
+    same filesystem: a root clients.db (which numbered directory is which
+    device) and a per-client manifest.db (which clip file is which
+    detection). Postgres stays the source of truth, but this keeps the audio
+    tree independently interpretable if the database and the audio storage
+    are ever restored from backups taken at different times.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id FROM sensos.birdnet_detections
+            SELECT id, label, score, likely_score, weighted_label,
+                   weighted_score, weighted_likely_score, volume
+            FROM sensos.birdnet_detections
             WHERE peer_id = %s AND channel_index = %s
               AND clip_start_time = %s AND clip_end_time = %s;
             """,
@@ -2490,11 +2621,21 @@ def store_birdnet_audio_clip(
         row = cur.fetchone()
         if row is None:
             raise LookupError("no matching BirdNET detection for this clip")
-        detection_id = row[0]
+        (
+            detection_id,
+            label,
+            score,
+            likely_score,
+            weighted_label,
+            weighted_score,
+            weighted_likely_score,
+            volume,
+        ) = row
 
         peer_dir = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id))
         os.makedirs(peer_dir, exist_ok=True)
-        relative_path = f"{peer_id}/{detection_id}.flac"
+        clip_filename = f"{detection_id}.flac"
+        relative_path = f"{peer_id}/{clip_filename}"
         absolute_path = os.path.join(BIRDNET_AUDIO_ROOT, relative_path)
         with open(absolute_path, "wb") as f:
             f.write(audio_bytes)
@@ -2503,6 +2644,40 @@ def store_birdnet_audio_clip(
             "UPDATE sensos.birdnet_detections SET clip_path = %s WHERE id = %s;",
             (relative_path, detection_id),
         )
+
+        cur.execute(
+            """
+            SELECT n.name,
+                   (SELECT hostname FROM sensos.client_status
+                    WHERE peer_id = %s ORDER BY last_check_in DESC LIMIT 1)
+            FROM sensos.wireguard_peers p
+            JOIN sensos.networks n ON n.id = p.network_id
+            WHERE p.id = %s;
+            """,
+            (peer_id, peer_id),
+        )
+        identity_row = cur.fetchone()
+        network_name, hostname = identity_row if identity_row else (None, None)
+
         conn.commit()
+
+    upsert_client_manifest_entry(peer_id, peer_uuid, wg_ip, network_name, hostname)
+    append_clip_manifest_entry(
+        peer_id,
+        {
+            "detection_id": detection_id,
+            "clip_filename": clip_filename,
+            "label": label,
+            "score": score,
+            "likely_score": likely_score,
+            "weighted_label": weighted_label,
+            "weighted_score": weighted_score,
+            "weighted_likely_score": weighted_likely_score,
+            "volume": volume,
+            "channel_index": channel_index,
+            "clip_start_time": clip_start_time.isoformat(),
+            "clip_end_time": clip_end_time.isoformat(),
+        },
+    )
 
     return {"detection_id": detection_id, "clip_path": relative_path}

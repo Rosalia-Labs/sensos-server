@@ -308,7 +308,14 @@ async def upload_birdnet_audio(
     try:
         with get_db() as conn:
             result = store_birdnet_audio_clip(
-                conn, peer["peer_id"], channel_index, start_dt, end_dt, audio_bytes
+                conn,
+                peer["peer_id"],
+                peer["peer_uuid"],
+                peer["wg_ip"],
+                channel_index,
+                start_dt,
+                end_dt,
+                audio_bytes,
             )
     except LookupError:
         return error_response(

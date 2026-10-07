@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Backfills the BirdNET audio manifest (clients.db and each client's
+manifest.db, living alongside the clips on BIRDNET_AUDIO_DATA_DIR) from clip
+files already on disk and their matching Postgres rows. Needed for clips
+uploaded before the manifest existed, or any clip otherwise missing from it.
+Safe to run repeatedly -- both manifest writes are upserts.
+
+Options:
+  -h, --help  Show this help and exit
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if ! docker ps --filter "name=^sensos-controller$" --format '{{.Names}}' | grep -q "^sensos-controller$"; then
+    echo "❌ sensos-controller container is not running. Exiting." >&2
+    exit 1
+fi
+
+docker exec sensos-controller python3 backfill_birdnet_manifest.py
