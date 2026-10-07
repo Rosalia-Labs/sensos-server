@@ -18,6 +18,7 @@ DEFAULT_PUBLIC_DB_PASSWORD="sensos-public"
 DEFAULT_UI_THEME=""
 DEFAULT_PUBLIC_DOMAIN=""
 DEFAULT_PUBLIC_PROXY_ENABLED=false
+DEFAULT_BIRDNET_AUDIO_DATA_DIR="/var/lib/sensos-birdnet-audio"
 
 read_existing_env() {
     local key="$1"
@@ -50,6 +51,7 @@ Options:
   --public-domain DOMAIN   Hostname for the public dashboard reverse proxy; enables automatic HTTPS (omitted: plain HTTP on port 80, no domain yet)
   --enable-public-proxy    Expose the public dashboard on ports 80/443 via the reverse proxy (default: disabled)
   --disable-public-proxy   Keep the public dashboard off ports 80/443 (default)
+  --birdnet-audio-dir DIR  Host directory for uploaded BirdNET audio clips, e.g. a ZFS mountpoint (default: $DEFAULT_BIRDNET_AUDIO_DATA_DIR)
   -h, --help               Show this help message
 EOF
     exit 0
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
         PUBLIC_PROXY_ENABLED=false
         shift
         ;;
+    --birdnet-audio-dir)
+        BIRDNET_AUDIO_DATA_DIR="$2"
+        shift 2
+        ;;
     -h | --help)
         print_help
         ;;
@@ -125,6 +131,7 @@ EXISTING_CLIENT_API_PASSWORD="$(read_existing_env CLIENT_API_PASSWORD)"
 EXISTING_PUBLIC_DB_PASSWORD="$(read_existing_env PUBLIC_DB_PASSWORD)"
 EXISTING_UI_THEME="$(read_existing_env SENSOS_UI_THEME)"
 EXISTING_PUBLIC_DOMAIN="$(read_existing_env PUBLIC_DOMAIN)"
+EXISTING_BIRDNET_AUDIO_DATA_DIR="$(read_existing_env BIRDNET_AUDIO_DATA_DIR)"
 EXISTING_COMPOSE_PROFILES="$(read_existing_env COMPOSE_PROFILES)"
 if [[ ",${EXISTING_COMPOSE_PROFILES}," == *,public-proxy,* ]]; then
     EXISTING_PUBLIC_PROXY_ENABLED=true
@@ -144,6 +151,7 @@ PUBLIC_DB_PASSWORD=${PUBLIC_DB_PASSWORD:-${EXISTING_PUBLIC_DB_PASSWORD:-$DEFAULT
 UI_THEME=${UI_THEME:-${EXISTING_UI_THEME:-$DEFAULT_UI_THEME}}
 PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-${EXISTING_PUBLIC_DOMAIN:-$DEFAULT_PUBLIC_DOMAIN}}
 PUBLIC_PROXY_ENABLED=${PUBLIC_PROXY_ENABLED:-${EXISTING_PUBLIC_PROXY_ENABLED:-$DEFAULT_PUBLIC_PROXY_ENABLED}}
+BIRDNET_AUDIO_DATA_DIR=${BIRDNET_AUDIO_DATA_DIR:-${EXISTING_BIRDNET_AUDIO_DATA_DIR:-$DEFAULT_BIRDNET_AUDIO_DATA_DIR}}
 
 if [[ "${QEMU_TESTING:-0}" == "1" ]]; then
     API_BIND=0.0.0.0
@@ -187,6 +195,7 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD_Q
 ADMIN_API_PASSWORD=$ADMIN_API_PASSWORD_Q
 CLIENT_API_PASSWORD=$CLIENT_API_PASSWORD_Q
 PUBLIC_DB_PASSWORD=$PUBLIC_DB_PASSWORD_Q
+BIRDNET_AUDIO_DATA_DIR=$BIRDNET_AUDIO_DATA_DIR
 EOF
 
 if [[ -n "${UI_THEME}" ]]; then
@@ -205,5 +214,6 @@ else
 fi
 
 chmod 600 .env
+echo "ℹ️  BirdNET audio clips will be stored under: ${BIRDNET_AUDIO_DATA_DIR}"
 echo "✅ Environment configuration written to .env."
 echo "✅ Setup completed successfully."
