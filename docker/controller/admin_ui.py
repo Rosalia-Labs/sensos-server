@@ -13,13 +13,14 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from core import (
     ADMIN_ROLE_OPERATOR,
     ADMIN_ROLE_OWNER,
     ADMIN_ROLE_VIEWER,
+    BIRDNET_AUDIO_ROOT,
     GIT_BRANCH,
     GIT_COMMIT,
     GIT_DIRTY,
@@ -208,6 +209,7 @@ def render_page(
     body: str,
     current_path: str,
     flash: str | None = None,
+    extra_head: str = "",
 ) -> HTMLResponse:
     flash_html = ""
     if flash:
@@ -346,6 +348,7 @@ def render_page(
     }}
     {_theme_override_css()}
   </style>
+  {extra_head}
 </head>
 <body>
   <div class="shell">
@@ -1150,7 +1153,9 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
                        d.clip_end_time,
                        d.label,
                        d.score,
-                       d.server_received_at
+                       d.server_received_at,
+                       d.id,
+                       d.clip_path
                 FROM sensos.birdnet_detections d
                 LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
@@ -1179,6 +1184,8 @@ def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
             "label": row[10] or "—",
             "score": row[11],
             "server_received_at": row[12],
+            "detection_id": row[13],
+            "clip_path": row[14],
         }
         for row in rows
         if not is_infra_wg_ip(row[0])
@@ -2351,6 +2358,9 @@ def birdnet_page(request: Request, flash: str | None = None):
 </div>
 <div class="stack">
   <section class="panel">
+    <p><a href="/admin/birdnet/clips">Browse individual clips, with playback and spectrogram &rarr;</a></p>
+  </section>
+  <section class="panel">
     <h2 class="section-title">Client BirdNET activity summary</h2>
     <table>
       <thead>
@@ -2379,6 +2389,178 @@ def birdnet_page(request: Request, flash: str | None = None):
         current_path="/admin/birdnet",
         flash=flash,
     )
+
+
+def fetch_birdnet_clip(detection_id: int) -> dict | None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT d.id, d.wireguard_ip::text, n.name, d.hostname, d.label,
+                       d.score, d.likely_score, d.weighted_label, d.weighted_score,
+                       d.channel_index, d.clip_start_time, d.clip_end_time, d.clip_path
+                FROM sensos.birdnet_detections d
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                WHERE d.id = %s;
+                """,
+                (detection_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "detection_id": row[0],
+        "wg_ip": row[1],
+        "network_name": row[2] or "—",
+        "hostname": row[3] or "—",
+        "label": row[4] or "—",
+        "score": row[5],
+        "likely_score": row[6],
+        "weighted_label": row[7] or "—",
+        "weighted_score": row[8],
+        "channel_index": row[9],
+        "clip_start_time": row[10],
+        "clip_end_time": row[11],
+        "clip_path": row[12],
+    }
+
+
+@router.get("/birdnet/clips", response_class=HTMLResponse)
+def birdnet_clips_page(request: Request, flash: str | None = None):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    rows = [row for row in fetch_birdnet_rows(limit=600) if row.get("clip_path")]
+    body = f"""
+<div class="stack">
+  <section class="panel">
+    <h2 class="section-title">BirdNET clips with audio</h2>
+    <p class="dim">Only detections whose audio has been uploaded from the client are listed here. Playback and spectrograms are admin-only -- this page is never reachable from the public dashboard.</p>
+    <table>
+      <thead>
+        <tr><th>Client</th><th>Network</th><th>Label</th><th>Score</th><th>Clip start</th><th></th></tr>
+      </thead>
+      <tbody>
+        {''.join(
+            "<tr>"
+            f"<td><div class='mono'>{html.escape(row['wg_ip'])}</div><div class='dim'>{html.escape(row['peer_hostname'] or 'Unknown')}</div></td>"
+            f"<td>{html.escape(row['network_name'])}</td>"
+            f"<td>{html.escape(row['label'])}</td>"
+            f"<td>{row['score']:.3f}</td>"
+            f"<td>{html.escape(format_timestamp(row['clip_start_time']))}</td>"
+            f"<td><a href='/admin/birdnet/clips/{row['detection_id']}'>Listen &amp; view spectrogram</a></td>"
+            "</tr>"
+            for row in rows
+        ) or '<tr><td colspan="6" class="dim">No clips with uploaded audio yet.</td></tr>'}
+      </tbody>
+    </table>
+  </section>
+</div>
+"""
+    return render_page(
+        title="BirdNET Clips",
+        body=body,
+        current_path="/admin/birdnet/clips",
+        flash=flash,
+    )
+
+
+@router.get("/birdnet/clips/{detection_id}", response_class=HTMLResponse)
+def birdnet_clip_page(request: Request, detection_id: int):
+    redirect = require_session(request)
+    if redirect:
+        return redirect
+
+    clip = fetch_birdnet_clip(detection_id)
+    if clip is None:
+        return render_page(
+            title="BirdNET Clip",
+            body='<section class="panel"><p class="dim">No such detection.</p></section>',
+            current_path="/admin/birdnet/clips",
+        )
+
+    if not clip["clip_path"]:
+        body = f"""
+<section class="panel">
+  <h2 class="section-title">{html.escape(clip['label'])}</h2>
+  <p class="dim">No audio has been uploaded for this detection yet.</p>
+</section>
+"""
+        return render_page(
+            title="BirdNET Clip",
+            body=body,
+            current_path="/admin/birdnet/clips",
+        )
+
+    audio_url = f"/admin/birdnet/clips/{detection_id}/audio"
+    body = f"""
+<div class="stack">
+  <section class="panel">
+    <h2 class="section-title">{html.escape(clip['label'])}</h2>
+    <p class="dim">
+      {html.escape(clip['hostname'])} ({html.escape(clip['wg_ip'])}) on {html.escape(clip['network_name'])},
+      channel {clip['channel_index']}, {html.escape(format_timestamp(clip['clip_start_time']))}
+      &mdash; raw score {clip['score']:.3f}{f", weighted {clip['weighted_label']} ({clip['weighted_score']:.3f})" if clip['weighted_label'] != clip['label'] else ""}
+    </p>
+    <audio id="player" controls preload="metadata" src="{audio_url}" style="width: 100%; margin-bottom: 1rem;"></audio>
+    <div id="waveform"></div>
+    <div id="spectrogram"></div>
+  </section>
+</div>
+"""
+    extra_head = f"""
+<script type="module">
+  import WaveSurfer from "https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js";
+  import SpectrogramPlugin from "https://unpkg.com/wavesurfer.js@7/dist/plugins/spectrogram.esm.js";
+
+  // The plain <audio controls> element above is the guaranteed-working
+  // fallback for playback; this upgrades it with a waveform + spectrogram
+  // view, same audio element, no separate network fetch for playback itself.
+  try {{
+    const ws = WaveSurfer.create({{
+      container: "#waveform",
+      height: 80,
+      waveColor: "#0f766e",
+      progressColor: "#d97706",
+      media: document.getElementById("player"),
+    }});
+    ws.registerPlugin(
+      SpectrogramPlugin.create({{
+        container: "#spectrogram",
+        labels: true,
+        height: 200,
+      }})
+    );
+  }} catch (err) {{
+    console.error("Waveform/spectrogram view failed to load; audio playback above is unaffected.", err);
+  }}
+</script>
+"""
+    return render_page(
+        title="BirdNET Clip",
+        body=body,
+        current_path="/admin/birdnet/clips",
+        extra_head=extra_head,
+    )
+
+
+@router.get("/birdnet/clips/{detection_id}/audio")
+def birdnet_clip_audio(request: Request, detection_id: int):
+    redirect = require_session(request)
+    if redirect:
+        raise HTTPException(status_code=401, detail="Login required.")
+
+    clip = fetch_birdnet_clip(detection_id)
+    if clip is None or not clip["clip_path"]:
+        raise HTTPException(status_code=404, detail="No audio for this detection.")
+
+    absolute_path = os.path.join(BIRDNET_AUDIO_ROOT, clip["clip_path"])
+    if not os.path.isfile(absolute_path):
+        raise HTTPException(status_code=404, detail="Audio file missing on server.")
+
+    return FileResponse(absolute_path, media_type="audio/flac")
 
 
 @router.get("/sensors", response_class=HTMLResponse)
