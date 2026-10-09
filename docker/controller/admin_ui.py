@@ -2536,6 +2536,59 @@ def birdnet_clip_page(request: Request, detection_id: int):
   }} catch (err) {{
     console.error("Waveform/spectrogram view failed to load; audio playback above is unaffected.", err);
   }}
+
+  // Automatic gain, applied fresh at playback time only -- never alters the
+  // stored clip. Field recordings vary wildly in level (a nearby loud call
+  // vs. a distant quiet one); this is purely a listening convenience, kept
+  // entirely out of anything persisted, including for the eventual training-
+  // data use case where the raw, unprocessed level matters.
+  //
+  // RMS-based rather than peak-based: these clips are full of short loud
+  // transients (wind, wing-flaps, a branch snap) that would dominate a
+  // peak-based gain calculation and leave the actual call still quiet.
+  // Independent fetch+decode (not reusing the waveform view's internals)
+  // so a failure in one can't break the other.
+  try {{
+    const audioEl = document.getElementById("player");
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const sourceNode = audioCtx.createMediaElementSource(audioEl);
+    const gainNode = audioCtx.createGain();
+    sourceNode.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    const TARGET_RMS = 0.1;  // roughly -20 dBFS, a comfortable reference level
+    const MAX_GAIN = 10.0;   // +20 dB cap, so a near-silent/noise-floor-only
+                              // clip doesn't get amplified to painful levels
+    const MIN_GAIN = 0.1;    // symmetric -20 dB floor for an already-loud clip
+
+    fetch(audioEl.currentSrc || audioEl.src)
+      .then((r) => r.arrayBuffer())
+      .then((buf) => audioCtx.decodeAudioData(buf))
+      .then((decoded) => {{
+        const channel = decoded.getChannelData(0);
+        let sumSquares = 0;
+        for (let i = 0; i < channel.length; i++) {{
+          sumSquares += channel[i] * channel[i];
+        }}
+        const rms = Math.sqrt(sumSquares / channel.length);
+        if (rms > 0) {{
+          const gain = Math.min(MAX_GAIN, Math.max(MIN_GAIN, TARGET_RMS / rms));
+          gainNode.gain.value = gain;
+          console.log(`Auto-gain: clip RMS=${{rms.toFixed(4)}}, applied gain=${{gain.toFixed(2)}}x`);
+        }}
+      }})
+      .catch((err) => {{
+        console.error("Auto-gain analysis failed; playing at original level.", err);
+      }});
+
+    audioEl.addEventListener("play", () => {{
+      if (audioCtx.state === "suspended") {{
+        audioCtx.resume();
+      }}
+    }});
+  }} catch (err) {{
+    console.error("Auto-gain setup failed; playback at original level unaffected.", err);
+  }}
 </script>
 """
     return render_page(
