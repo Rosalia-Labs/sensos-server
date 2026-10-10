@@ -2725,6 +2725,13 @@ def birdnet_clip_page(request: Request, detection_id: int):
       waveColor: "#0f766e",
       progressColor: "#d97706",
       media: document.getElementById("player"),
+      // media alone only syncs playback position (cursor) to the existing
+      // <audio> element -- it gives WaveSurfer nothing to actually decode
+      // into waveform peaks, so the amplitude view renders blank. url
+      // makes WaveSurfer independently fetch+decode the same audio purely
+      // to compute peaks; media still owns actual playback, so this isn't
+      // a second audio stream.
+      url: "{audio_url}",
     }});
     ws.registerPlugin(
       SpectrogramPlugin.create({{
