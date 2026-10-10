@@ -2704,7 +2704,8 @@ def birdnet_clip_page(request: Request, detection_id: int):
       &mdash; raw score {clip['score']:.3f}{f", weighted {clip['weighted_label']} ({clip['weighted_score']:.3f})" if clip['weighted_label'] != clip['label'] else ""},
       human-vocal score {format_optional_score(clip['human_vocal_score'])}
     </p>
-    <audio id="player" controls preload="metadata" src="{audio_url}" style="width: 100%; margin-bottom: 1rem;"></audio>
+    <audio id="player" controls preload="metadata" src="{audio_url}" style="width: 100%; margin-bottom: 0.5rem;"></audio>
+    <button id="interferenceToggle" type="button" style="margin-bottom: 1rem" title="Dampens loud rapid-beat interference by compressing transients; does not remove it entirely, and can also dampen loud bird calls.">De-emphasize interference (off)</button>
     <div id="waveform"></div>
     <div id="spectrogram"></div>
   </section>
@@ -2760,8 +2761,46 @@ def birdnet_clip_page(request: Request, detection_id: int):
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const sourceNode = audioCtx.createMediaElementSource(audioEl);
     const gainNode = audioCtx.createGain();
+    const compressorNode = audioCtx.createDynamicsCompressor();
     sourceNode.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
+    gainNode.connect(compressorNode);
+    compressorNode.connect(audioCtx.destination);
+
+    // Optional, listener-toggled dampening for the known rapid-dull-beat
+    // interference pattern on some units (see sensos-client-audio-
+    // interference-glitch memory) -- NOT true declicking (that would need
+    // sample-level detection + interpolation on the decoded buffer, a much
+    // bigger lift). This just compresses loud fast transients hard, which
+    // quiets the beat without removing it, and will also duck genuinely
+    // loud bird calls somewhat. Parameters are a first guess from the
+    // qualitative description ("rapid dull drum beat", not a sharp
+    // click/pop -- hence attack/release in the few-ms/tens-of-ms range
+    // rather than the sub-ms a true click would call for), meant to be
+    // refined by ear, not measured against the actual clips.
+    const INTERFERENCE_COMPRESSOR = {{
+      threshold: -35, knee: 6, ratio: 16, attack: 0.005, release: 0.06,
+    }};
+    const BYPASS_COMPRESSOR = {{
+      threshold: 0, knee: 0, ratio: 1, attack: 0.003, release: 0.25,
+    }};
+
+    function applyCompressorSettings(settings) {{
+      const now = audioCtx.currentTime;
+      compressorNode.threshold.setValueAtTime(settings.threshold, now);
+      compressorNode.knee.setValueAtTime(settings.knee, now);
+      compressorNode.ratio.setValueAtTime(settings.ratio, now);
+      compressorNode.attack.setValueAtTime(settings.attack, now);
+      compressorNode.release.setValueAtTime(settings.release, now);
+    }}
+    applyCompressorSettings(BYPASS_COMPRESSOR);
+
+    const toggleButton = document.getElementById("interferenceToggle");
+    let interferenceDampingOn = false;
+    toggleButton.addEventListener("click", () => {{
+      interferenceDampingOn = !interferenceDampingOn;
+      applyCompressorSettings(interferenceDampingOn ? INTERFERENCE_COMPRESSOR : BYPASS_COMPRESSOR);
+      toggleButton.textContent = `De-emphasize interference (${{interferenceDampingOn ? "on" : "off"}})`;
+    }});
 
     const TARGET_RMS = 0.1;  // roughly -20 dBFS, a comfortable reference level
     const MAX_GAIN = 10.0;   // +20 dB cap, so a near-silent/noise-floor-only
