@@ -2000,6 +2000,36 @@ def create_birdnet_detections_table(cur):
         ON sensos.birdnet_detections (wireguard_ip, label, clip_start_time DESC);
         """
     )
+    # The admin console's BirdNET overview page sorts/lists across *all*
+    # peers at once (unlike the indexes above, which all lead with
+    # wireguard_ip/peer_id for a single-site query) -- without this, that
+    # fleet-wide ORDER BY clip_start_time DESC LIMIT forces a full sort of
+    # the whole table instead of an index scan, and gets slower every day.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clip_time
+        ON sensos.birdnet_detections (clip_start_time DESC);
+        """
+    )
+    # The admin clip browser (playback/spectrogram) only ever looks at
+    # detections with uploaded audio, which is a small fraction of all
+    # detections -- partial indexes scoped to clip_path IS NOT NULL keep
+    # that page's filter/sort fast without needing the much larger
+    # unconditional indexes above.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_time
+        ON sensos.birdnet_detections (clip_start_time DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_score
+        ON sensos.birdnet_detections (score DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
 
 
 def create_public_sites_view(cur):

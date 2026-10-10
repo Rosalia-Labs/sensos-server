@@ -1135,62 +1135,119 @@ def fetch_wireguard_peer_health_rows() -> list[dict]:
     return rows
 
 
-def fetch_birdnet_rows(limit: int = 100) -> list[dict]:
-    fetch_limit = max(limit * 5, limit)
+BIRDNET_CLIP_SORT_OPTIONS = {
+    "date_desc": "d.clip_start_time DESC, d.id DESC",
+    "date_asc": "d.clip_start_time ASC, d.id ASC",
+    "score_desc": "d.score DESC, d.clip_start_time DESC",
+    "score_asc": "d.score ASC, d.clip_start_time DESC",
+}
+
+
+def fetch_birdnet_clip_rows(
+    limit: int = 300,
+    *,
+    wg_ip: str | None = None,
+    label: str | None = None,
+    sort: str = "date_desc",
+) -> list[dict]:
+    """Detections with uploaded audio, filterable by device/label and
+    sortable for review listening. Scoped to clip_path IS NOT NULL at the
+    SQL level (matching the partial indexes on this table) rather than
+    over-fetching a large recent sample and filtering in Python -- that
+    older approach is also what made quieter devices disappear from this
+    page: a device with few detections could be pushed entirely out of the
+    most-recent-N-fleet-wide window by a more active one.
+    """
+    sort_sql = BIRDNET_CLIP_SORT_OPTIONS.get(sort, BIRDNET_CLIP_SORT_OPTIONS["date_desc"])
+    clauses = ["d.clip_path IS NOT NULL"]
+    params: list = []
+    if wg_ip:
+        clauses.append("d.wireguard_ip = %s::inet")
+        params.append(wg_ip)
+    if label:
+        clauses.append("d.label = %s")
+        params.append(label)
+    where_sql = "WHERE " + " AND ".join(clauses)
+    fetch_limit = max(1, min(limit, 1000))
+    params.append(fetch_limit)
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT d.wireguard_ip::text,
                        p.note,
                        n.name,
-                       d.hostname,
-                       d.client_version,
-                       d.source_path,
-                       d.channel_index,
-                       d.window_index,
-                       d.clip_start_time,
-                       d.clip_end_time,
                        d.label,
                        d.score,
-                       d.server_received_at,
+                       d.clip_start_time,
                        d.id,
                        d.clip_path
                 FROM sensos.birdnet_detections d
                 LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
-                ORDER BY d.clip_start_time DESC,
-                         d.channel_index,
-                         d.window_index,
-                         d.id DESC
+                {where_sql}
+                ORDER BY {sort_sql}
                 LIMIT %s;
                 """,
-                (fetch_limit,),
+                tuple(params),
             )
             rows = cur.fetchall()
-    filtered = [
+    return [
         {
             "wg_ip": row[0],
             "note": row[1],
             "network_name": row[2] or "—",
             "peer_hostname": derive_peer_hostname(row[2], row[0]),
-            "hostname": row[3] or "—",
-            "client_version": row[4] or "—",
-            "source_path": row[5] or "—",
-            "channel_index": row[6],
-            "window_index": row[7],
-            "clip_start_time": row[8],
-            "clip_end_time": row[9],
-            "label": row[10] or "—",
-            "score": row[11],
-            "server_received_at": row[12],
-            "detection_id": row[13],
-            "clip_path": row[14],
+            "label": row[3] or "—",
+            "score": row[4],
+            "clip_start_time": row[5],
+            "detection_id": row[6],
+            "clip_path": row[7],
         }
         for row in rows
         if not is_infra_wg_ip(row[0])
     ]
-    return filtered[:limit]
+
+
+def fetch_birdnet_clip_filter_options() -> tuple[list[dict], list[str]]:
+    """Devices and labels to populate the clips page's filter dropdowns,
+    scoped to clip_path IS NOT NULL so the lists only ever offer choices
+    that actually narrow the listing (same partial-index scope as
+    fetch_birdnet_clip_rows)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT d.wireguard_ip::text, p.note, n.name
+                FROM sensos.birdnet_detections d
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                WHERE d.clip_path IS NOT NULL;
+                """
+            )
+            device_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT DISTINCT label
+                FROM sensos.birdnet_detections
+                WHERE clip_path IS NOT NULL
+                ORDER BY label;
+                """
+            )
+            label_rows = cur.fetchall()
+
+    devices = [
+        {
+            "wg_ip": wg_ip,
+            "display": (note or "").strip() or derive_peer_hostname(network_name, wg_ip) or wg_ip,
+        }
+        for wg_ip, note, network_name in device_rows
+        if not is_infra_wg_ip(wg_ip)
+    ]
+    devices.sort(key=lambda d: d["display"])
+    labels = sorted({row[0] for row in label_rows if row[0]})
+    return devices, labels
 
 
 def fetch_birdnet_overview() -> dict:
@@ -1326,49 +1383,92 @@ def summarize_sensor_clients(rows: list[dict]) -> list[dict]:
     return items
 
 
-def summarize_birdnet_clients(rows: list[dict]) -> list[dict]:
-    by_client: dict[str, dict] = {}
-    for row in rows:
-        key = row["wg_ip"]
-        entry = by_client.setdefault(
-            key,
-            {
-                "wg_ip": row["wg_ip"],
-                "note": row["note"],
-                "network_name": row["network_name"],
-                "peer_hostname": row["peer_hostname"],
-                "hostname": row["hostname"],
-                "client_version": row["client_version"],
-                "last_clip_end": row["clip_end_time"],
-                "detection_count": 0,
-                "labels": {},
-            },
-        )
-        entry["detection_count"] += 1
-        if row["clip_end_time"] and (
-            entry["last_clip_end"] is None or row["clip_end_time"] > entry["last_clip_end"]
-        ):
-            entry["last_clip_end"] = row["clip_end_time"]
-        label = (row.get("label") or "").strip()
-        if label:
-            entry["labels"][label] = entry["labels"].get(label, 0) + 1
+def fetch_birdnet_client_summary() -> list[dict]:
+    """Per-device BirdNET activity across the *entire* table, not a sample
+    of the most-recent N detections fleet-wide. The previous implementation
+    built this from fetch_birdnet_rows(limit=600) -- a global
+    "ORDER BY clip_start_time DESC LIMIT 600" -- so a device with a much
+    higher detection rate (more channels, more activity) could fill that
+    whole window by itself, making quieter devices silently vanish from
+    this page even though they have plenty of historical detections. A
+    GROUP BY wireguard_ip aggregate has no such bias: every device with at
+    least one detection, ever, gets a row.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH latest_status AS (
+                    SELECT DISTINCT ON (peer_id) peer_id, hostname, version
+                    FROM sensos.client_status
+                    ORDER BY peer_id, last_check_in DESC
+                ),
+                detection_agg AS (
+                    SELECT wireguard_ip,
+                           count(*) AS detection_count,
+                           max(clip_end_time) AS last_clip_end
+                    FROM sensos.birdnet_detections
+                    GROUP BY wireguard_ip
+                )
+                SELECT da.wireguard_ip::text,
+                       p.note,
+                       n.name,
+                       ls.hostname,
+                       ls.version,
+                       da.detection_count,
+                       da.last_clip_end
+                FROM detection_agg da
+                LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = da.wireguard_ip
+                LEFT JOIN sensos.networks n ON n.id = p.network_id
+                LEFT JOIN latest_status ls ON ls.peer_id = p.id
+                ORDER BY da.last_clip_end DESC;
+                """
+            )
+            count_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT wireguard_ip::text, label, count(*) AS label_count
+                FROM sensos.birdnet_detections
+                GROUP BY wireguard_ip, label;
+                """
+            )
+            label_rows = cur.fetchall()
 
-    items = list(by_client.values())
-    for item in items:
-        if item["labels"]:
-            top_label, top_count = sorted(
-                item["labels"].items(), key=lambda kv: (-kv[1], kv[0])
+    labels_by_client: dict[str, dict[str, int]] = {}
+    for wg_ip, label, label_count in label_rows:
+        if is_infra_wg_ip(wg_ip):
+            continue
+        labels_by_client.setdefault(wg_ip, {})
+        label = (label or "").strip()
+        if label:
+            labels_by_client[wg_ip][label] = labels_by_client[wg_ip].get(label, 0) + label_count
+
+    items = []
+    for row in count_rows:
+        wg_ip = row[0]
+        if is_infra_wg_ip(wg_ip):
+            continue
+        labels = labels_by_client.get(wg_ip, {})
+        if labels:
+            top_label, top_label_count = sorted(
+                labels.items(), key=lambda kv: (-kv[1], kv[0])
             )[0]
-            item["top_label"] = top_label
-            item["top_label_count"] = top_count
         else:
-            item["top_label"] = "—"
-            item["top_label_count"] = 0
-    items.sort(
-        key=lambda item: item["last_clip_end"]
-        or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
+            top_label, top_label_count = "—", 0
+        items.append(
+            {
+                "wg_ip": wg_ip,
+                "note": row[1],
+                "network_name": row[2] or "—",
+                "peer_hostname": derive_peer_hostname(row[2], wg_ip),
+                "hostname": row[3] or "—",
+                "client_version": row[4] or "—",
+                "detection_count": row[5],
+                "last_clip_end": row[6],
+                "top_label": top_label,
+                "top_label_count": top_label_count,
+            }
+        )
     return items
 
 
@@ -2339,22 +2439,14 @@ def birdnet_page(request: Request, flash: str | None = None):
     if redirect:
         return redirect
 
-    rows = fetch_birdnet_rows(limit=600)
-    client_rows = summarize_birdnet_clients(rows)
-    unique_clients = len({row["wg_ip"] for row in rows})
-    unique_sources = len(
-        {row["source_path"] for row in rows if (row.get("source_path") or "").strip() and row.get("source_path") != "—"}
-    )
-    latest_detection = max(
-        (row["last_clip_end"] for row in client_rows if row["last_clip_end"] is not None),
-        default=None,
-    )
+    overview = fetch_birdnet_overview()
+    client_rows = fetch_birdnet_client_summary()
     body = f"""
 <div class="grid">
-  {stat_card("Detections", str(len(rows)), "Recent retained BirdNET detections from client peers (infra peers excluded).")}
-  {stat_card("Reporting clients", str(unique_clients), "Distinct client peers with recent BirdNET detections.")}
-  {stat_card("Sources", str(unique_sources), "Distinct source files represented in recent client BirdNET detections.")}
-  {stat_card("Latest Detection", summarize_age(latest_detection), "Time since the most recent client BirdNET clip end time.")}
+  {stat_card("Detections", str(overview["detection_count"]), "Total retained BirdNET detections from client peers.")}
+  {stat_card("Reporting clients", str(len(client_rows)), "Distinct client peers with any stored BirdNET detections.")}
+  {stat_card("Sources", str(overview["source_count"]), "Distinct source files represented across all client BirdNET detections.")}
+  {stat_card("Latest Detection", summarize_age(overview["latest_detection"]), "Time since the most recent client BirdNET clip end time.")}
 </div>
 <div class="stack">
   <section class="panel">
@@ -2426,18 +2518,68 @@ def fetch_birdnet_clip(detection_id: int) -> dict | None:
     }
 
 
+BIRDNET_CLIP_SORT_LABELS = {
+    "date_desc": "Newest first",
+    "date_asc": "Oldest first",
+    "score_desc": "Highest score first",
+    "score_asc": "Lowest score first",
+}
+
+
 @router.get("/birdnet/clips", response_class=HTMLResponse)
-def birdnet_clips_page(request: Request, flash: str | None = None):
+def birdnet_clips_page(
+    request: Request,
+    wg_ip: str | None = None,
+    label: str | None = None,
+    sort: str | None = None,
+    flash: str | None = None,
+):
     redirect = require_session(request)
     if redirect:
         return redirect
 
-    rows = [row for row in fetch_birdnet_rows(limit=600) if row.get("clip_path")]
+    devices, labels = fetch_birdnet_clip_filter_options()
+    device_ips = {device["wg_ip"] for device in devices}
+    if wg_ip not in device_ips:
+        wg_ip = None
+    if label not in labels:
+        label = None
+    if sort not in BIRDNET_CLIP_SORT_OPTIONS:
+        sort = "date_desc"
+
+    rows = fetch_birdnet_clip_rows(limit=300, wg_ip=wg_ip, label=label, sort=sort)
+
+    device_opts = "".join(
+        f'<option value="{html.escape(device["wg_ip"])}"{" selected" if wg_ip == device["wg_ip"] else ""}>{html.escape(device["display"])}</option>'
+        for device in devices
+    )
+    label_opts = "".join(
+        f'<option value="{html.escape(opt)}"{" selected" if label == opt else ""}>{html.escape(opt)}</option>'
+        for opt in labels
+    )
+    sort_opts = "".join(
+        f'<option value="{key}"{" selected" if sort == key else ""}>{html.escape(text)}</option>'
+        for key, text in BIRDNET_CLIP_SORT_LABELS.items()
+    )
+
     body = f"""
 <div class="stack">
   <section class="panel">
     <h2 class="section-title">BirdNET clips with audio</h2>
     <p class="dim">Only detections whose audio has been uploaded from the client are listed here. Playback and spectrograms are admin-only -- this page is never reachable from the public dashboard.</p>
+    <form method="get" action="/admin/birdnet/clips" class="block" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end">
+      <label>Device
+        <select name="wg_ip"><option value="">any</option>{device_opts}</select>
+      </label>
+      <label>Species
+        <select name="label"><option value="">any</option>{label_opts}</select>
+      </label>
+      <label>Sort
+        <select name="sort">{sort_opts}</select>
+      </label>
+      <button type="submit">Filter</button>
+      <a href="/admin/birdnet/clips">Clear</a>
+    </form>
     <table>
       <thead>
         <tr><th>Client</th><th>Network</th><th>Label</th><th>Score</th><th>Clip start</th><th></th></tr>
@@ -2453,7 +2595,7 @@ def birdnet_clips_page(request: Request, flash: str | None = None):
             f"<td><a href='/admin/birdnet/clips/{row['detection_id']}'>Listen &amp; view spectrogram</a></td>"
             "</tr>"
             for row in rows
-        ) or '<tr><td colspan="6" class="dim">No clips with uploaded audio yet.</td></tr>'}
+        ) or '<tr><td colspan="6" class="dim">No clips match this filter.</td></tr>'}
       </tbody>
     </table>
   </section>
