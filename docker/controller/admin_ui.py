@@ -2777,8 +2777,16 @@ def birdnet_clip_page(request: Request, detection_id: int):
     // click/pop -- hence attack/release in the few-ms/tens-of-ms range
     // rather than the sub-ms a true click would call for), meant to be
     // refined by ear, not measured against the actual clips.
+    //
+    // threshold is deliberately high (close to 0dB): auto-gain below
+    // already normalizes each clip's overall RMS to ~-20dBFS before this
+    // runs, so a low threshold (first attempt: -35dB) caught nearly all
+    // content -- bird calls included, not just the interference spikes --
+    // and just made everything uniformly louder/denser without targeting
+    // anything specifically. Pushed well up so only genuine peaks trigger
+    // it, with ratio near the max for a hard, obvious clamp when they do.
     const INTERFERENCE_COMPRESSOR = {{
-      threshold: -35, knee: 6, ratio: 16, attack: 0.005, release: 0.06,
+      threshold: -10, knee: 3, ratio: 20, attack: 0.005, release: 0.06,
     }};
     const BYPASS_COMPRESSOR = {{
       threshold: 0, knee: 0, ratio: 1, attack: 0.003, release: 0.25,
