@@ -190,6 +190,7 @@ class BirdNETDetectionUploadEntry(BaseModel):
     weighted_label: Optional[str] = None
     weighted_score: Optional[float] = None
     weighted_likely_score: Optional[float] = None
+    human_vocal_score: Optional[float] = Field(default=None, ge=0, le=1)
     volume: Optional[float] = Field(default=None, ge=0, le=1)
     clip_start_time: datetime
     clip_end_time: datetime
@@ -205,6 +206,7 @@ class BirdNETDetectionUploadEntry(BaseModel):
         "likely_score",
         "weighted_score",
         "weighted_likely_score",
+        "human_vocal_score",
     )
     @classmethod
     def validate_scores(cls, value: Optional[float]) -> Optional[float]:

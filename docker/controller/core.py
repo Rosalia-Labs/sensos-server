@@ -1966,6 +1966,18 @@ def create_birdnet_detections_table(cur):
         ADD COLUMN IF NOT EXISTS weighted_likely_score DOUBLE PRECISION;
         """
     )
+    # Raw per-class score for whatever counts as "human" in BirdNET's label
+    # space (see is_human_label in process-birdnet.py), carried through as
+    # information only -- a bird detection can still win a window's raw/
+    # weighted label even when there's audible human speech underneath it,
+    # and this is how much of that leaked in. Not used to filter/suppress
+    # anything server-side.
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS human_vocal_score DOUBLE PRECISION;
+        """
+    )
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
@@ -2027,6 +2039,13 @@ def create_birdnet_detections_table(cur):
         """
         CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_score
         ON sensos.birdnet_detections (score DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_human_vocal
+        ON sensos.birdnet_detections (human_vocal_score DESC)
         WHERE clip_path IS NOT NULL;
         """
     )
@@ -2444,11 +2463,12 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                     weighted_label,
                     weighted_score,
                     weighted_likely_score,
+                    human_vocal_score,
                     volume,
                     clip_start_time,
                     clip_end_time,
                     clip_path
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (
                     peer_id,
                     channel_index,
@@ -2474,6 +2494,7 @@ def store_birdnet_results_upload(conn, upload, wireguard_ip: str) -> dict:
                         detection.weighted_label,
                         detection.weighted_score,
                         detection.weighted_likely_score,
+                        detection.human_vocal_score,
                         detection.volume,
                         detection.clip_start_time,
                         detection.clip_end_time,
@@ -2625,6 +2646,7 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
                 weighted_label TEXT,
                 weighted_score REAL,
                 weighted_likely_score REAL,
+                human_vocal_score REAL,
                 volume REAL,
                 channel_index INTEGER NOT NULL,
                 clip_start_time TEXT NOT NULL,
@@ -2635,14 +2657,23 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
             );
             """
         )
+        # SQLite's ADD COLUMN has no IF NOT EXISTS -- this table may already
+        # exist (one manifest.db per peer, created the first time that peer
+        # ever uploaded a clip) from before human_vocal_score existed.
+        existing_columns = {
+            row[1] for row in manifest_conn.execute("PRAGMA table_info(clips)").fetchall()
+        }
+        if "human_vocal_score" not in existing_columns:
+            manifest_conn.execute("ALTER TABLE clips ADD COLUMN human_vocal_score REAL")
         manifest_conn.execute(
             """
             INSERT INTO clips (
                 detection_id, clip_filename, label, score, likely_score,
-                weighted_label, weighted_score, weighted_likely_score, volume,
+                weighted_label, weighted_score, weighted_likely_score,
+                human_vocal_score, volume,
                 channel_index, clip_start_time, clip_end_time,
                 latitude, longitude, uploaded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (detection_id) DO UPDATE SET
                 clip_filename = excluded.clip_filename,
                 latitude = excluded.latitude,
@@ -2658,6 +2689,7 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
                 clip["weighted_label"],
                 clip["weighted_score"],
                 clip["weighted_likely_score"],
+                clip["human_vocal_score"],
                 clip["volume"],
                 clip["channel_index"],
                 clip["clip_start_time"],
@@ -2700,7 +2732,7 @@ def store_birdnet_audio_clip(
         cur.execute(
             """
             SELECT id, label, score, likely_score, weighted_label,
-                   weighted_score, weighted_likely_score, volume
+                   weighted_score, weighted_likely_score, human_vocal_score, volume
             FROM sensos.birdnet_detections
             WHERE peer_id = %s AND channel_index = %s
               AND clip_start_time = %s AND clip_end_time = %s;
@@ -2718,6 +2750,7 @@ def store_birdnet_audio_clip(
             weighted_label,
             weighted_score,
             weighted_likely_score,
+            human_vocal_score,
             volume,
         ) = row
 
@@ -2786,6 +2819,7 @@ def store_birdnet_audio_clip(
             "weighted_label": weighted_label,
             "weighted_score": weighted_score,
             "weighted_likely_score": weighted_likely_score,
+            "human_vocal_score": human_vocal_score,
             "volume": volume,
             "channel_index": channel_index,
             "clip_start_time": clip_start_time.isoformat(),

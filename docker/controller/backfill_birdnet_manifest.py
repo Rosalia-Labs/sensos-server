@@ -50,7 +50,8 @@ def backfill() -> tuple[int, int]:
                     cur.execute(
                         """
                         SELECT d.label, d.score, d.likely_score, d.weighted_label,
-                               d.weighted_score, d.weighted_likely_score, d.volume,
+                               d.weighted_score, d.weighted_likely_score,
+                               d.human_vocal_score, d.volume,
                                d.channel_index, d.clip_start_time, d.clip_end_time,
                                p.uuid::text, p.wg_ip::text, n.name, p.deployed_at,
                                (SELECT hostname FROM sensos.client_status
@@ -79,6 +80,7 @@ def backfill() -> tuple[int, int]:
                 weighted_label,
                 weighted_score,
                 weighted_likely_score,
+                human_vocal_score,
                 volume,
                 channel_index,
                 clip_start_time,
@@ -121,6 +123,7 @@ def backfill() -> tuple[int, int]:
                     "weighted_label": weighted_label,
                     "weighted_score": weighted_score,
                     "weighted_likely_score": weighted_likely_score,
+                    "human_vocal_score": human_vocal_score,
                     "volume": volume,
                     "channel_index": channel_index,
                     "clip_start_time": clip_start_time.isoformat(),

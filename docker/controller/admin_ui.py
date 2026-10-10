@@ -459,6 +459,10 @@ def format_timestamp(value) -> str:
     return html.escape(str(value))
 
 
+def format_optional_score(value: float | None) -> str:
+    return "—" if value is None else f"{value:.3f}"
+
+
 def summarize_age(value) -> str:
     if value is None:
         return "Never"
@@ -1140,6 +1144,7 @@ BIRDNET_CLIP_SORT_OPTIONS = {
     "date_asc": "d.clip_start_time ASC, d.id ASC",
     "score_desc": "d.score DESC, d.clip_start_time DESC",
     "score_asc": "d.score ASC, d.clip_start_time DESC",
+    "human_vocal_desc": "d.human_vocal_score DESC NULLS LAST, d.clip_start_time DESC",
 }
 
 
@@ -1180,6 +1185,7 @@ def fetch_birdnet_clip_rows(
                        n.name,
                        d.label,
                        d.score,
+                       d.human_vocal_score,
                        d.clip_start_time,
                        d.id,
                        d.clip_path
@@ -1201,9 +1207,10 @@ def fetch_birdnet_clip_rows(
             "peer_hostname": derive_peer_hostname(row[2], row[0]),
             "label": row[3] or "—",
             "score": row[4],
-            "clip_start_time": row[5],
-            "detection_id": row[6],
-            "clip_path": row[7],
+            "human_vocal_score": row[5],
+            "clip_start_time": row[6],
+            "detection_id": row[7],
+            "clip_path": row[8],
         }
         for row in rows
         if not is_infra_wg_ip(row[0])
@@ -2490,7 +2497,8 @@ def fetch_birdnet_clip(detection_id: int) -> dict | None:
                 """
                 SELECT d.id, d.wireguard_ip::text, n.name, d.hostname, d.label,
                        d.score, d.likely_score, d.weighted_label, d.weighted_score,
-                       d.channel_index, d.clip_start_time, d.clip_end_time, d.clip_path
+                       d.channel_index, d.clip_start_time, d.clip_end_time, d.clip_path,
+                       d.human_vocal_score
                 FROM sensos.birdnet_detections d
                 LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
@@ -2515,6 +2523,7 @@ def fetch_birdnet_clip(detection_id: int) -> dict | None:
         "clip_start_time": row[10],
         "clip_end_time": row[11],
         "clip_path": row[12],
+        "human_vocal_score": row[13],
     }
 
 
@@ -2523,6 +2532,7 @@ BIRDNET_CLIP_SORT_LABELS = {
     "date_asc": "Oldest first",
     "score_desc": "Highest score first",
     "score_asc": "Lowest score first",
+    "human_vocal_desc": "Highest human-vocal score first",
 }
 
 
@@ -2582,7 +2592,7 @@ def birdnet_clips_page(
     </form>
     <table>
       <thead>
-        <tr><th>Client</th><th>Network</th><th>Label</th><th>Score</th><th>Clip start</th><th></th></tr>
+        <tr><th>Client</th><th>Network</th><th>Label</th><th>Score</th><th>Human vocal</th><th>Clip start</th><th></th></tr>
       </thead>
       <tbody>
         {''.join(
@@ -2591,11 +2601,12 @@ def birdnet_clips_page(
             f"<td>{html.escape(row['network_name'])}</td>"
             f"<td>{html.escape(row['label'])}</td>"
             f"<td>{row['score']:.3f}</td>"
+            f"<td>{format_optional_score(row['human_vocal_score'])}</td>"
             f"<td>{html.escape(format_timestamp(row['clip_start_time']))}</td>"
             f"<td><a href='/admin/birdnet/clips/{row['detection_id']}'>Listen &amp; view spectrogram</a></td>"
             "</tr>"
             for row in rows
-        ) or '<tr><td colspan="6" class="dim">No clips match this filter.</td></tr>'}
+        ) or '<tr><td colspan="7" class="dim">No clips match this filter.</td></tr>'}
       </tbody>
     </table>
   </section>
@@ -2644,7 +2655,8 @@ def birdnet_clip_page(request: Request, detection_id: int):
     <p class="dim">
       {html.escape(clip['hostname'])} ({html.escape(clip['wg_ip'])}) on {html.escape(clip['network_name'])},
       channel {clip['channel_index']}, {html.escape(format_timestamp(clip['clip_start_time']))}
-      &mdash; raw score {clip['score']:.3f}{f", weighted {clip['weighted_label']} ({clip['weighted_score']:.3f})" if clip['weighted_label'] != clip['label'] else ""}
+      &mdash; raw score {clip['score']:.3f}{f", weighted {clip['weighted_label']} ({clip['weighted_score']:.3f})" if clip['weighted_label'] != clip['label'] else ""},
+      human-vocal score {format_optional_score(clip['human_vocal_score'])}
     </p>
     <audio id="player" controls preload="metadata" src="{audio_url}" style="width: 100%; margin-bottom: 1rem;"></audio>
     <div id="waveform"></div>
