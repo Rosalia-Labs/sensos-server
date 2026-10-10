@@ -650,6 +650,60 @@ def migrate_0_26_0_network_auto_upgrade(cur):
     )
 
 
+def migrate_0_27_0_birdnet_human_vocal_score(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    # Raw per-class score for whatever counts as "human" in BirdNET's label
+    # space (see is_human_label in process-birdnet.py), carried through as
+    # information only -- a bird detection can still win a window's raw/
+    # weighted label even when there's audible human speech underneath it,
+    # and this is how much of that leaked in. Not used to filter/suppress
+    # anything server-side.
+    cur.execute(
+        """
+        ALTER TABLE sensos.birdnet_detections
+        ADD COLUMN IF NOT EXISTS human_vocal_score DOUBLE PRECISION;
+        """
+    )
+    # The admin console's BirdNET overview page sorts/lists across *all*
+    # peers at once (unlike most indexes on this table, which lead with
+    # wireguard_ip/peer_id for a single-site query) -- without this, that
+    # fleet-wide ORDER BY clip_start_time DESC LIMIT forces a full sort of
+    # the whole table instead of an index scan, and gets slower every day.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clip_time
+        ON sensos.birdnet_detections (clip_start_time DESC);
+        """
+    )
+    # The admin clip browser (playback/spectrogram) only ever looks at
+    # detections with uploaded audio, which is a small fraction of all
+    # detections -- partial indexes scoped to clip_path IS NOT NULL keep
+    # that page's filter/sort fast without needing the much larger
+    # unconditional indexes above.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_time
+        ON sensos.birdnet_detections (clip_start_time DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_score
+        ON sensos.birdnet_detections (score DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_human_vocal
+        ON sensos.birdnet_detections (human_vocal_score DESC)
+        WHERE clip_path IS NOT NULL;
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -755,6 +809,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.26.0"),
         name="add per-network auto-upgrade rollout gate",
         apply=migrate_0_26_0_network_auto_upgrade,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.27.0"),
+        name="add birdnet human_vocal_score and clip-browser indexes",
+        apply=migrate_0_27_0_birdnet_human_vocal_score,
     ),
 ]
 
@@ -1966,18 +2025,6 @@ def create_birdnet_detections_table(cur):
         ADD COLUMN IF NOT EXISTS weighted_likely_score DOUBLE PRECISION;
         """
     )
-    # Raw per-class score for whatever counts as "human" in BirdNET's label
-    # space (see is_human_label in process-birdnet.py), carried through as
-    # information only -- a bird detection can still win a window's raw/
-    # weighted label even when there's audible human speech underneath it,
-    # and this is how much of that leaked in. Not used to filter/suppress
-    # anything server-side.
-    cur.execute(
-        """
-        ALTER TABLE sensos.birdnet_detections
-        ADD COLUMN IF NOT EXISTS human_vocal_score DOUBLE PRECISION;
-        """
-    )
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_birdnet_detections_site_clip_time
@@ -2012,44 +2059,6 @@ def create_birdnet_detections_table(cur):
         ON sensos.birdnet_detections (wireguard_ip, label, clip_start_time DESC);
         """
     )
-    # The admin console's BirdNET overview page sorts/lists across *all*
-    # peers at once (unlike the indexes above, which all lead with
-    # wireguard_ip/peer_id for a single-site query) -- without this, that
-    # fleet-wide ORDER BY clip_start_time DESC LIMIT forces a full sort of
-    # the whole table instead of an index scan, and gets slower every day.
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clip_time
-        ON sensos.birdnet_detections (clip_start_time DESC);
-        """
-    )
-    # The admin clip browser (playback/spectrogram) only ever looks at
-    # detections with uploaded audio, which is a small fraction of all
-    # detections -- partial indexes scoped to clip_path IS NOT NULL keep
-    # that page's filter/sort fast without needing the much larger
-    # unconditional indexes above.
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_time
-        ON sensos.birdnet_detections (clip_start_time DESC)
-        WHERE clip_path IS NOT NULL;
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_score
-        ON sensos.birdnet_detections (score DESC)
-        WHERE clip_path IS NOT NULL;
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clips_by_human_vocal
-        ON sensos.birdnet_detections (human_vocal_score DESC)
-        WHERE clip_path IS NOT NULL;
-        """
-    )
-
 
 def create_public_sites_view(cur):
     cur.execute(
