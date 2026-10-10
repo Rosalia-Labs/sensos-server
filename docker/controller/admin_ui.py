@@ -2623,13 +2623,13 @@ def birdnet_clips_page(
     <p class="dim">Only detections whose audio has been uploaded from the client are listed here. Playback and spectrograms are admin-only -- this page is never reachable from the public dashboard.</p>
     <form method="get" action="/admin/birdnet/clips" class="block" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end">
       <label>Device
-        <select name="wg_ip"><option value="">any</option>{device_opts}</select>
+        <select name="wg_ip" style="max-width:180px"><option value="">any</option>{device_opts}</select>
       </label>
       <label>Species
-        <select name="label"><option value="">any</option>{label_opts}</select>
+        <select name="label" style="max-width:220px"><option value="">any</option>{label_opts}</select>
       </label>
       <label>Sort
-        <select name="sort">{sort_opts}</select>
+        <select name="sort" style="max-width:220px">{sort_opts}</select>
       </label>
       <button type="submit">Filter</button>
       <a href="/admin/birdnet/clips">Clear</a>

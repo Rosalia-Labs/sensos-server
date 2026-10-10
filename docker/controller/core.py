@@ -704,6 +704,30 @@ def migrate_0_27_0_birdnet_human_vocal_score(cur):
     )
 
 
+def migrate_0_28_0_birdnet_overview_indexes(cur):
+    ensure_shared_extensions(cur)
+    cur.execute("SET search_path TO sensos, public;")
+    # fetch_birdnet_overview() (the /admin/birdnet stat cards) runs
+    # COUNT(DISTINCT source_path) and MAX(clip_end_time) on every page
+    # load. Neither had a supporting index -- source_path wasn't indexed
+    # anywhere, and clip_end_time only appeared as a trailing column in
+    # composite indexes, unusable for a standalone MAX(). On a table this
+    # size that's two full sequential scans per page load, on top of the
+    # COUNT(*) scan Postgres can't avoid either way.
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_source_path
+        ON sensos.birdnet_detections (source_path);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_birdnet_detections_clip_end_time
+        ON sensos.birdnet_detections (clip_end_time DESC);
+        """
+    )
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(
         version=parse_version_key("0.5.0"),
@@ -814,6 +838,11 @@ SCHEMA_MIGRATIONS = [
         version=parse_version_key("0.27.0"),
         name="add birdnet human_vocal_score and clip-browser indexes",
         apply=migrate_0_27_0_birdnet_human_vocal_score,
+    ),
+    SchemaMigration(
+        version=parse_version_key("0.28.0"),
+        name="add birdnet overview indexes (source_path, clip_end_time)",
+        apply=migrate_0_28_0_birdnet_overview_indexes,
     ),
 ]
 
