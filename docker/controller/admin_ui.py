@@ -11,7 +11,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -1145,16 +1145,20 @@ BIRDNET_CLIP_SORT_OPTIONS = {
     "score_desc": "d.score DESC, d.clip_start_time DESC",
     "score_asc": "d.score ASC, d.clip_start_time DESC",
     "human_vocal_desc": "d.human_vocal_score DESC NULLS LAST, d.clip_start_time DESC",
+    "best_per_species": "species_rank ASC, d.score DESC",
 }
+
+BIRDNET_CLIP_PAGE_SIZE = 50
 
 
 def fetch_birdnet_clip_rows(
-    limit: int = 300,
+    limit: int = BIRDNET_CLIP_PAGE_SIZE,
+    offset: int = 0,
     *,
     wg_ip: str | None = None,
     label: str | None = None,
     sort: str = "date_desc",
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Detections with uploaded audio, filterable by device/label and
     sortable for review listening. Scoped to clip_path IS NOT NULL at the
     SQL level (matching the partial indexes on this table) rather than
@@ -1162,6 +1166,16 @@ def fetch_birdnet_clip_rows(
     older approach is also what made quieter devices disappear from this
     page: a device with few detections could be pushed entirely out of the
     most-recent-N-fleet-wide window by a more active one.
+
+    species_rank (1 = this detection's highest score for its own label,
+    2 = second-highest, ...) is always computed so "best_per_species" can
+    sort by it -- a round-robin "best example of every species first, then
+    second-best of every species, ..." ordering, rather than a straight
+    score sort that would surface every high-scoring example of one
+    prolific species before a single example of a quieter one.
+
+    Returns (rows, has_more) -- fetches one extra row beyond `limit` to
+    answer "is there a next page" without a separate COUNT(*) query.
     """
     sort_sql = BIRDNET_CLIP_SORT_OPTIONS.get(sort, BIRDNET_CLIP_SORT_OPTIONS["date_desc"])
     clauses = ["d.clip_path IS NOT NULL"]
@@ -1173,8 +1187,10 @@ def fetch_birdnet_clip_rows(
         clauses.append("d.label = %s")
         params.append(label)
     where_sql = "WHERE " + " AND ".join(clauses)
-    fetch_limit = max(1, min(limit, 1000))
-    params.append(fetch_limit)
+    fetch_limit = max(1, min(limit, 200))
+    fetch_offset = max(0, offset)
+    params.append(fetch_limit + 1)
+    params.append(fetch_offset)
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1188,17 +1204,21 @@ def fetch_birdnet_clip_rows(
                        d.human_vocal_score,
                        d.clip_start_time,
                        d.id,
-                       d.clip_path
+                       d.clip_path,
+                       ROW_NUMBER() OVER (PARTITION BY d.label ORDER BY d.score DESC) AS species_rank
                 FROM sensos.birdnet_detections d
                 LEFT JOIN sensos.wireguard_peers p ON p.wg_ip = d.wireguard_ip
                 LEFT JOIN sensos.networks n ON n.id = p.network_id
                 {where_sql}
                 ORDER BY {sort_sql}
-                LIMIT %s;
+                LIMIT %s
+                OFFSET %s;
                 """,
                 tuple(params),
             )
             rows = cur.fetchall()
+    has_more = len(rows) > fetch_limit
+    rows = rows[:fetch_limit]
     return [
         {
             "wg_ip": row[0],
@@ -1214,7 +1234,7 @@ def fetch_birdnet_clip_rows(
         }
         for row in rows
         if not is_infra_wg_ip(row[0])
-    ]
+    ], has_more
 
 
 def fetch_birdnet_clip_filter_options() -> tuple[list[dict], list[str]]:
@@ -2533,6 +2553,7 @@ BIRDNET_CLIP_SORT_LABELS = {
     "score_desc": "Highest score first",
     "score_asc": "Lowest score first",
     "human_vocal_desc": "Highest human-vocal score first",
+    "best_per_species": "Best example of each species first, then 2nd-best, ...",
 }
 
 
@@ -2542,6 +2563,7 @@ def birdnet_clips_page(
     wg_ip: str | None = None,
     label: str | None = None,
     sort: str | None = None,
+    page: int = 1,
     flash: str | None = None,
 ):
     redirect = require_session(request)
@@ -2556,8 +2578,30 @@ def birdnet_clips_page(
         label = None
     if sort not in BIRDNET_CLIP_SORT_OPTIONS:
         sort = "date_desc"
+    page = max(1, page)
+    offset = (page - 1) * BIRDNET_CLIP_PAGE_SIZE
 
-    rows = fetch_birdnet_clip_rows(limit=300, wg_ip=wg_ip, label=label, sort=sort)
+    rows, has_more = fetch_birdnet_clip_rows(
+        limit=BIRDNET_CLIP_PAGE_SIZE, offset=offset, wg_ip=wg_ip, label=label, sort=sort
+    )
+
+    def page_url(target_page: int) -> str:
+        params = {"page": str(target_page)}
+        if wg_ip:
+            params["wg_ip"] = wg_ip
+        if label:
+            params["label"] = label
+        if sort:
+            params["sort"] = sort
+        return "/admin/birdnet/clips?" + urlencode(params)
+
+    pager = f"""
+<div class="block" style="display:flex;gap:0.75rem;align-items:center">
+  {f'<a href="{page_url(page - 1)}">&larr; Previous</a>' if page > 1 else '<span class="dim">&larr; Previous</span>'}
+  <span class="dim">Page {page}</span>
+  {f'<a href="{page_url(page + 1)}">Next &rarr;</a>' if has_more else '<span class="dim">Next &rarr;</span>'}
+</div>
+"""
 
     device_opts = "".join(
         f'<option value="{html.escape(device["wg_ip"])}"{" selected" if wg_ip == device["wg_ip"] else ""}>{html.escape(device["display"])}</option>'
@@ -2590,6 +2634,7 @@ def birdnet_clips_page(
       <button type="submit">Filter</button>
       <a href="/admin/birdnet/clips">Clear</a>
     </form>
+    {pager}
     <table>
       <thead>
         <tr><th>Client</th><th>Network</th><th>Label</th><th>Score</th><th>Human vocal</th><th>Clip start</th><th></th></tr>
@@ -2609,6 +2654,7 @@ def birdnet_clips_page(
         ) or '<tr><td colspan="7" class="dim">No clips match this filter.</td></tr>'}
       </tbody>
     </table>
+    {pager}
   </section>
 </div>
 """
