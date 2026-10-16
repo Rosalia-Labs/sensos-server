@@ -31,6 +31,11 @@ Usage: $(basename "$0") [options]
 
 Create one standard server backup bundle. By default, the bundle stays local.
 
+NOTE: this does NOT include uploaded BirdNET audio clips (BIRDNET_AUDIO_DATA_DIR
+in docker/.env) -- only the Postgres dump and WireGuard state. See
+docs/backup-automation.md for why, and bin/audio-archive status to check
+whether disk/Postgres currently agree with each other.
+
 Options:
   --remote PATH     Copy the backup to this rclone destination after creation
   --move            With --remote/SENSOS_BACKUP_REMOTE, remove local files after upload

@@ -572,6 +572,7 @@ Typical use:
 ./bin/audio-archive export --site testing-0-1 --since 7d --limit 500 --with-environment --output site1-week.tar.gz
 ./bin/audio-archive status
 ./bin/audio-archive status --site testing-0-1 --list-problems
+./bin/audio-archive repair
 ```
 
 Subcommands:
@@ -595,9 +596,19 @@ Subcommands:
   directories missing a `manifest.db` or a `clients.db` entry). Add
   `--list-problems` to print the actual peer/detection ids instead of just
   counts. Doesn't fix anything itself -- for manifest drift specifically, it
-  points you at `backfill_birdnet_manifest.py`; a disk/Postgres mismatch
-  (orphaned file or dangling DB row) needs a human judgment call, not an
-  automatic fix.
+  points you at `repair`; a disk/Postgres mismatch (orphaned file or dangling
+  DB row) needs a human judgment call, not an automatic fix.
+- `repair` -- reconciles every peer's `manifest.db` against disk in both
+  directions: adds a row for a clip file that's missing one, and removes a
+  row whose clip file is gone. The manifest's only job is to make an opaque
+  `<peer>/<detection_id>.flac` filename interpretable without a database
+  connection; a row describing a file that isn't there doesn't serve that
+  purpose and is just a second, independently-stale copy of metadata
+  Postgres already has, so `repair` keeps the manifest scoped to exactly the
+  clips that exist. Delegates to `reconcile_birdnet_manifest.py` inside the
+  controller container, reusing the same manifest read/write functions the
+  live upload path uses. Doesn't touch disk/Postgres mismatches -- see
+  `status` above.
 
 Shared filters (`query` and `export`): `--label`, `--weighted-label`,
 `--min-score`, `--min-weighted-score`, `--site` (peer id, UUID, WireGuard IP,

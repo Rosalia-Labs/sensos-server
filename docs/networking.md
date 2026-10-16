@@ -53,6 +53,39 @@ Operational note:
 - if security is a concern, temporary port forwarding can be a better setup
   path than leaving the API broadly exposed
 
+## Reaching the API During Enrollment
+
+A brand-new client has no WireGuard tunnel yet -- that's what enrollment
+creates -- so it needs some other way to reach `<config-server>:<port>` for
+just that one setup step. In practice, operators pick one of three patterns:
+
+1. **A private network, no forwarding.** Put the client and the machine
+   running `config-network` on a network segment where the API port is
+   already reachable directly (e.g. a local/on-prem bring-up network).
+   Nothing to forward, nothing exposed beyond that segment, but it requires
+   that network to exist in the first place.
+2. **Temporary port forwarding through the operator's laptop.** No pre-existing
+   private network needed: the operator's laptop reaches the API (e.g. over
+   its own WireGuard access, or because it's already on the server's network),
+   forwards the port to itself, then bridges that to the client over a direct
+   Ethernet link with internet sharing enabled on the laptop's Wi-Fi side. The
+   client gets both general internet access and reachability to the forwarded
+   API port through the laptop for the duration of enrollment, then goes back
+   to being reachable only over its new WireGuard tunnel. The `sensos-client`
+   side of that trick -- SSH port-forward plus laptop internet sharing -- is
+   documented step by step in
+   [`sensos-client`'s `./install` notes](https://github.com/Rosalia-Labs/sensos-client/blob/main/docs/command-reference.md#install).
+3. **Make the API port genuinely public and rely on the password alone.**
+   Simplest to operate -- no forwarding dance for every enrollment -- at the
+   cost of a password-protected management API being reachable from the open
+   internet instead of gated behind WireGuard. Valid if that tradeoff is
+   acceptable for your deployment; not the default most operators choose.
+
+None of these is enforced by the software -- `config-network --setup-server`
+just needs *some* address the client can reach at that moment, and option 1
+or 2 both keep the steady-state posture (API reachable only over WireGuard)
+intact once enrollment finishes.
+
 By contrast, the WireGuard endpoint IP and UDP port are not server-global
 settings in this repo. They are chosen per network when you run
 `bin/create-network`.

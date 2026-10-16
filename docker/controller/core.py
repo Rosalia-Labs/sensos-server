@@ -2743,6 +2743,30 @@ def append_clip_manifest_entry(peer_id: int, clip: dict) -> None:
     _chown_like_audio_root(db_path, *_sqlite_sidecar_paths(db_path))
 
 
+def delete_clip_manifest_entry(peer_id: int, detection_id: int) -> bool:
+    """The inverse of append_clip_manifest_entry: removes a clips row whose
+    file is gone, so the manifest keeps meaning "this clip file exists and
+    here's what it is" rather than drifting into a second, independently
+    stale copy of detection metadata. Returns whether a row was actually
+    removed (False if the manifest.db or the row doesn't exist -- both are
+    fine, not errors, since this is meant to be safe to run speculatively)."""
+    db_path = os.path.join(BIRDNET_AUDIO_ROOT, str(peer_id), "manifest.db")
+    if not os.path.isfile(db_path):
+        return False
+    manifest_conn = _manifest_db_connect(db_path)
+    try:
+        cursor = manifest_conn.execute(
+            "DELETE FROM clips WHERE detection_id = ?;", (detection_id,)
+        )
+        manifest_conn.commit()
+        deleted = cursor.rowcount > 0
+    finally:
+        manifest_conn.close()
+    if deleted:
+        _chown_like_audio_root(db_path, *_sqlite_sidecar_paths(db_path))
+    return deleted
+
+
 def store_birdnet_audio_clip(
     conn,
     peer_id: int,

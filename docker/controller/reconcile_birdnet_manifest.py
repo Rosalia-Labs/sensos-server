@@ -1,21 +1,38 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 #
-# Populates clients.db and each client's manifest.db from clip files already
-# on disk, for clips uploaded before this manifest existed (or any clip that
-# otherwise ended up missing from it). The clip filename is the detection id,
-# so this is a straight lookup against Postgres per file, reusing the exact
-# same manifest-writing functions the live upload path uses -- idempotent
-# (both are upserts), so safe to run as often as needed, not just once.
+# Reconciles each peer's manifest.db against the clip files actually on disk,
+# in both directions:
 #
-# Run inside the controller container:
-#   docker exec sensos-controller python3 backfill_birdnet_manifest.py
+#   backfill() -- a clip file exists but isn't in its peer's manifest.db yet
+#                 (clips uploaded before the manifest existed, or any clip
+#                 that otherwise ended up missing from it). Looks the file up
+#                 in Postgres by detection id and writes the manifest row.
+#   prune()    -- a manifest.db row exists but its clip file is gone. Deletes
+#                 the row.
+#
+# The manifest's only job is to make an opaque "<peer>/<detection_id>.flac"
+# filename interpretable without a database connection -- label, score,
+# timing. A row describing a file that isn't there serves that purpose for
+# nothing and is just a second, independently-stale copy of metadata Postgres
+# already has, so prune() matters as much as backfill() for keeping that
+# invariant (manifest row <=> real file) true rather than "usually true."
+#
+# Both directions reuse the exact manifest-writing/deleting functions the
+# live upload path uses -- idempotent (upsert / delete-if-present) -- so this
+# is safe to run as often as needed, not just once.
+#
+# Normally invoked via `bin/audio-archive repair` from the host. Can also be
+# run directly inside the controller container:
+#   docker exec sensos-controller python3 reconcile_birdnet_manifest.py
 
 import os
+import sqlite3
 
 from core import (
     BIRDNET_AUDIO_ROOT,
     append_clip_manifest_entry,
+    delete_clip_manifest_entry,
     get_db,
     upsert_client_manifest_entry,
 )
@@ -137,9 +154,56 @@ def backfill() -> tuple[int, int]:
     return manifested, skipped
 
 
+def prune() -> tuple[int, int]:
+    """Inverse of backfill(): removes a peer's manifest.db rows whose clip
+    file is no longer on disk. Reads each manifest.db directly (read-only)
+    since this just needs the list of detection ids it currently claims, not
+    anything core.py's connection helpers manage beyond that."""
+    if not os.path.isdir(BIRDNET_AUDIO_ROOT):
+        return 0, 0
+
+    pruned = 0
+    checked_peers = 0
+
+    for entry in sorted(os.listdir(BIRDNET_AUDIO_ROOT)):
+        peer_dir = os.path.join(BIRDNET_AUDIO_ROOT, entry)
+        if not entry.isdigit() or not os.path.isdir(peer_dir):
+            continue
+        peer_id = int(entry)
+        manifest_path = os.path.join(peer_dir, "manifest.db")
+        if not os.path.isfile(manifest_path):
+            continue
+        checked_peers += 1
+
+        manifest_conn = sqlite3.connect(f"file:{manifest_path}?mode=ro", uri=True, timeout=10)
+        try:
+            try:
+                detection_ids = [
+                    row[0] for row in manifest_conn.execute("SELECT detection_id FROM clips")
+                ]
+            except sqlite3.OperationalError:
+                detection_ids = []
+        finally:
+            manifest_conn.close()
+
+        for detection_id in detection_ids:
+            clip_path = os.path.join(peer_dir, f"{detection_id}.flac")
+            if os.path.isfile(clip_path):
+                continue
+            if delete_clip_manifest_entry(peer_id, detection_id):
+                print(f"[INFO] Pruned stale manifest row (file missing): {entry}/{detection_id}.flac")
+                pruned += 1
+
+    return pruned, checked_peers
+
+
 def main() -> int:
     manifested, skipped = backfill()
-    print(f"Backfill complete: {manifested} clip(s) manifested, {skipped} skipped.")
+    pruned, checked_peers = prune()
+    print(
+        f"Reconcile complete: {manifested} clip(s) manifested, {skipped} skipped, "
+        f"{pruned} stale manifest row(s) pruned across {checked_peers} peer manifest(s)."
+    )
     return 0
 
 

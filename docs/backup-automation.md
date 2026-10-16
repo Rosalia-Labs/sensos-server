@@ -48,6 +48,18 @@ container identities. The component files are removed from `backups/` after
 the bundle is created, so normal scheduled runs leave one logical backup set
 per run.
 
+**`bin/backup-server` does NOT back up uploaded BirdNET audio clips.** The
+Postgres dump includes every `sensos.birdnet_detections` row (label, score,
+`clip_path`, etc.), but the actual `.flac` files, `clients.db`, and each
+peer's `manifest.db` under `BIRDNET_AUDIO_DATA_DIR` (`docker/.env`) are not
+part of this bundle at all. Restoring the database alone onto a fresh host
+recovers all detection metadata with zero of the audio it describes --
+`bin/audio-archive status` will report every clip as a dangling DB row.
+Protecting that tree (size easily reaches GB-to-TB scale and keeps growing,
+so a nightly `tar` into this same bundle is likely the wrong tool regardless
+-- ZFS snapshots/send or incremental rsync to a second location fit better)
+is a separate, not-yet-decided piece of operational setup.
+
 ## Option Model
 
 Use `bin/backup-server` in one of these forms:

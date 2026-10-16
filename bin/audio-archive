@@ -41,6 +41,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 DOCKER_DIR = REPO_ROOT / "docker"
 ENV_FILE = DOCKER_DIR / ".env"
 DB_CONTAINER = "sensos-database"
+CONTROLLER_CONTAINER = "sensos-controller"
 DEFAULT_AUDIO_DIR = REPO_ROOT / "local" / "birdnet-audio"
 
 BASE_COLUMNS = """
@@ -143,15 +144,19 @@ def require_docker() -> None:
         die("docker access unavailable for the current user")
 
 
-def require_db_running() -> None:
+def require_container_running(name: str) -> None:
     result = subprocess.run(
-        ["docker", "ps", "--filter", f"name=^{DB_CONTAINER}$", "--format", "{{.Names}}"],
+        ["docker", "ps", "--filter", f"name=^{name}$", "--format", "{{.Names}}"],
         capture_output=True,
         text=True,
         check=True,
     )
-    if DB_CONTAINER not in result.stdout.split():
-        die(f"{DB_CONTAINER} container is not running")
+    if name not in result.stdout.split():
+        die(f"{name} container is not running")
+
+
+def require_db_running() -> None:
+    require_container_running(DB_CONTAINER)
 
 
 def psql_raw(env: dict[str, str], sql: str) -> str:
@@ -547,8 +552,8 @@ def cmd_status(env: dict[str, str], args: argparse.Namespace) -> None:
     """Cross-checks the three places a clip's existence is recorded -- the
     .flac file on disk, the clip_path on its sensos.birdnet_detections row,
     and its entry in that peer's manifest.db -- and reports where they
-    disagree. Read-only; doesn't fix anything (that's what
-    backfill_birdnet_manifest.py is for)."""
+    disagree. Read-only; doesn't fix anything (that's what `repair` is
+    for)."""
     audio_root = Path(env.get("BIRDNET_AUDIO_DATA_DIR") or DEFAULT_AUDIO_DIR)
     if not audio_root.is_dir():
         die(f"audio root not found at {audio_root} (check BIRDNET_AUDIO_DATA_DIR in {ENV_FILE})")
@@ -656,15 +661,15 @@ def cmd_status(env: dict[str, str], args: argparse.Namespace) -> None:
         more = "..." if len(missing_from_clients_db) > 10 else ""
         print(f"  peer directories missing from clients.db: {len(missing_from_clients_db)} ({shown}{more})")
 
-    if not_manifested or manifest_missing_peers:
+    if not_manifested or manifest_missing_peers or stale_manifest:
         print()
         print("  Manifest drift found. Fix with:")
-        print("    docker exec sensos-controller python3 backfill_birdnet_manifest.py")
+        print("    ./bin/audio-archive repair")
     if dangling_db or orphaned_files:
         print()
         print(
-            "  Disk/Postgres mismatch found -- this is NOT what backfill_birdnet_manifest.py fixes "
-            "(that only reconciles manifest.db from disk+Postgres); it means the clip file and the "
+            "  Disk/Postgres mismatch found -- this is NOT what 'repair' fixes (that only "
+            "reconciles manifest.db from disk+Postgres); it means the clip file and the "
             "database row disagree about each other's existence."
         )
 
@@ -683,6 +688,23 @@ def cmd_status(env: dict[str, str], args: argparse.Namespace) -> None:
         print_list("Dangling DB rows", dangling_db)
         print_list("Not yet manifested", not_manifested)
         print_list("Stale manifest rows", stale_manifest)
+
+
+def cmd_repair(env: dict[str, str], args: argparse.Namespace) -> None:
+    """Reconciles manifest.db files against disk, in both directions: adds
+    rows for clip files missing from their manifest, and removes rows whose
+    clip file is gone. Delegates to reconcile_birdnet_manifest.py inside the
+    controller container (it reuses the same manifest read/write functions
+    the live upload path uses, which must stay there since that's also where
+    they're used for every live clip upload). Doesn't touch disk/Postgres
+    mismatches (orphaned files, dangling DB rows) -- those need a human call,
+    not an automatic fix; see `audio-archive status`."""
+    require_container_running(CONTROLLER_CONTAINER)
+    result = subprocess.run(
+        ["docker", "exec", CONTROLLER_CONTAINER, "python3", "reconcile_birdnet_manifest.py"]
+    )
+    if result.returncode != 0:
+        die(f"repair failed (exit {result.returncode})")
 
 
 def export_format(output: Path) -> str:
@@ -897,6 +919,12 @@ def main() -> int:
         "--list-limit", type=int, default=50, help="Max ids printed per category with --list-problems (default: 50)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    repair_parser = subparsers.add_parser(
+        "repair",
+        help="Reconcile manifest.db files against disk (add missing rows, prune stale ones)",
+    )
+    repair_parser.set_defaults(func=cmd_repair)
 
     args = parser.parse_args()
 
