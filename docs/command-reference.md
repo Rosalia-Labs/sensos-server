@@ -546,24 +546,30 @@ Behavior:
 - prefers local playback through `play` and falls back to `aplay` when available
 - relies on the client helper to restart recording automatically when the session ends
 
-### `bin/birdnet-archive`
+### `bin/audio-archive`
 
-Query, subset, and archive uploaded BirdNET detections and audio clips.
-Detection metadata is read from Postgres the same way `bin/client-overview`
-does (`docker exec sensos-database psql`); audio clips are read directly off
-the host filesystem under `BIRDNET_AUDIO_DATA_DIR` (same bind mount the
-controller container writes to), so exporting doesn't go through Docker at
-all.
+Query, subset, and archive the uploaded audio archive. Today there's exactly
+one classifier (BirdNET), so this queries its schema directly
+(`sensos.birdnet_detections`) rather than through any classifier-agnostic
+abstraction; a second classifier with its own detection schema would need
+either a second query path added here or a real abstraction over "detection
+source" -- not assumed to be a drop-in rename. Detection metadata is read
+from Postgres the same way `bin/client-overview` does (`docker exec
+sensos-database psql`); audio clips are read directly off the host filesystem
+under `BIRDNET_AUDIO_DATA_DIR` (same bind mount the controller container
+writes to), so exporting doesn't go through Docker at all.
 
 Typical use:
 
 ```sh
-./bin/birdnet-archive labels --since 7d
-./bin/birdnet-archive query --label "Turdus migratorius" --min-score 0.7 --since 7d
-./bin/birdnet-archive query --site testing-0-1 --format csv > recent.csv
-./bin/birdnet-archive export --site testing-0-1 --since 30d --limit 500 --output site1-last-month.tar.gz
-./bin/birdnet-archive export --label "Turdus migratorius" --all --output turdus-clips/
-./bin/birdnet-archive export --site testing-0-1 --since 7d --limit 500 --with-environment --output site1-week.tar.gz
+./bin/audio-archive labels --since 7d
+./bin/audio-archive query --label "Turdus migratorius" --min-score 0.7 --since 7d
+./bin/audio-archive query --site testing-0-1 --format csv > recent.csv
+./bin/audio-archive export --site testing-0-1 --since 30d --limit 500 --output site1-last-month.tar.gz
+./bin/audio-archive export --label "Turdus migratorius" --all --output turdus-clips/
+./bin/audio-archive export --site testing-0-1 --since 7d --limit 500 --with-environment --output site1-week.tar.gz
+./bin/audio-archive status
+./bin/audio-archive status --site testing-0-1 --list-problems
 ```
 
 Subcommands:
@@ -580,6 +586,16 @@ Subcommands:
   within `--env-window-minutes` (default 15) of its `clip_start_time`. Long/tidy
   format (one row per reading, not pivoted to columns), since the set of
   sensors varies by site.
+- `status` -- read-only health check of the audio archive: cross-references clip
+  files on disk, `clip_path` on `sensos.birdnet_detections` rows, and each
+  peer's `manifest.db`, and reports where they disagree (orphaned files,
+  dangling DB rows, un-manifested files, stale manifest rows, peer
+  directories missing a `manifest.db` or a `clients.db` entry). Add
+  `--list-problems` to print the actual peer/detection ids instead of just
+  counts. Doesn't fix anything itself -- for manifest drift specifically, it
+  points you at `backfill_birdnet_manifest.py`; a disk/Postgres mismatch
+  (orphaned file or dangling DB row) needs a human judgment call, not an
+  automatic fix.
 
 Shared filters (`query` and `export`): `--label`, `--weighted-label`,
 `--min-score`, `--min-weighted-score`, `--site` (peer id, UUID, WireGuard IP,

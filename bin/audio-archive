@@ -2,14 +2,22 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Rosalia Labs LLC
 #
-# Human-friendly query/subset/archive tool for uploaded BirdNET data.
+# Human-friendly query/subset/archive tool for the uploaded audio archive.
 #
-# Detection metadata lives in Postgres (sensos.birdnet_detections), reached
-# the same way bin/client-overview reaches it -- `docker exec sensos-database
-# psql` -- since Postgres isn't published to the host. Audio clips live on
-# disk under BIRDNET_AUDIO_DATA_DIR (docker/.env), which is a host bind mount
-# of the same tree the controller container writes to, so clip files are read
-# directly off the host filesystem rather than through docker exec/cp.
+# SCOPE: today there is exactly one classifier (BirdNET), so this queries its
+# schema directly (sensos.birdnet_detections) rather than through any kind of
+# classifier-agnostic abstraction -- a generic "pluggable schema" layer isn't
+# worth building for a single concrete schema. If/when a second classifier
+# with its own detection schema shows up, this will need either a second
+# query path or a real abstraction over "detection source"; don't assume the
+# column names and single-table queries below generalize as-is.
+#
+# Detection metadata lives in Postgres, reached the same way bin/client-overview
+# reaches it -- `docker exec sensos-database psql` -- since Postgres isn't
+# published to the host. Audio clips live on disk under BIRDNET_AUDIO_DATA_DIR
+# (docker/.env), which is a host bind mount of the same tree the controller
+# container writes to, so clip files are read directly off the host
+# filesystem rather than through docker exec/cp.
 
 from __future__ import annotations
 
@@ -19,10 +27,12 @@ import io
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tarfile
 import zipfile
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -137,7 +147,7 @@ def require_db_running() -> None:
         die(f"{DB_CONTAINER} container is not running")
 
 
-def psql_json(env: dict[str, str], sql: str):
+def psql_raw(env: dict[str, str], sql: str) -> str:
     cmd = [
         "docker",
         "exec",
@@ -160,10 +170,18 @@ def psql_json(env: dict[str, str], sql: str):
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         die(f"query failed: {result.stderr.strip()}")
-    output = result.stdout.strip()
+    return result.stdout.strip()
+
+
+def psql_json(env: dict[str, str], sql: str):
+    output = psql_raw(env, sql)
     if not output:
         return None
     return json.loads(output)
+
+
+def psql_scalar(env: dict[str, str], sql: str) -> str:
+    return psql_raw(env, sql)
 
 
 def sql_literal(value) -> str:
@@ -442,6 +460,189 @@ def cmd_labels(env: dict[str, str], args: argparse.Namespace) -> None:
     print("\nLabel is weighted_label when present, else the raw label.")
 
 
+def human_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TiB"
+
+
+def read_manifest_detection_ids(manifest_path: Path) -> set[int] | None:
+    """None means the manifest.db couldn't be read at all (missing, or
+    genuinely broken); an empty set means it exists but has no clips table/
+    rows yet -- those are reported differently."""
+    if not manifest_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{manifest_path}?mode=ro", uri=True, timeout=10)
+        try:
+            return {row[0] for row in conn.execute("SELECT detection_id FROM clips")}
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        # Most commonly "no such table: clips" -- a manifest.db that exists
+        # but predates any clip ever being written for this peer.
+        return set()
+
+
+def read_clients_db_peer_ids(audio_root: Path) -> set[int]:
+    clients_db = audio_root / "clients.db"
+    if not clients_db.is_file():
+        return set()
+    try:
+        conn = sqlite3.connect(f"file:{clients_db}?mode=ro", uri=True, timeout=10)
+        try:
+            return {row[0] for row in conn.execute("SELECT peer_id FROM clients")}
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        return set()
+
+
+def cmd_status(env: dict[str, str], args: argparse.Namespace) -> None:
+    """Cross-checks the three places a clip's existence is recorded -- the
+    .flac file on disk, the clip_path on its sensos.birdnet_detections row,
+    and its entry in that peer's manifest.db -- and reports where they
+    disagree. Read-only; doesn't fix anything (that's what
+    backfill_birdnet_manifest.py is for)."""
+    audio_root = Path(env.get("BIRDNET_AUDIO_DATA_DIR") or DEFAULT_AUDIO_DIR)
+    if not audio_root.is_dir():
+        die(f"audio root not found at {audio_root} (check BIRDNET_AUDIO_DATA_DIR in {ENV_FILE})")
+
+    site_peer_id = None
+    if args.site:
+        site_peer_id, _label = resolve_site(env, args.site)
+
+    peer_dirs: list[int] = []
+    for entry in sorted(audio_root.iterdir()):
+        if not entry.is_dir() or not entry.name.isdigit():
+            continue
+        peer_id = int(entry.name)
+        if site_peer_id is not None and peer_id != site_peer_id:
+            continue
+        peer_dirs.append(peer_id)
+
+    disk_clips: dict[int, dict[int, int]] = {}  # peer_id -> {detection_id: size_bytes}
+    total_bytes = 0
+    for peer_id in peer_dirs:
+        clips: dict[int, int] = {}
+        for f in (audio_root / str(peer_id)).glob("*.flac"):
+            try:
+                detection_id = int(f.stem)
+            except ValueError:
+                continue
+            size = f.stat().st_size
+            clips[detection_id] = size
+            total_bytes += size
+        disk_clips[peer_id] = clips
+
+    manifested: dict[int, set[int]] = {}
+    manifest_missing_peers: list[int] = []
+    for peer_id in peer_dirs:
+        ids = read_manifest_detection_ids(audio_root / str(peer_id) / "manifest.db")
+        if ids is None:
+            manifest_missing_peers.append(peer_id)
+            manifested[peer_id] = set()
+        else:
+            manifested[peer_id] = ids
+
+    clients_db_peers = read_clients_db_peer_ids(audio_root)
+
+    where = f"d.peer_id = {site_peer_id}" if site_peer_id is not None else "TRUE"
+    db_rows = (
+        psql_json(
+            env,
+            f"""
+            SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+                SELECT d.id AS detection_id, d.peer_id
+                FROM sensos.birdnet_detections d
+                WHERE d.clip_path IS NOT NULL AND {where}
+            ) t;
+            """,
+        )
+        or []
+    )
+    db_clips: dict[int, set[int]] = defaultdict(set)
+    for row in db_rows:
+        db_clips[row["peer_id"]].add(row["detection_id"])
+
+    null_clip_count = psql_scalar(
+        env, f"SELECT count(*) FROM sensos.birdnet_detections d WHERE d.clip_path IS NULL AND {where};"
+    )
+
+    orphaned_files: list[tuple[int, int]] = []
+    dangling_db: list[tuple[int, int]] = []
+    not_manifested: list[tuple[int, int]] = []
+    stale_manifest: list[tuple[int, int]] = []
+
+    all_peer_ids = sorted(set(disk_clips) | set(db_clips))
+    for peer_id in all_peer_ids:
+        disk_ids = set(disk_clips.get(peer_id, {}))
+        db_ids = db_clips.get(peer_id, set())
+        manifest_ids = manifested.get(peer_id, set())
+
+        orphaned_files += [(peer_id, i) for i in sorted(disk_ids - db_ids)]
+        dangling_db += [(peer_id, i) for i in sorted(db_ids - disk_ids)]
+        not_manifested += [(peer_id, i) for i in sorted(disk_ids - manifest_ids)]
+        stale_manifest += [(peer_id, i) for i in sorted(manifest_ids - disk_ids)]
+
+    total_disk_clips = sum(len(v) for v in disk_clips.values())
+    total_db_clips = sum(len(v) for v in db_clips.values())
+    missing_from_clients_db = sorted(set(peer_dirs) - clients_db_peers)
+
+    print("Audio archive status")
+    print(f"  audio root: {audio_root}")
+    if args.site:
+        print(f"  site: {args.site} (peer_id={site_peer_id})")
+    print(f"  peer directories: {len(peer_dirs)}")
+    print(f"  clip files on disk: {total_disk_clips} ({human_bytes(total_bytes)})")
+    print(f"  detections with clip_path set in Postgres: {total_db_clips}")
+    print(f"  detections with no clip yet (clip_path NULL): {null_clip_count}")
+    print()
+    print(f"  orphaned files (on disk, no matching DB row): {len(orphaned_files)}")
+    print(f"  dangling DB rows (clip_path set, file missing on disk): {len(dangling_db)}")
+    print(f"  not yet manifested (file on disk, missing from that peer's manifest.db): {len(not_manifested)}")
+    print(f"  stale manifest rows (in manifest.db, file missing on disk): {len(stale_manifest)}")
+    if manifest_missing_peers:
+        shown = ", ".join(str(p) for p in manifest_missing_peers[:10])
+        more = "..." if len(manifest_missing_peers) > 10 else ""
+        print(f"  peer directories with no manifest.db at all: {len(manifest_missing_peers)} ({shown}{more})")
+    if missing_from_clients_db:
+        shown = ", ".join(str(p) for p in missing_from_clients_db[:10])
+        more = "..." if len(missing_from_clients_db) > 10 else ""
+        print(f"  peer directories missing from clients.db: {len(missing_from_clients_db)} ({shown}{more})")
+
+    if not_manifested or manifest_missing_peers:
+        print()
+        print("  Manifest drift found. Fix with:")
+        print("    docker exec sensos-controller python3 backfill_birdnet_manifest.py")
+    if dangling_db or orphaned_files:
+        print()
+        print(
+            "  Disk/Postgres mismatch found -- this is NOT what backfill_birdnet_manifest.py fixes "
+            "(that only reconciles manifest.db from disk+Postgres); it means the clip file and the "
+            "database row disagree about each other's existence."
+        )
+
+    if args.list_problems:
+
+        def print_list(title: str, items: list[tuple[int, int]]) -> None:
+            if not items:
+                return
+            print(f"\n{title}:")
+            for peer_id, detection_id in items[: args.list_limit]:
+                print(f"  peer={peer_id} detection={detection_id}")
+            if len(items) > args.list_limit:
+                print(f"  ... and {len(items) - args.list_limit} more")
+
+        print_list("Orphaned files", orphaned_files)
+        print_list("Dangling DB rows", dangling_db)
+        print_list("Not yet manifested", not_manifested)
+        print_list("Stale manifest rows", stale_manifest)
+
+
 def export_format(output: Path) -> str:
     name = output.name.lower()
     if name.endswith(".zip"):
@@ -616,6 +817,19 @@ def main() -> int:
     labels_parser.add_argument("--since", help="Only count clips starting at/after this time")
     labels_parser.add_argument("--until", help="Only count clips starting before this time")
     labels_parser.set_defaults(func=cmd_labels)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Cross-check clip files on disk against Postgres and each peer's manifest.db",
+    )
+    status_parser.add_argument("--site", help="Peer id, UUID, WireGuard IP, or hostname (default: all sites)")
+    status_parser.add_argument(
+        "--list-problems", action="store_true", help="List the actual peer/detection ids, not just counts"
+    )
+    status_parser.add_argument(
+        "--list-limit", type=int, default=50, help="Max ids printed per category with --list-problems (default: 50)"
+    )
+    status_parser.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
 
