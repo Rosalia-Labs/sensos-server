@@ -546,6 +546,60 @@ Behavior:
 - prefers local playback through `play` and falls back to `aplay` when available
 - relies on the client helper to restart recording automatically when the session ends
 
+### `bin/birdnet-archive`
+
+Query, subset, and archive uploaded BirdNET detections and audio clips.
+Detection metadata is read from Postgres the same way `bin/client-overview`
+does (`docker exec sensos-database psql`); audio clips are read directly off
+the host filesystem under `BIRDNET_AUDIO_DATA_DIR` (same bind mount the
+controller container writes to), so exporting doesn't go through Docker at
+all.
+
+Typical use:
+
+```sh
+./bin/birdnet-archive labels --since 7d
+./bin/birdnet-archive query --label "Turdus migratorius" --min-score 0.7 --since 7d
+./bin/birdnet-archive query --site testing-0-1 --format csv > recent.csv
+./bin/birdnet-archive export --site testing-0-1 --since 30d --limit 500 --output site1-last-month.tar.gz
+./bin/birdnet-archive export --label "Turdus migratorius" --all --output turdus-clips/
+./bin/birdnet-archive export --site testing-0-1 --since 7d --limit 500 --with-environment --output site1-week.tar.gz
+```
+
+Subcommands:
+
+- `labels` -- distinct labels (weighted label when present, else raw) with
+  detection counts; a quick way to find the exact label string to filter on
+- `query` -- prints matching detections as a table (default), `--format csv`,
+  or `--format json`
+- `export` -- copies matching clips plus a `manifest.csv` into `--output`,
+  which may be a directory, or a file ending in `.zip`/`.tar.gz`/`.tgz`; add
+  `--with-environment` to also write `environment.csv` -- i2c sensor readings
+  (temperature, humidity, CO2, etc., whatever's physically attached at each
+  site) from `sensos.i2c_readings`, matched to each exported clip's site
+  within `--env-window-minutes` (default 15) of its `clip_start_time`. Long/tidy
+  format (one row per reading, not pivoted to columns), since the set of
+  sensors varies by site.
+
+Shared filters (`query` and `export`): `--label`, `--weighted-label`,
+`--min-score`, `--min-weighted-score`, `--site` (peer id, UUID, WireGuard IP,
+or hostname -- same selector `bin/client-overview` accepts), `--network`,
+`--channel`, `--since`/`--until` (ISO 8601, or `Nd`/`Nh`/`Nm` relative to
+now), `--order`.
+
+Behavior:
+
+- requires Docker access and a running `sensos-database` container
+- `export` always restricts to detections with an uploaded clip; `query`
+  shows all matches unless `--with-audio-only` is passed
+- `export` requires an explicit `--limit N` or `--all` -- there's no implicit
+  cap, so you have to say how much you mean to archive
+- clips within an archive are grouped under `clips/<site>-<peer id>/`, since
+  a subset can span multiple sites
+- a clip file missing from disk (rare, but possible if storage and Postgres
+  were restored from backups taken at different times) is skipped with a
+  count printed at the end, not treated as fatal
+
 ## Admin UI
 
 The built-in admin UI includes operator views under `/admin`, including

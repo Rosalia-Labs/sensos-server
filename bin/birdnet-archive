@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Rosalia Labs LLC
+#
+# Human-friendly query/subset/archive tool for uploaded BirdNET data.
+#
+# Detection metadata lives in Postgres (sensos.birdnet_detections), reached
+# the same way bin/client-overview reaches it -- `docker exec sensos-database
+# psql` -- since Postgres isn't published to the host. Audio clips live on
+# disk under BIRDNET_AUDIO_DATA_DIR (docker/.env), which is a host bind mount
+# of the same tree the controller container writes to, so clip files are read
+# directly off the host filesystem rather than through docker exec/cp.
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import zipfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+DOCKER_DIR = REPO_ROOT / "docker"
+ENV_FILE = DOCKER_DIR / ".env"
+DB_CONTAINER = "sensos-database"
+DEFAULT_AUDIO_DIR = REPO_ROOT / "local" / "birdnet-audio"
+
+BASE_SELECT = """
+    SELECT d.id AS detection_id,
+           d.peer_id,
+           d.wireguard_ip::text AS wg_ip,
+           COALESCE(NULLIF(p.note, ''), host(d.wireguard_ip)) AS site_label,
+           n.name AS network_name,
+           d.hostname,
+           d.channel_index,
+           d.window_index,
+           d.label,
+           d.score,
+           d.likely_score,
+           d.weighted_label,
+           d.weighted_score,
+           d.weighted_likely_score,
+           d.volume,
+           d.clip_start_time,
+           d.clip_end_time,
+           d.clip_path,
+           d.server_received_at,
+           loc.lat,
+           loc.lon
+    FROM sensos.birdnet_detections d
+    JOIN sensos.wireguard_peers p ON p.id = d.peer_id
+    JOIN sensos.networks n ON n.id = p.network_id
+    LEFT JOIN LATERAL (
+        SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon
+        FROM sensos.peer_locations
+        WHERE peer_id = d.peer_id AND recorded_at <= d.clip_start_time
+        ORDER BY recorded_at DESC
+        LIMIT 1
+    ) loc ON TRUE
+"""
+
+MANIFEST_FIELDS = [
+    "detection_id",
+    "peer_id",
+    "site_label",
+    "network_name",
+    "hostname",
+    "channel_index",
+    "label",
+    "score",
+    "likely_score",
+    "weighted_label",
+    "weighted_score",
+    "weighted_likely_score",
+    "volume",
+    "clip_start_time",
+    "clip_end_time",
+    "lat",
+    "lon",
+    "archive_path",
+]
+
+ENVIRONMENT_FIELDS = [
+    "detection_id",
+    "peer_id",
+    "device_address",
+    "sensor_type",
+    "reading_key",
+    "reading_value",
+    "recorded_at",
+    "offset_seconds",
+]
+
+
+def die(message: str) -> None:
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def load_env() -> dict[str, str]:
+    env: dict[str, str] = {}
+    if ENV_FILE.is_file():
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    return env
+
+
+def require_docker() -> None:
+    if shutil.which("docker") is None:
+        die("docker binary not found")
+    try:
+        subprocess.run(["docker", "info"], capture_output=True, check=True, timeout=10)
+    except Exception:
+        die("docker access unavailable for the current user")
+
+
+def require_db_running() -> None:
+    result = subprocess.run(
+        ["docker", "ps", "--filter", f"name=^{DB_CONTAINER}$", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if DB_CONTAINER not in result.stdout.split():
+        die(f"{DB_CONTAINER} container is not running")
+
+
+def psql_json(env: dict[str, str], sql: str):
+    cmd = [
+        "docker",
+        "exec",
+        "-e",
+        f"PGPASSWORD={env.get('POSTGRES_PASSWORD', '')}",
+        DB_CONTAINER,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "-X",
+        "-A",
+        "-t",
+        "-P",
+        "pager=off",
+        "-c",
+        sql,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        die(f"query failed: {result.stderr.strip()}")
+    output = result.stdout.strip()
+    if not output:
+        return None
+    return json.loads(output)
+
+
+def sql_literal(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    text = str(value).replace("'", "''")
+    return f"'{text}'"
+
+
+RELATIVE_RE = re.compile(r"^(\d+)([dhm])$")
+
+
+def parse_when(value: str) -> datetime:
+    """Accepts ISO 8601 ('2026-01-01', '2026-01-01T00:00:00Z') or a shorthand
+    relative to now ('7d', '24h', '30m')."""
+    match = RELATIVE_RE.match(value.strip())
+    if match:
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "d": timedelta(days=amount),
+            "h": timedelta(hours=amount),
+            "m": timedelta(minutes=amount),
+        }[unit]
+        return datetime.now(timezone.utc) - delta
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        die(
+            f"could not parse date/time '{value}' "
+            "(expected ISO 8601 like 2026-01-01T00:00:00Z, or Nd/Nh/Nm relative to now)"
+        )
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def resolve_site(env: dict[str, str], selector: str) -> tuple[int, str]:
+    sql = f"""
+        SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            SELECT p.id AS peer_id,
+                   COALESCE(NULLIF(p.note, ''), host(p.wg_ip)) AS site_label
+            FROM sensos.wireguard_peers p
+            LEFT JOIN LATERAL (
+                SELECT hostname FROM sensos.client_status
+                WHERE peer_id = p.id ORDER BY last_check_in DESC LIMIT 1
+            ) ls ON TRUE
+            WHERE p.id::text = {sql_literal(selector)}
+               OR p.uuid::text = {sql_literal(selector)}
+               OR host(p.wg_ip) = {sql_literal(selector)}
+               OR lower(COALESCE(ls.hostname, '')) = lower({sql_literal(selector)})
+        ) t;
+    """
+    matches = psql_json(env, sql) or []
+    if not matches:
+        die(f"no site matches '{selector}' (try bin/client-overview to look up ids/hostnames)")
+    if len(matches) > 1:
+        print(f"ERROR: site selector '{selector}' is ambiguous:", file=sys.stderr)
+        for m in matches:
+            print(f"  id={m['peer_id']} label={m['site_label']}", file=sys.stderr)
+        raise SystemExit(1)
+    return matches[0]["peer_id"], matches[0]["site_label"]
+
+
+def build_where(env: dict[str, str], args: argparse.Namespace) -> str:
+    clauses: list[str] = []
+    if args.label:
+        clauses.append(f"lower(d.label) = lower({sql_literal(args.label)})")
+    if args.weighted_label:
+        clauses.append(f"lower(d.weighted_label) = lower({sql_literal(args.weighted_label)})")
+    if args.min_score is not None:
+        clauses.append(f"d.score >= {args.min_score!r}")
+    if args.min_weighted_score is not None:
+        clauses.append(f"d.weighted_score >= {args.min_weighted_score!r}")
+    if args.channel is not None:
+        clauses.append(f"d.channel_index = {args.channel}")
+    if args.network:
+        clauses.append(f"lower(n.name) = lower({sql_literal(args.network)})")
+    if args.site:
+        peer_id, _label = resolve_site(env, args.site)
+        clauses.append(f"d.peer_id = {peer_id}")
+    if args.since:
+        clauses.append(f"d.clip_start_time >= {sql_literal(parse_when(args.since).isoformat())}")
+    if args.until:
+        clauses.append(f"d.clip_start_time < {sql_literal(parse_when(args.until).isoformat())}")
+    if getattr(args, "with_audio_only", False):
+        clauses.append("d.clip_path IS NOT NULL")
+    return " AND ".join(clauses) if clauses else "TRUE"
+
+
+def fetch_rows(env: dict[str, str], args: argparse.Namespace) -> list[dict]:
+    where = build_where(env, args)
+    order = "DESC" if args.order == "desc" else "ASC"
+    limit_clause = "" if args.all else f"LIMIT {args.limit}"
+    sql = f"""
+        SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            {BASE_SELECT}
+            WHERE {where}
+            ORDER BY d.clip_start_time {order}
+            {limit_clause}
+        ) t;
+    """
+    return psql_json(env, sql) or []
+
+
+def fetch_environment(env: dict[str, str], rows: list[dict], window_minutes: float) -> list[dict]:
+    """i2c_readings has no fixed set of reading_key columns -- it varies by
+    whatever sensors are physically attached at a given site -- so this
+    returns long/tidy rows (one per reading) rather than trying to pivot to a
+    wide table with a column per sensor. Matches every reading at the same
+    site within +/- window_minutes of each detection's clip_start_time, not
+    just the single nearest one, since different sensors can log on
+    different intervals and a human doing analysis can always narrow further."""
+    if not rows:
+        return []
+    targets = ", ".join(
+        f"({row['detection_id']}, {row['peer_id']}, {sql_literal(row['clip_start_time'])}::timestamptz)"
+        for row in rows
+    )
+    sql = f"""
+        WITH targets (detection_id, peer_id, clip_start_time) AS (
+            VALUES {targets}
+        )
+        SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            SELECT tg.detection_id,
+                   r.peer_id,
+                   r.device_address,
+                   r.sensor_type,
+                   r.reading_key,
+                   r.reading_value,
+                   r.recorded_at,
+                   EXTRACT(EPOCH FROM (r.recorded_at - tg.clip_start_time))::int AS offset_seconds
+            FROM targets tg
+            JOIN sensos.i2c_readings r
+              ON r.peer_id = tg.peer_id
+             AND r.recorded_at BETWEEN tg.clip_start_time - interval '{window_minutes} minutes'
+                                    AND tg.clip_start_time + interval '{window_minutes} minutes'
+            ORDER BY tg.detection_id, r.recorded_at
+        ) t;
+    """
+    return psql_json(env, sql) or []
+
+
+def add_filter_args(parser: argparse.ArgumentParser, *, with_audio_only_flag: bool) -> None:
+    parser.add_argument("--label", help="Exact (case-insensitive) match on the raw BirdNET label")
+    parser.add_argument(
+        "--weighted-label", help="Exact (case-insensitive) match on the location/date-weighted label"
+    )
+    parser.add_argument("--min-score", type=float, help="Minimum raw score (0-1)")
+    parser.add_argument("--min-weighted-score", type=float, help="Minimum weighted score (0-1)")
+    parser.add_argument("--site", help="Peer id, UUID, WireGuard IP, or hostname (see bin/client-overview)")
+    parser.add_argument("--network", help="Network name")
+    parser.add_argument("--channel", type=int, help="Channel index")
+    parser.add_argument(
+        "--since", help="Only clips starting at/after this time (ISO 8601, or Nd/Nh/Nm relative to now)"
+    )
+    parser.add_argument("--until", help="Only clips starting before this time (same formats as --since)")
+    parser.add_argument(
+        "--order", choices=["asc", "desc"], default="desc", help="Order by clip_start_time (default: desc)"
+    )
+    if with_audio_only_flag:
+        parser.add_argument(
+            "--with-audio-only", action="store_true", help="Only include detections with an uploaded clip"
+        )
+
+
+def truncate(text: str, width: int) -> str:
+    text = text or ""
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - 1)] + "~"
+
+
+def cmd_query(env: dict[str, str], args: argparse.Namespace) -> None:
+    rows = fetch_rows(env, args)
+    if args.format == "json":
+        json.dump(rows, sys.stdout, indent=2, default=str)
+        print()
+        return
+    if args.format == "csv":
+        writer = csv.DictWriter(sys.stdout, fieldnames=list(BASE_ROW_FIELDS))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k) for k in BASE_ROW_FIELDS})
+        return
+
+    if not rows:
+        print("No matching detections.")
+        return
+    header = f"{'ID':>8} {'SITE':<16} {'CH':>2} {'LABEL':<22} {'SCORE':>6} {'CLIP START':<20} {'AUDIO'}"
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        label = row.get("weighted_label") or row.get("label") or ""
+        marker = "" if row.get("weighted_label") else "*"
+        score = row.get("weighted_score") if row.get("weighted_label") else row.get("score")
+        print(
+            f"{row['detection_id']:>8} "
+            f"{truncate(row.get('site_label') or '', 16):<16} "
+            f"{row.get('channel_index', 0):>2} "
+            f"{truncate(label + marker, 22):<22} "
+            f"{(score if score is not None else 0):>6.2f} "
+            f"{(row.get('clip_start_time') or '')[:19]:<20} "
+            f"{'Y' if row.get('clip_path') else 'n'}"
+        )
+    print(f"\n{len(rows)} row(s). '*' = raw label shown (no weighted label yet).")
+
+
+BASE_ROW_FIELDS = [
+    "detection_id",
+    "peer_id",
+    "wg_ip",
+    "site_label",
+    "network_name",
+    "hostname",
+    "channel_index",
+    "window_index",
+    "label",
+    "score",
+    "likely_score",
+    "weighted_label",
+    "weighted_score",
+    "weighted_likely_score",
+    "volume",
+    "clip_start_time",
+    "clip_end_time",
+    "clip_path",
+    "server_received_at",
+    "lat",
+    "lon",
+]
+
+
+def cmd_labels(env: dict[str, str], args: argparse.Namespace) -> None:
+    clauses = []
+    if args.site:
+        peer_id, _ = resolve_site(env, args.site)
+        clauses.append(f"d.peer_id = {peer_id}")
+    if args.since:
+        clauses.append(f"d.clip_start_time >= {sql_literal(parse_when(args.since).isoformat())}")
+    if args.until:
+        clauses.append(f"d.clip_start_time < {sql_literal(parse_when(args.until).isoformat())}")
+    where = " AND ".join(clauses) if clauses else "TRUE"
+    sql = f"""
+        SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+            SELECT COALESCE(d.weighted_label, d.label) AS label,
+                   count(*)::int AS detections,
+                   count(d.clip_path)::int AS with_audio,
+                   max(d.clip_start_time) AS latest
+            FROM sensos.birdnet_detections d
+            WHERE {where}
+            GROUP BY 1
+            ORDER BY detections DESC
+        ) t;
+    """
+    rows = psql_json(env, sql) or []
+    if not rows:
+        print("No detections match.")
+        return
+    header = f"{'LABEL':<28} {'DETECTIONS':>10} {'WITH AUDIO':>10} {'LATEST':<20}"
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{truncate(row['label'] or '(none)', 28):<28} "
+            f"{row['detections']:>10} "
+            f"{row['with_audio']:>10} "
+            f"{(row.get('latest') or '')[:19]:<20}"
+        )
+    print("\nLabel is weighted_label when present, else the raw label.")
+
+
+def export_format(output: Path) -> str:
+    name = output.name.lower()
+    if name.endswith(".zip"):
+        return "zip"
+    if name.endswith(".tar.gz") or name.endswith(".tgz"):
+        return "targz"
+    return "dir"
+
+
+def site_dirname(row: dict) -> str:
+    label = row.get("site_label")
+    if not label:
+        return f"peer-{row['peer_id']}"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-") or "site"
+    return f"{safe}-{row['peer_id']}"
+
+
+def manifest_row(row: dict, archive_path: str) -> dict:
+    out = {field: row.get(field) for field in MANIFEST_FIELDS if field != "archive_path"}
+    out["archive_path"] = archive_path
+    return out
+
+
+def manifest_csv_text(rows: list[dict]) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=MANIFEST_FIELDS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return buf.getvalue()
+
+
+def environment_csv_text(rows: list[dict]) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=ENVIRONMENT_FIELDS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: row.get(k) for k in ENVIRONMENT_FIELDS})
+    return buf.getvalue()
+
+
+def cmd_export(env: dict[str, str], args: argparse.Namespace) -> None:
+    if not args.all and args.limit is None:
+        die("export requires --limit N (or --all) -- be explicit about how much you're archiving")
+    args.with_audio_only = True
+    rows = fetch_rows(env, args)
+    if not rows:
+        print("No matching detections with an uploaded clip; nothing to export.")
+        return
+
+    audio_root = Path(env.get("BIRDNET_AUDIO_DATA_DIR") or DEFAULT_AUDIO_DIR)
+    if not audio_root.is_dir():
+        die(f"audio root not found at {audio_root} (check BIRDNET_AUDIO_DATA_DIR in {ENV_FILE})")
+
+    environment_text = None
+    if args.with_environment:
+        environment_rows = fetch_environment(env, rows, args.env_window_minutes)
+        environment_text = environment_csv_text(environment_rows)
+
+    output = Path(args.output).expanduser()
+    fmt = export_format(output)
+    if fmt != "dir":
+        output.parent.mkdir(parents=True, exist_ok=True)
+    exported = 0
+    missing = 0
+    manifest_rows: list[dict] = []
+
+    if fmt == "dir":
+        output.mkdir(parents=True, exist_ok=True)
+        clips_root = output / "clips"
+        for row in rows:
+            if not row.get("clip_path"):
+                continue
+            src = audio_root / row["clip_path"]
+            if not src.is_file():
+                missing += 1
+                continue
+            dest_dir = clips_root / site_dirname(row)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{row['detection_id']}.flac"
+            shutil.copyfile(src, dest)
+            manifest_rows.append(manifest_row(row, str(dest.relative_to(output))))
+            exported += 1
+        (output / "manifest.csv").write_text(manifest_csv_text(manifest_rows))
+        if environment_text is not None:
+            (output / "environment.csv").write_text(environment_text)
+    elif fmt == "zip":
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            for row in rows:
+                if not row.get("clip_path"):
+                    continue
+                src = audio_root / row["clip_path"]
+                if not src.is_file():
+                    missing += 1
+                    continue
+                arcname = f"clips/{site_dirname(row)}/{row['detection_id']}.flac"
+                zf.write(src, arcname)
+                manifest_rows.append(manifest_row(row, arcname))
+                exported += 1
+            zf.writestr("manifest.csv", manifest_csv_text(manifest_rows))
+            if environment_text is not None:
+                zf.writestr("environment.csv", environment_text)
+    else:  # targz
+        with tarfile.open(output, "w:gz") as tf:
+            for row in rows:
+                if not row.get("clip_path"):
+                    continue
+                src = audio_root / row["clip_path"]
+                if not src.is_file():
+                    missing += 1
+                    continue
+                arcname = f"clips/{site_dirname(row)}/{row['detection_id']}.flac"
+                tf.add(src, arcname=arcname)
+                manifest_rows.append(manifest_row(row, arcname))
+                exported += 1
+
+            def add_text_member(name: str, text: str) -> None:
+                data = text.encode("utf-8")
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+            add_text_member("manifest.csv", manifest_csv_text(manifest_rows))
+            if environment_text is not None:
+                add_text_member("environment.csv", environment_text)
+
+    suffix = f" ({missing} missing file(s) skipped)" if missing else ""
+    env_suffix = f", {len(environment_rows)} environment reading(s)" if args.with_environment else ""
+    print(f"Exported {exported} clip(s) to {output}{suffix}{env_suffix}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Query, subset, and archive uploaded BirdNET detections/audio."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    query_parser = subparsers.add_parser("query", help="Print matching detections")
+    add_filter_args(query_parser, with_audio_only_flag=True)
+    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (default: 200)")
+    query_parser.add_argument("--all", action="store_true", help="No row limit")
+    query_parser.add_argument("--format", choices=["table", "csv", "json"], default="table")
+    query_parser.set_defaults(func=cmd_query)
+
+    export_parser = subparsers.add_parser(
+        "export", help="Copy matching clips + a manifest.csv into a directory, .zip, or .tar.gz"
+    )
+    add_filter_args(export_parser, with_audio_only_flag=False)
+    export_parser.add_argument("--limit", type=int, help="Max rows (required unless --all)")
+    export_parser.add_argument("--all", action="store_true", help="No row limit")
+    export_parser.add_argument(
+        "--output",
+        default=f"birdnet-export-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.tar.gz",
+        help="Output path: a directory, or a file ending in .zip/.tar.gz/.tgz (default: timestamped .tar.gz in the current directory)",
+    )
+    export_parser.add_argument(
+        "--with-environment",
+        action="store_true",
+        help="Also write environment.csv: i2c sensor readings (temperature, humidity, CO2, etc. -- "
+        "whatever's attached per site) from each clip's site within --env-window-minutes of its clip_start_time",
+    )
+    export_parser.add_argument(
+        "--env-window-minutes",
+        type=float,
+        default=15,
+        help="With --with-environment, how far on either side of clip_start_time to match readings (default: 15)",
+    )
+    export_parser.set_defaults(func=cmd_export)
+
+    labels_parser = subparsers.add_parser("labels", help="List distinct labels with detection counts")
+    labels_parser.add_argument("--site", help="Peer id, UUID, WireGuard IP, or hostname")
+    labels_parser.add_argument("--since", help="Only count clips starting at/after this time")
+    labels_parser.add_argument("--until", help="Only count clips starting before this time")
+    labels_parser.set_defaults(func=cmd_labels)
+
+    args = parser.parse_args()
+
+    require_docker()
+    require_db_running()
+    env = load_env()
+
+    args.func(env, args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
