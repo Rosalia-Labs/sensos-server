@@ -43,8 +43,8 @@ ENV_FILE = DOCKER_DIR / ".env"
 DB_CONTAINER = "sensos-database"
 DEFAULT_AUDIO_DIR = REPO_ROOT / "local" / "birdnet-audio"
 
-BASE_SELECT = """
-    SELECT d.id AS detection_id,
+BASE_COLUMNS = """
+           d.id AS detection_id,
            d.peer_id,
            d.wireguard_ip::text AS wg_ip,
            COALESCE(NULLIF(p.note, ''), host(d.wireguard_ip)) AS site_label,
@@ -65,6 +65,9 @@ BASE_SELECT = """
            d.server_received_at,
            loc.lat,
            loc.lon
+"""
+
+BASE_FROM = """
     FROM sensos.birdnet_detections d
     JOIN sensos.wireguard_peers p ON p.id = d.peer_id
     JOIN sensos.networks n ON n.id = p.network_id
@@ -76,6 +79,10 @@ BASE_SELECT = """
         LIMIT 1
     ) loc ON TRUE
 """
+
+BASE_SELECT = f"SELECT{BASE_COLUMNS}{BASE_FROM}"
+
+EFFECTIVE_LABEL_EXPR = "COALESCE(d.weighted_label, d.label)"
 
 MANIFEST_FIELDS = [
     "detection_id",
@@ -280,6 +287,41 @@ def build_where(env: dict[str, str], args: argparse.Namespace) -> str:
 
 def fetch_rows(env: dict[str, str], args: argparse.Namespace) -> list[dict]:
     where = build_where(env, args)
+    per_label = getattr(args, "per_label", None)
+    if per_label is not None and per_label < 1:
+        die("--per-label must be >= 1")
+
+    if per_label:
+        # Highest-score examples first within each label -- for a teaching/
+        # sample archive, the clearest clips are the useful ones, not an
+        # arbitrary or most-recent one. Ordering the (optional) global cap by
+        # label_rank before score means every label gets its best example
+        # before any label gets a second one -- a global --limit thins depth
+        # per label rather than dropping whole labels from the end.
+        global_limit_clause = ""
+        if not args.all and args.limit is not None:
+            global_limit_clause = f"LIMIT {args.limit}"
+        sql = f"""
+            SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+                SELECT * FROM (
+                    SELECT{BASE_COLUMNS},
+                           {EFFECTIVE_LABEL_EXPR} AS effective_label,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {EFFECTIVE_LABEL_EXPR}
+                               ORDER BY d.score DESC, d.id
+                           ) AS label_rank
+                    {BASE_FROM}
+                    WHERE {where}
+                ) ranked
+                WHERE ranked.label_rank <= {per_label}
+                ORDER BY ranked.label_rank, ranked.score DESC
+                {global_limit_clause}
+            ) t;
+        """
+        rows = psql_json(env, sql) or []
+        rows.sort(key=lambda r: (r["effective_label"], r["label_rank"]))
+        return rows
+
     order = "DESC" if args.order == "desc" else "ASC"
     limit_clause = "" if args.all else f"LIMIT {args.limit}"
     sql = f"""
@@ -685,8 +727,11 @@ def environment_csv_text(rows: list[dict]) -> str:
 
 
 def cmd_export(env: dict[str, str], args: argparse.Namespace) -> None:
-    if not args.all and args.limit is None:
-        die("export requires --limit N (or --all) -- be explicit about how much you're archiving")
+    if not args.all and args.limit is None and not args.per_label:
+        die(
+            "export requires --limit N, --all, or --per-label N -- "
+            "be explicit about how much you're archiving"
+        )
     args.with_audio_only = True
     rows = fetch_rows(env, args)
     if not rows:
@@ -774,28 +819,50 @@ def cmd_export(env: dict[str, str], args: argparse.Namespace) -> None:
     print(f"Exported {exported} clip(s) to {output}{suffix}{env_suffix}")
 
 
+def add_selection_args(parser: argparse.ArgumentParser, *, default_limit: int | None) -> None:
+    limit_help = "Max total rows" if default_limit is None else f"Max total rows (default: {default_limit})"
+    if default_limit is None:
+        limit_help += " (required unless --all or --per-label)"
+    limit_help += "; combine with --per-label to cap the total while still guaranteeing per-label coverage"
+    # --limit and --all are contradictory (a cap vs. no cap) so stay mutually
+    # exclusive; --per-label is independent of both -- it sets a per-label
+    # cap that composes with --limit/--all as an additional *global* cap on
+    # top of it, not a replacement selection mode.
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--limit", type=int, default=default_limit, help=limit_help)
+    group.add_argument("--all", action="store_true", help="No total row limit")
+    parser.add_argument(
+        "--per-label",
+        type=int,
+        help="Up to N examples per label (highest score first; weighted_label when present, "
+        "else raw label). --limit (default shown above, if any) still applies as a cap on the "
+        "total; pass --all to remove that total cap and keep only the per-label one",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Query, subset, and archive uploaded BirdNET detections/audio."
+        description="Query, subset, and archive the uploaded audio archive."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     query_parser = subparsers.add_parser("query", help="Print matching detections")
     add_filter_args(query_parser, with_audio_only_flag=True)
-    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (default: 200)")
-    query_parser.add_argument("--all", action="store_true", help="No row limit")
+    add_selection_args(query_parser, default_limit=200)
     query_parser.add_argument("--format", choices=["table", "csv", "json"], default="table")
     query_parser.set_defaults(func=cmd_query)
 
     export_parser = subparsers.add_parser(
         "export", help="Copy matching clips + a manifest.csv into a directory, .zip, or .tar.gz"
     )
-    add_filter_args(export_parser, with_audio_only_flag=False)
-    export_parser.add_argument("--limit", type=int, help="Max rows (required unless --all)")
-    export_parser.add_argument("--all", action="store_true", help="No row limit")
+    # export always restricts to clips with audio regardless of this flag
+    # (cmd_export forces it) -- accepted anyway since it's natural muscle
+    # memory coming from `query`, and erroring on it would be surprising.
+    add_filter_args(export_parser, with_audio_only_flag=True)
+    add_selection_args(export_parser, default_limit=None)
     export_parser.add_argument(
         "--output",
-        default=f"birdnet-export-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.tar.gz",
+        default=f"audio-export-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.tar.gz",
         help="Output path: a directory, or a file ending in .zip/.tar.gz/.tgz (default: timestamped .tar.gz in the current directory)",
     )
     export_parser.add_argument(

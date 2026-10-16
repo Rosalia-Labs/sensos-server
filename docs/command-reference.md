@@ -567,6 +567,8 @@ Typical use:
 ./bin/audio-archive query --site testing-0-1 --format csv > recent.csv
 ./bin/audio-archive export --site testing-0-1 --since 30d --limit 500 --output site1-last-month.tar.gz
 ./bin/audio-archive export --label "Turdus migratorius" --all --output turdus-clips/
+./bin/audio-archive export --site testing-0-1 --per-label 3 --output student-sample.zip
+./bin/audio-archive export --site testing-0-1 --per-label 3 --limit 50 --output student-sample-capped.zip
 ./bin/audio-archive export --site testing-0-1 --since 7d --limit 500 --with-environment --output site1-week.tar.gz
 ./bin/audio-archive status
 ./bin/audio-archive status --site testing-0-1 --list-problems
@@ -603,13 +605,24 @@ or hostname -- same selector `bin/client-overview` accepts), `--network`,
 `--channel`, `--since`/`--until` (ISO 8601, or `Nd`/`Nh`/`Nm` relative to
 now), `--order`.
 
+Row selection (`query` and `export`): `--limit N` and `--all` are mutually
+exclusive (a cap vs. no cap). `--per-label N` is independent of both -- up to
+N highest-score examples per label (useful for e.g. a teaching sample:
+`--per-label 1` or `--per-label 3`), and composes with `--limit`/`--all` as an
+*additional* cap on the total rather than replacing row selection: every
+label's best example is returned before any label's second-best, so a
+`--limit` lower than `labels * N` thins depth per label rather than dropping
+whole labels. `query` defaults to `--limit 200` even when `--per-label` is
+also given; pass `--all` to remove that total cap and keep only the per-label
+one.
+
 Behavior:
 
 - requires Docker access and a running `sensos-database` container
 - `export` always restricts to detections with an uploaded clip; `query`
   shows all matches unless `--with-audio-only` is passed
-- `export` requires an explicit `--limit N` or `--all` -- there's no implicit
-  cap, so you have to say how much you mean to archive
+- `export` requires an explicit `--limit N`, `--all`, or `--per-label N` --
+  there's no implicit cap, so you have to say how much you mean to archive
 - clips within an archive are grouped under `clips/<site>-<peer id>/`, since
   a subset can span multiple sites
 - a clip file missing from disk (rare, but possible if storage and Postgres
